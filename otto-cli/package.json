@@ -7,6 +7,10 @@
   "bin": {
     "otto": "bin/otto.js"
   },
+  "files": [
+    "dist",
+    "bin"
+  ],
   "scripts": {
     "start": "node bin/otto.js"
   },
