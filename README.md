@@ -23,6 +23,16 @@ O.T.T.O is a powerful, terminal-based AI assistant and autonomous agent. Designe
 
 ### Installation
 
+The easiest way to install O.T.T.O globally on your system is via NPM:
+```bash
+npm install -g @dpv007/otto-cli
+```
+Once installed, simply type `otto` in your terminal to launch the dashboard!
+
+---
+
+### Installing from Source
+
 1. **Clone the repository:**
    ```bash
    git clone https://github.com/Dedeep007/O.T.T.O.git
@@ -34,16 +44,11 @@ O.T.T.O is a powerful, terminal-based AI assistant and autonomous agent. Designe
    npm install
    ```
 
-3. **Build the executable:**
-   *(Optional, if you want a standalone binary)*
-   ```bash
-   npm run build
-   ```
-
-4. **Run O.T.T.O:**
+3. **Run O.T.T.O:**
    ```bash
    npm start
    ```
+
 
 ## ⚙️ Configuration
 
