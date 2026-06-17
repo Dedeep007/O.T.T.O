@@ -1,0 +1,27 @@
+{
+  "name": "otto-cli",
+  "version": "1.0.0",
+  "description": "O.T.T.O - Orchestrated Task & Tool Operator CLI",
+  "main": "dist/index.js",
+  "type": "module",
+  "bin": {
+    "otto": "bin/otto.js"
+  },
+  "scripts": {
+    "start": "node bin/otto.js"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "cli",
+    "terminal",
+    "assistant"
+  ],
+  "author": "Dedeep007",
+  "license": "ISC",
+  "dependencies": {
+    "better-sqlite3": "^12.11.1",
+    "sqlite-vec": "^0.1.9",
+    "serialport": "^13.0.0"
+  }
+}
