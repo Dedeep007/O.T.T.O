@@ -151,8 +151,8 @@ const searchCode = tool(
     description: "Searches text/code inside the current workspace and returns file:line matches. Use this first to find the function, class, setting, or text to edit before reading files.",
     schema: z.object({
       query: z.string().describe("Plain text to search for, for example createSettingsView or function name."),
-      dirPath: z.string().default('.').describe("Workspace-relative directory to search, default is workspace root."),
-      caseSensitive: z.boolean().default(false).describe("Whether matching should be case-sensitive."),
+      dirPath: z.string().optional().describe("Workspace-relative directory to search, default is workspace root."),
+      caseSensitive: z.boolean().optional().describe("Whether matching should be case-sensitive."),
     }),
   }
 );
@@ -186,7 +186,7 @@ const readFileLines = tool(
     description: "Reads a numbered line range from a workspace file. Prefer this over read_file after search_code finds the relevant function or block.",
     schema: z.object({
       filePath: z.string().describe("Workspace-relative file path, for example src/index.ts."),
-      startLine: z.number().int().min(1).default(1).describe("1-based first line to read."),
+      startLine: z.number().int().min(1).optional().describe("1-based first line to read."),
       endLine: z.number().int().min(1).optional().describe("1-based last line to read. The tool caps output to keep context small."),
     }),
   }
@@ -305,8 +305,8 @@ const listDirectory = tool(
     name: "list_files",
     description: "Lists files and folders inside the current workspace only. Use this to inspect project structure before editing.",
     schema: z.object({
-      dirPath: z.string().default('.').describe("Workspace-relative directory path, default is the current workspace root."),
-      depth: z.number().int().min(0).max(3).default(1).describe("Optional recursion depth, capped at 3."),
+      dirPath: z.string().optional().describe("Workspace-relative directory path, default is the current workspace root."),
+      depth: z.number().int().min(0).max(3).optional().describe("Optional recursion depth, capped at 3."),
     }),
   }
 );

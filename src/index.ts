@@ -312,18 +312,12 @@ async function main() {
                 }
                 isStreaming = false;
                 chatSession.activeStreams.delete(chatSession.threadId);
-                if (!isDetached) {
-                  process.stdin.on('keypress', onKeypress);
-                }
                 sessionEvents.emit('stream_update', chatSession.threadId);
               } catch (error: any) {
                 isStreaming = false;
                 chatSession.activeStreams.delete(chatSession.threadId);
                 messages.push(new SystemMessage(formatChatError(error)));
                 syncMessages();
-                if (!isDetached) {
-                  process.stdin.on('keypress', onKeypress);
-                }
                 sessionEvents.emit('stream_update', chatSession.threadId);
               }
               if (!isDetached) {
@@ -458,18 +452,12 @@ async function main() {
             }
             isStreaming = false;
             chatSession.activeStreams.delete(chatSession.threadId);
-            if (!isDetached) {
-               process.stdin.on('keypress', onKeypress);
-            }
             sessionEvents.emit('stream_update', chatSession.threadId);
           } catch (error: any) {
             isStreaming = false;
             chatSession.activeStreams.delete(chatSession.threadId);
             messages.push(new SystemMessage(formatChatError(error)));
             syncMessages();
-            if (!isDetached) {
-               process.stdin.on('keypress', onKeypress);
-            }
             sessionEvents.emit('stream_update', chatSession.threadId);
           }
           
