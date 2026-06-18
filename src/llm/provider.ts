@@ -66,11 +66,14 @@ export class ProviderEngine {
         const entry = this.config.providers.ollama;
         const model = entry?.activeModel ?? entry?.model ?? 'llama3';
         const baseUrl = entry?.baseUrl ?? 'http://localhost:11434';
+        
         this.primaryModel = new ChatOllama({
           baseUrl,
           model,
+          temperature: 0, // Enforces strict JSON tool schemas across all local models
           maxRetries: 0
         }).bindTools(tools) as any;
+        
         ui.info(`Switched to Ollama - ${model}`);
       } else {
         ui.warning(`Provider ${providerName} is not fully configured or supported yet.`);
