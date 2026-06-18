@@ -1,6 +1,6 @@
 import { Configurator } from './cli/configurator.js';
 import { ui } from './cli/ui.js';
-import { chatSession } from './cli/session.js';
+import { chatSession, sessionEvents } from './cli/session.js';
 import { ProviderEngine } from './llm/provider.js';
 import { executor } from './security/executor.js';
 import { memoryManager } from './memory/budget.js';
@@ -183,8 +183,24 @@ async function main() {
       if (process.stdin.isTTY) process.stdin.setRawMode(true);
       process.stdin.resume(); // ensure stdin is flowing after phone.cleanup() may have paused it
 
-      let isStreaming = false;
+      let isStreaming = chatSession.activeStreams.has(chatSession.threadId);
       let isDetached = false;
+
+      const onStreamUpdate = (id: string) => {
+        if (id === chatSession.threadId && !isDetached) {
+          if (!chatSession.activeStreams.has(id)) {
+            isStreaming = false;
+          }
+          render(isStreaming);
+        }
+      };
+      sessionEvents.on('stream_update', onStreamUpdate);
+
+      const cleanup = () => {
+        sessionEvents.removeListener('stream_update', onStreamUpdate);
+        process.stdout.write('\x1B[?1049l');
+        process.stdin.removeListener('keypress', onKeypress);
+      };
 
       const onKeypress = async (str: string, key: any) => {
         if (key.ctrl && key.name === 'c') {
@@ -202,8 +218,7 @@ async function main() {
           if (isStreaming) {
             isDetached = true;
           }
-          process.stdout.write('\x1B[?1049l');
-          process.stdin.removeListener('keypress', onKeypress);
+          cleanup();
           resolve();
         } else if (key.name === 'return') {
           // ── PLAN MENU SELECTION ───────────────────────────────────────────
@@ -216,6 +231,7 @@ async function main() {
               // Do not remove keypress listener here!
               isStreaming = true;
               isDetached = false;
+              chatSession.activeStreams.add(chatSession.threadId);
               messages.push(new HumanMessage(chosen.inject));
               syncMessages();
               chatUI.scrollToBottom();
@@ -238,7 +254,11 @@ async function main() {
                     if (chunk && chunk.content) {
                       aiMessage.content = (aiMessage.content as string) + chunk.content;
                       syncMessages();
-                      if (!isDetached) scheduleStreamRender(160);
+                      if (!isDetached) {
+                         scheduleStreamRender(160);
+                      } else {
+                         sessionEvents.emit('stream_update', chatSession.threadId);
+                      }
                     }
                   }
                   config = provider.getConfig();
@@ -272,7 +292,11 @@ async function main() {
                       messages.push(new ToolMessage({ content: toolResultStr, tool_call_id: call.id, name: call.name }));
                       syncMessages();
                     }
-                    if (!isDetached) render(true);
+                    if (!isDetached) {
+                      render(true);
+                    } else {
+                      sessionEvents.emit('stream_update', chatSession.threadId);
+                    }
                   } else {
                     pendingPlan = false;
                     isDone = true;
@@ -280,14 +304,24 @@ async function main() {
                   }
                 }
                 isStreaming = false;
-                if (!isDetached) process.stdin.on('keypress', onKeypress);
+                chatSession.activeStreams.delete(chatSession.threadId);
+                if (!isDetached) {
+                  process.stdin.on('keypress', onKeypress);
+                }
+                sessionEvents.emit('stream_update', chatSession.threadId);
               } catch (error: any) {
                 isStreaming = false;
+                chatSession.activeStreams.delete(chatSession.threadId);
                 messages.push(new SystemMessage(formatChatError(error)));
                 syncMessages();
-                if (!isDetached) process.stdin.on('keypress', onKeypress);
+                if (!isDetached) {
+                  process.stdin.on('keypress', onKeypress);
+                }
+                sessionEvents.emit('stream_update', chatSession.threadId);
               }
-              if (!isDetached) render();
+              if (!isDetached) {
+                 render();
+              }
             } else {
               // Edit mode: drop into normal input so user can type modifications
               pendingPlan = false;
@@ -316,8 +350,14 @@ async function main() {
             render(false);
             return;
           }
+          if (chatSession.activeStreams.has(chatSession.threadId)) {
+             // Block multiple streams
+             return;
+          }
+
           isStreaming = true;
           isDetached = false;
+          chatSession.activeStreams.add(chatSession.threadId);
           chatSession.ensureNamedFromPrompt(inputStr);
           messages.push(new HumanMessage(inputStr));
           syncMessages();
@@ -356,7 +396,11 @@ async function main() {
                     currentLength < 24;
                   if (shouldRender) {
                     lastStreamContentLength = currentLength;
-                    if (!isDetached) scheduleStreamRender(isInsideCodeFence ? 260 : 160);
+                    if (!isDetached) {
+                      scheduleStreamRender(isInsideCodeFence ? 260 : 160);
+                    } else {
+                      sessionEvents.emit('stream_update', chatSession.threadId);
+                    }
                   }
                 }
               }
@@ -394,7 +438,11 @@ async function main() {
                   messages.push(new ToolMessage({ content: toolResultStr, tool_call_id: call.id, name: call.name }));
                   syncMessages();
                 }
-                if (!isDetached) render(true);
+                if (!isDetached) {
+                  render(true);
+                } else {
+                  sessionEvents.emit('stream_update', chatSession.threadId);
+                }
               } else {
                 pendingPlan = false;
                 isDone = true;
@@ -402,15 +450,25 @@ async function main() {
               }
             }
             isStreaming = false;
-            if (!isDetached) process.stdin.on('keypress', onKeypress);
+            chatSession.activeStreams.delete(chatSession.threadId);
+            if (!isDetached) {
+               process.stdin.on('keypress', onKeypress);
+            }
+            sessionEvents.emit('stream_update', chatSession.threadId);
           } catch (error: any) {
             isStreaming = false;
+            chatSession.activeStreams.delete(chatSession.threadId);
             messages.push(new SystemMessage(formatChatError(error)));
             syncMessages();
-            if (!isDetached) process.stdin.on('keypress', onKeypress);
+            if (!isDetached) {
+               process.stdin.on('keypress', onKeypress);
+            }
+            sessionEvents.emit('stream_update', chatSession.threadId);
           }
           
-          if (!isDetached) render();
+          if (!isDetached) {
+            render();
+          }
         } else if (key.name === 'up') {
           if (isStreaming) return;
           if (pendingPlan) {
@@ -449,7 +507,7 @@ async function main() {
       };
 
       process.stdin.on('keypress', onKeypress);
-      render();
+      render(isStreaming);
     });
   };
 

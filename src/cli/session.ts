@@ -2,6 +2,9 @@ import os from 'os';
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
 import { dbManager } from '../db/checkpoint.js';
 import { ui } from './ui.js';
+import { EventEmitter } from 'events';
+
+export const sessionEvents = new EventEmitter();
 
 type SerializedChatMessage = {
   role: 'human' | 'ai' | 'system' | 'tool';
@@ -21,6 +24,7 @@ export class ChatSession {
   private username: string;
   private hostname: string;
   private threadMessages = new Map<string, any[]>();
+  public activeStreams = new Set<string>();
   private static readonly DEFAULT_THREAD_NAME = 'New Chat';
 
   constructor() {
