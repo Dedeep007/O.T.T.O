@@ -54,12 +54,16 @@ async function main() {
     let lastStreamContentLength = 0;
     
     // pendingPlan: true when the AI last response contained a plan block and
-    // we're waiting for the user's y/n before executing any tool calls.
+    // we're waiting for the user's selection before executing any tool calls.
     let pendingPlan = false;
+    let planMenuIndex = 0; // 0 = Approve, 1 = Edit/Request changes, 2 = Cancel
+    const PLAN_MENU_OPTIONS = [
+      { label: '✅  Approve — execute the plan', inject: 'approved — please proceed with the plan exactly as described.' },
+      { label: '✏️   Edit — request changes first', inject: null },
+      { label: '❌  Cancel — do not proceed', inject: 'cancel — do not proceed with this plan.' },
+    ];
 
     const PLAN_BLOCK_RE = /<!--\s*PLAN_START\s*-->[\s\S]*?<!--\s*PLAN_END\s*-->/;
-    const REJECTION_WORDS = /^(n|no|cancel|stop|reject|nope|abort|dont|don't)[\s.!]*$/i;
-    
     // Convert history for rendering
     const getRenderMessages = () => {
       const renderMsgs: any[] = [];
@@ -134,7 +138,7 @@ async function main() {
         ctxUsed: stats.filled,
         ramMB,
         showContextBar: config.defaults.showContextBar !== false
-      }, model, isThinking, isPendingPlan || pendingPlan);
+      }, model, isThinking, isPendingPlan || pendingPlan, planMenuIndex);
     };
 
     const formatToolResult = (toolName: string, result: string, diffSummary: string, args: any) => {
@@ -199,6 +203,93 @@ async function main() {
           process.stdin.removeListener('keypress', onKeypress);
           resolve();
         } else if (key.name === 'return') {
+          // ── PLAN MENU SELECTION ───────────────────────────────────────────
+          if (pendingPlan) {
+            const chosen = PLAN_MENU_OPTIONS[planMenuIndex];
+            if (chosen.inject !== null) {
+              // Approve or Cancel: inject the canned response as human message
+              pendingPlan = false;
+              planMenuIndex = 0;
+              process.stdin.removeListener('keypress', onKeypress);
+              messages.push(new HumanMessage(chosen.inject));
+              syncMessages();
+              chatUI.scrollToBottom();
+              render(true);
+              try {
+                let isDone = false;
+                const preferredName = Configurator.getUsername(config) || 'user';
+                const nameHint = `\n\nUser's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.`;
+                while (!isDone) {
+                  const msgsToSend = [new SystemMessage(rules + nameHint), ...messages];
+                  const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
+                  const aiMessage = new AIMessage('');
+                  messages.push(aiMessage);
+                  syncMessages();
+                  let finalMessage: any = null;
+                  const stream = await provider.stream(optimizedMsgs);
+                  for await (const chunk of stream) {
+                    if (!finalMessage) finalMessage = chunk;
+                    else finalMessage = concat(finalMessage, chunk);
+                    if (chunk && chunk.content) {
+                      aiMessage.content = (aiMessage.content as string) + chunk.content;
+                      syncMessages();
+                      scheduleStreamRender(160);
+                    }
+                  }
+                  config = provider.getConfig();
+                  phone.updateConfig(config);
+                  messages[messages.length - 1] = finalMessage;
+                  lastStreamContentLength = 0;
+                  syncMessages();
+                  const responseText = String(finalMessage?.content ?? '');
+                  const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
+                  const hasToolCalls = finalMessage?.tool_calls && finalMessage.tool_calls.length > 0;
+                  if (hasPlanBlock && !hasToolCalls) {
+                    pendingPlan = true;
+                    planMenuIndex = 0;
+                    isDone = true;
+                    flushStreamRender(true);
+                  } else if (hasToolCalls) {
+                    pendingPlan = false;
+                    flushStreamRender();
+                    for (const call of finalMessage.tool_calls) {
+                      const tool = tools.find(t => t.name === call.name);
+                      let toolResultStr = '';
+                      if (tool) {
+                        try {
+                          const beforeSnapshot = call.name === 'execute_terminal_command' ? captureWorkspaceSnapshot() : null;
+                          const res = await (tool as any).invoke(call.args);
+                          const afterSnapshot = beforeSnapshot ? captureWorkspaceSnapshot() : null;
+                          const diffSummary = beforeSnapshot && afterSnapshot ? formatWorkspaceChanges(beforeSnapshot, afterSnapshot) : '';
+                          toolResultStr = formatToolResult(call.name, String(res), diffSummary, call.args);
+                        } catch (e: any) { toolResultStr = formatToolResult(call.name, `Error: ${e.message}`, '', call.args); }
+                      } else { toolResultStr = formatToolResult(call.name, `Error: Tool ${call.name} not found.`, '', call.args); }
+                      messages.push(new ToolMessage({ content: toolResultStr, tool_call_id: call.id, name: call.name }));
+                      syncMessages();
+                    }
+                    render(true);
+                  } else {
+                    pendingPlan = false;
+                    isDone = true;
+                    flushStreamRender();
+                  }
+                }
+                process.stdin.on('keypress', onKeypress);
+              } catch (error: any) {
+                messages.push(new SystemMessage(formatChatError(error)));
+                syncMessages();
+                process.stdin.on('keypress', onKeypress);
+              }
+              render();
+            } else {
+              // Edit mode: drop into normal input so user can type modifications
+              pendingPlan = false;
+              planMenuIndex = 0;
+              render();
+            }
+            return;
+          }
+          // ── NORMAL MESSAGE SEND ─────────────────────────────────────────────
           if (!currentInput.trim()) return;
           const inputStr = currentInput.trim();
           currentInput = '';
@@ -254,7 +345,7 @@ async function main() {
                   const isInsideCodeFence = fenceCount % 2 === 1;
                   const shouldRender =
                     delta >= (isInsideCodeFence ? 96 : 24) ||
-                    (!isInsideCodeFence && /[\s,.;:!?)}\]\n]$/.test(String(chunk.content))) ||
+                    (!isInsideCodeFence && /[\s,.;:!?)\}\]\n]$/.test(String(chunk.content))) ||
                     currentLength < 24;
                   if (shouldRender) {
                     lastStreamContentLength = currentLength;
@@ -265,74 +356,46 @@ async function main() {
               config = provider.getConfig();
               phone.updateConfig(config);
               
-              // Replace the buffer message with the fully assembled message (which contains tool_calls)
               messages[messages.length - 1] = finalMessage;
               lastStreamContentLength = 0;
               syncMessages();
 
-              // ── PLAN DETECTION ─────────────────────────────────────────────
-              // If the response contains a plan block and no tool calls were attached,
-              // set pendingPlan and stop the loop — wait for user's y/n.
               const responseText = String(finalMessage?.content ?? '');
               const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
               const hasToolCalls = finalMessage?.tool_calls && finalMessage.tool_calls.length > 0;
 
               if (hasPlanBlock && !hasToolCalls) {
-                // Plan shown — pause and wait for user approval
                 pendingPlan = true;
+                planMenuIndex = 0;
                 isDone = true;
                 flushStreamRender(true);
               } else if (hasToolCalls) {
-                // Check if user just rejected a pending plan
-                const lastHuman = [...messages].reverse().find(m => m._getType() === 'human');
-                const lastHumanText = String(lastHuman?.content ?? '').trim();
-                if (pendingPlan && REJECTION_WORDS.test(lastHumanText)) {
-                  pendingPlan = false;
-                  isDone = true;
-                  flushStreamRender();
-                } else {
-                  pendingPlan = false;
-                  flushStreamRender();
-                  for (const call of finalMessage.tool_calls) {
-                    const tool = tools.find(t => t.name === call.name);
-                    let toolResultStr = '';
-                    
-                    if (tool) {
-                      try {
-                        const beforeSnapshot = call.name === 'execute_terminal_command'
-                          ? captureWorkspaceSnapshot()
-                          : null;
-                        const res = await (tool as any).invoke(call.args);
-                        const afterSnapshot = beforeSnapshot ? captureWorkspaceSnapshot() : null;
-                        const diffSummary = beforeSnapshot && afterSnapshot
-                          ? formatWorkspaceChanges(beforeSnapshot, afterSnapshot)
-                          : '';
-                        toolResultStr = formatToolResult(call.name, String(res), diffSummary, call.args);
-                      } catch (e: any) {
-                        toolResultStr = formatToolResult(call.name, `Error: ${e.message}`, '', call.args);
-                      }
-                    } else {
-                      toolResultStr = formatToolResult(call.name, `Error: Tool ${call.name} not found.`, '', call.args);
-                    }
-                    
-                    messages.push(new ToolMessage({
-                      content: toolResultStr,
-                      tool_call_id: call.id,
-                      name: call.name
-                    }));
-                    syncMessages();
-                  }
-                  render(true); // Loop back, show "thinking..."
+                pendingPlan = false;
+                flushStreamRender();
+                for (const call of finalMessage.tool_calls) {
+                  const tool = tools.find(t => t.name === call.name);
+                  let toolResultStr = '';
+                  if (tool) {
+                    try {
+                      const beforeSnapshot = call.name === 'execute_terminal_command' ? captureWorkspaceSnapshot() : null;
+                      const res = await (tool as any).invoke(call.args);
+                      const afterSnapshot = beforeSnapshot ? captureWorkspaceSnapshot() : null;
+                      const diffSummary = beforeSnapshot && afterSnapshot ? formatWorkspaceChanges(beforeSnapshot, afterSnapshot) : '';
+                      toolResultStr = formatToolResult(call.name, String(res), diffSummary, call.args);
+                    } catch (e: any) { toolResultStr = formatToolResult(call.name, `Error: ${e.message}`, '', call.args); }
+                  } else { toolResultStr = formatToolResult(call.name, `Error: Tool ${call.name} not found.`, '', call.args); }
+                  messages.push(new ToolMessage({ content: toolResultStr, tool_call_id: call.id, name: call.name }));
+                  syncMessages();
                 }
+                render(true);
               } else {
-                // Normal response — no plan, no tools
                 pendingPlan = false;
                 isDone = true;
                 flushStreamRender();
               }
             }
             
-            process.stdin.on('keypress', onKeypress); // Resume input
+            process.stdin.on('keypress', onKeypress);
           } catch (error: any) {
             messages.push(new SystemMessage(formatChatError(error)));
             syncMessages();
@@ -341,26 +404,32 @@ async function main() {
           
           render();
         } else if (key.name === 'up') {
-          chatUI.scrollUp(3);
+          if (pendingPlan) {
+            planMenuIndex = (planMenuIndex - 1 + PLAN_MENU_OPTIONS.length) % PLAN_MENU_OPTIONS.length;
+          } else {
+            chatUI.scrollUp(3);
+          }
           render();
         } else if (key.name === 'down') {
-          chatUI.scrollDown(3);
+          if (pendingPlan) {
+            planMenuIndex = (planMenuIndex + 1) % PLAN_MENU_OPTIONS.length;
+          } else {
+            chatUI.scrollDown(3);
+          }
           render();
         } else if (key.name === 'pageup') {
-          chatUI.scrollUp(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
+          if (!pendingPlan) chatUI.scrollUp(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
           render();
         } else if (key.name === 'pagedown') {
-          chatUI.scrollDown(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
+          if (!pendingPlan) chatUI.scrollDown(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
           render();
         } else if (key.name === 'end') {
-          chatUI.scrollToBottom();
+          if (!pendingPlan) chatUI.scrollToBottom();
           render();
         } else if (key.name === 'backspace') {
-          currentInput = currentInput.slice(0, -1);
-          render();
+          if (!pendingPlan) { currentInput = currentInput.slice(0, -1); render(); }
         } else if (str && !key.ctrl && !key.meta) {
-          currentInput += str;
-          render();
+          if (!pendingPlan) { currentInput += str; render(); }
         }
       };
 

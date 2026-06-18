@@ -151,7 +151,8 @@ export class ChatUI {
     telemetry: ChatTelemetry,
     model: string,
     isThinking: boolean = false,
-    pendingPlan: boolean = false
+    pendingPlan: boolean = false,
+    planMenuIndex: number = 0
   ) {
     // ── 1. Build the FULL content buffer ─────────────────────────────────────
     const lines: string[] = [];
@@ -326,6 +327,29 @@ export class ChatUI {
       push('');
     }
 
+    // ── Plan approval menu (rendered above separator when pending) ──────────
+    if (pendingPlan) {
+      const menuWidth = Math.min(this.W - 6, 60);
+      const border    = chalk.hex('#F5C400');
+      const menuItems = [
+        { label: '\u2705  Approve \u2014 execute the plan',    color: chalk.hex('#4ADE80') },
+        { label: '\u270f\ufe0f   Edit \u2014 request changes first', color: chalk.hex('#FBBF24') },
+        { label: '\u274c  Cancel \u2014 do not proceed',       color: chalk.hex('#F87171') },
+      ];
+
+      push('  ' + border('\u2500'.repeat(menuWidth + 2)));
+      menuItems.forEach((item, idx) => {
+        const isSelected = idx === planMenuIndex;
+        const cursor  = isSelected ? chalk.hex('#F5C400').bold(' \u25b6 ') : '   ';
+        const label   = isSelected
+          ? chalk.bgHex('#1a1200')(item.color.bold(item.label.padEnd(menuWidth - 1)))
+          : chalk.hex('#6B7280')(item.label.padEnd(menuWidth - 1));
+        push('  ' + border('\u2502') + cursor + label + border('\u2502'));
+      });
+      push('  ' + border('\u2500'.repeat(menuWidth + 2)));
+      push('');
+    }
+
     push(this.DIM('-'.repeat(this.W)));
 
     // ── 2. Compute viewport slice ─────────────────────────────────────────────
@@ -373,11 +397,11 @@ export class ChatUI {
     // ── 5. Prompt row ─────────────────────────────────────────────────────────
     const promptPrefix = '  ' + this.BRAND('>') + ' ';
     const scrollHint   = linesBelow > 0
-      ? this.MUTED('  [scrolled — End to return]')
+      ? this.MUTED('  [scrolled \u2014 End to return]')
       : '';
     const placeholder  = currentInput.length === 0
       ? (pendingPlan
-          ? chalk.hex('#4ADE80').bold('⏳ Awaiting approval — type y to proceed or n to cancel')
+          ? chalk.hex('#F5C400')('\u2191\u2193 choose  \u21b5 confirm')
           : this.MUTED('Type your message... (esc to menu)'))
       : '';
     process.stdout.write('\x1B[2K\r' + promptPrefix + chalk.white(currentInput) + placeholder + scrollHint);
