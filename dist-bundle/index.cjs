@@ -40,19 +40,6 @@ function stripAnsi(str) {
 function padVisible(str, width) {
   return str + " ".repeat(Math.max(0, width - stripAnsi(str).length));
 }
-function ansiRgb(fg, bg, text) {
-  const hexToRgb = (hex3) => {
-    const clean = hex3.replace("#", "");
-    return [
-      parseInt(clean.slice(0, 2), 16),
-      parseInt(clean.slice(2, 4), 16),
-      parseInt(clean.slice(4, 6), 16)
-    ];
-  };
-  const [fr, fgGreen, fb] = hexToRgb(fg);
-  const [br, bgGreen, bb] = hexToRgb(bg);
-  return `\x1B[38;2;${fr};${fgGreen};${fb}m\x1B[48;2;${br};${bgGreen};${bb}m${text}\x1B[0m`;
-}
 function wrapText(text, maxWidth, indent) {
   const words = text.split(" ");
   const lines = [];
@@ -68,33 +55,38 @@ function wrapText(text, maxWidth, indent) {
   if (currentLine) lines.push(" ".repeat(indent) + currentLine.trim());
   return lines;
 }
-function renderMarkdownWithOttoStyles(content, width) {
-  class CustomRenderer extends import_marked_terminal2.default {
-    code(codeStr, language, isEscaped) {
-      if (language === "diff") {
-        let output = "\n";
-        const diffWidth = Math.max(48, Math.min(width, 96));
-        const renderLine = (line, fg, bg, barBg) => {
-          const body = padVisible(` ${line}`, diffWidth - 2);
-          return ansiRgb(barBg, barBg, "  ") + ansiRgb(fg, bg, body);
-        };
-        codeStr.split("\n").forEach((line) => {
-          if (line.startsWith("+++") || line.startsWith("---")) {
-            output += ansiRgb("#A3AAB8", "#111827", padVisible(` ${line}`, diffWidth)) + "\n";
-          } else if (line.startsWith("@@")) {
-            output += ansiRgb("#56CFE1", "#102A38", padVisible(` ${line}`, diffWidth)) + "\n";
-          } else if (line.startsWith("+")) {
-            output += renderLine(line, "#8EF0B4", "#14351F", "#1F9D55") + "\n";
-          } else if (line.startsWith("-")) {
-            output += renderLine(line, "#FF9AA8", "#3A151A", "#E5484D") + "\n";
-          } else {
-            output += ansiRgb("#8B93A7", "#0B1020", padVisible(` ${line}`, diffWidth)) + "\n";
-          }
-        });
-        return output + "\n";
-      }
-      return super.code(codeStr, language, isEscaped);
+function renderDiffBlock(codeStr, diffWidth) {
+  let output = "\n";
+  const bar = (bg, fg) => import_chalk9.default.bgHex(bg).hex(fg)("  ");
+  const row = (bg, fg, text) => import_chalk9.default.bgHex(bg).hex(fg)(padVisible(` ${text}`, diffWidth - 2));
+  codeStr.split("\n").forEach((line) => {
+    if (line.startsWith("+++") || line.startsWith("---")) {
+      output += import_chalk9.default.bgHex("#1E293B").hex("#CBD5E1")(padVisible(` ${line}`, diffWidth)) + "\n";
+    } else if (line.startsWith("@@")) {
+      output += import_chalk9.default.bgHex("#0C4A6E").hex("#67E8F9")(padVisible(` ${line}`, diffWidth)) + "\n";
+    } else if (line.startsWith("+")) {
+      output += bar("#16A34A", "#052e16") + row("#15803D", "#F0FDF4", line) + "\n";
+    } else if (line.startsWith("-")) {
+      output += bar("#DC2626", "#450a0a") + row("#B91C1C", "#FFF1F2", line) + "\n";
+    } else {
+      output += import_chalk9.default.bgHex("#0F172A").hex("#94A3B8")(padVisible(` ${line}`, diffWidth)) + "\n";
     }
+  });
+  return output + "\n";
+}
+function renderMarkdownWithOttoStyles(content, width) {
+  const diffWidth = Math.max(48, Math.min(width, 96));
+  const placeholders = [];
+  const withPlaceholders = content.replace(
+    /```diff\n([\s\S]*?)```/g,
+    (_match, codeStr) => {
+      const rendered = renderDiffBlock(codeStr, diffWidth);
+      const key = `\0DIFF${placeholders.length}\0`;
+      placeholders.push(rendered);
+      return key;
+    }
+  );
+  class CustomRenderer extends import_marked_terminal2.default {
   }
   import_marked2.marked.setOptions({
     renderer: new CustomRenderer({
@@ -103,7 +95,8 @@ function renderMarkdownWithOttoStyles(content, width) {
       codespan: import_chalk9.default.hex("#F5C400")
     })
   });
-  return import_marked2.marked.parse(content);
+  const parsed = import_marked2.marked.parse(withPlaceholders);
+  return parsed.replace(/\u0000DIFF(\d+)\u0000/g, (_m, idx) => placeholders[Number(idx)]);
 }
 var import_chalk9, import_marked2, import_marked_terminal2, ChatUI;
 var init_chat = __esm({
@@ -114,96 +107,207 @@ var init_chat = __esm({
     import_marked_terminal2 = __toESM(require("marked-terminal"), 1);
     ChatUI = class {
       W = 72;
+      lastLineCount = 0;
+      // ── Internal scroller state ───────────────────────────────────────────────
+      // scrollOffset = 0  → show bottom (most recent) of content
+      // scrollOffset = N  → show content N lines above the bottom
+      scrollOffset = 0;
+      totalContentLines = 0;
       BRAND = import_chalk9.default.hex("#F5C400");
       DIM = import_chalk9.default.hex("#374151");
       MUTED = import_chalk9.default.hex("#6B7280");
       AI_TAG = this.BRAND.bold;
-      render(messages, currentInput, telemetry, model, isThinking = false) {
-        process.stdout.write("\x1B[H\x1B[J");
-        console.log(this.DIM("-".repeat(this.W)));
+      /** Scroll up (toward older messages) by n lines */
+      scrollUp(n = 3) {
+        const viewH = Math.max(1, (process.stdout.rows || 24) - 1);
+        const max = Math.max(0, this.totalContentLines - viewH);
+        this.scrollOffset = Math.min(this.scrollOffset + n, max);
+      }
+      /** Scroll down (toward newer messages) by n lines */
+      scrollDown(n = 3) {
+        this.scrollOffset = Math.max(0, this.scrollOffset - n);
+      }
+      /** Snap to the very bottom (newest content) */
+      scrollToBottom() {
+        this.scrollOffset = 0;
+      }
+      /** True when the viewport is already pinned to the bottom */
+      isAtBottom() {
+        return this.scrollOffset === 0;
+      }
+      render(messages, currentInput, telemetry, model, isThinking = false, pendingPlan = false, planMenuIndex = 0) {
+        const lines = [];
+        const push = (line = "") => lines.push(line);
+        push(this.DIM("-".repeat(this.W)));
         const leftHeader = "  " + this.BRAND("OTTO") + "  ";
         const ctxPercent = telemetry.ctxMax > 0 ? Math.round(Math.min(telemetry.ctxUsed / telemetry.ctxMax, 1) * 100) : 0;
         const ctxSummary = telemetry.showContextBar ? `ctx: ${telemetry.ctxUsed}/${telemetry.ctxMax} (${ctxPercent}%)` : "ctx: hidden";
         const rightHeader = this.MUTED(`${ctxSummary}  |  ram: ${telemetry.ramMB}mb  |  ${model}`) + "  ";
         const spaces = Math.max(0, this.W - stripAnsi(leftHeader).length - stripAnsi(rightHeader).length);
-        console.log(leftHeader + " ".repeat(spaces) + rightHeader);
-        console.log(this.DIM("-".repeat(this.W)));
-        console.log("");
+        push(leftHeader + " ".repeat(spaces) + rightHeader);
+        push(this.DIM("-".repeat(this.W)));
+        push("");
         messages.forEach((msg) => {
           if (msg.role === "system") {
-            console.log("  " + import_chalk9.default.bgHex("#374151").white(" SYSTEM ") + " " + this.MUTED(msg.content));
-            console.log("");
+            push("  " + import_chalk9.default.bgHex("#374151").white(" SYSTEM ") + " " + this.MUTED(msg.content));
+            push("");
             return;
           }
           if (msg.role === "tool") {
-            console.log("  " + import_chalk9.default.bgHex("#1F2937").white.bold(" TOOL "));
+            push("  " + import_chalk9.default.bgHex("#1F2937").white.bold(" TOOL "));
             const rendered = renderMarkdownWithOttoStyles(msg.content, this.W - 4);
-            rendered.trim().split("\n").forEach((line) => {
-              console.log("  " + line);
-            });
-            console.log("");
+            rendered.trim().split("\n").forEach((line) => push("  " + line));
+            push("");
             return;
           }
           const header = msg.role === "user" ? "  " + import_chalk9.default.bgHex("#374151").white.bold(" YOU ") : this.AI_TAG("  O.T.T.O");
-          console.log(header);
+          push(header);
           let rawContent = msg.content;
           const thinkMatch = rawContent.match(/<think>([\s\S]*?)(?:<\/think>|$)/);
           if (thinkMatch) {
             const thinkStr = thinkMatch[1].trim();
             rawContent = rawContent.replace(/<think>[\s\S]*?(?:<\/think>|$)/, "").trim();
-            console.log("  " + this.MUTED("|-- ") + import_chalk9.default.hex("#A78BFA")("Reasoning Process"));
+            push("  " + this.MUTED("|-- ") + import_chalk9.default.hex("#A78BFA")("Reasoning Process"));
             thinkStr.split("\n").forEach((line) => {
               const formattedLine = line.trim().replace(/^(#{1,6})\s+(.*)$/g, (_m, _p1, p2) => import_chalk9.default.white.bold(p2)).replace(/^(\d+\.)\s+(.*)$/g, (_m, p1, p2) => import_chalk9.default.white.bold(p1) + " " + p2).replace(/^([*-])\s+(.*)$/g, (_m, p1, p2) => import_chalk9.default.white.bold(p1) + " " + p2).replace(/\*\*(.*?)\*\*/g, (_m, p1) => import_chalk9.default.white.bold(p1)).replace(/\*(.*?)\*/g, (_m, p1) => import_chalk9.default.white.italic(p1)).replace(/`(.*?)`/g, (_m, p1) => import_chalk9.default.hex("#F5C400")(p1));
               const wrapped = wrapText(formattedLine, this.W - 5, 0);
-              wrapped.forEach((wl) => {
-                console.log("  " + this.MUTED("| ") + this.MUTED(wl));
-              });
+              wrapped.forEach((wl) => push("  " + this.MUTED("| ") + this.MUTED(wl)));
             });
             if (msg.content.includes("<think>") && !msg.content.includes("</think>")) {
-              console.log("  " + this.MUTED("| ") + import_chalk9.default.hex("#A78BFA")("..."));
+              push("  " + this.MUTED("| ") + import_chalk9.default.hex("#A78BFA")("..."));
             }
-            console.log("  " + this.MUTED("`--"));
-            console.log("");
+            push("  " + this.MUTED("`--"));
+            push("");
           }
           if (rawContent.trim()) {
             if (msg.role === "user") {
-              const lines = wrapText(rawContent, this.W, 2);
-              lines.forEach((line) => console.log(import_chalk9.default.white(line)));
+              const wrappedLines = wrapText(rawContent, this.W, 2);
+              wrappedLines.forEach((line) => push(import_chalk9.default.white(line)));
             } else {
-              let processedContent = rawContent;
-              processedContent = processedContent.replace(/^[*\s]*●\s*([A-Za-z_]+)\(([^)]*)\)/gm, (_match, tool2, args) => {
-                return import_chalk9.default.dim("/- ") + import_chalk9.default.white.bold(tool2) + import_chalk9.default.dim("(" + args + ")");
-              });
-              processedContent = processedContent.replace(/^[*\s]*└\s*(.*)/gm, (_match, details) => {
-                return import_chalk9.default.dim("\\- " + details);
-              });
-              const rendered = renderMarkdownWithOttoStyles(processedContent, this.W - 4);
-              rendered.trim().split("\n").forEach((line) => {
-                console.log("  " + line);
-              });
+              const PLAN_RE = /<!--\s*PLAN_START\s*-->([\s\S]*?)<!--\s*PLAN_END\s*-->/;
+              const planMatch = rawContent.match(PLAN_RE);
+              if (planMatch) {
+                const beforePlan = rawContent.slice(0, rawContent.indexOf("<!-- PLAN_START")).trim();
+                if (beforePlan) {
+                  const rendered = renderMarkdownWithOttoStyles(beforePlan, this.W - 4);
+                  rendered.trim().split("\n").forEach((line) => push("  " + line));
+                  push("");
+                }
+                const planContent = planMatch[1].trim();
+                const planWidth = Math.min(this.W - 6, 86);
+                const boxBorder = import_chalk9.default.hex("#F5C400");
+                const stepColor = import_chalk9.default.hex("#22D3EE");
+                const fileColor = import_chalk9.default.hex("#86EFAC");
+                const boxRow = (styledContent, bgHex) => {
+                  const visLen = stripAnsi(styledContent).length;
+                  const pad = " ".repeat(Math.max(0, planWidth - visLen));
+                  const inner = bgHex ? import_chalk9.default.bgHex(bgHex)(styledContent + pad) : styledContent + pad;
+                  return "  " + boxBorder("\u2551") + inner + boxBorder("\u2551");
+                };
+                push("  " + boxBorder("\u2554" + "\u2550".repeat(planWidth) + "\u2557"));
+                push(boxRow(import_chalk9.default.hex("#F5C400").bold(" \u{1F4CB} IMPLEMENTATION PLAN "), "#1a1200"));
+                push("  " + boxBorder("\u2560" + "\u2550".repeat(planWidth) + "\u2563"));
+                planContent.split("\n").forEach((line) => {
+                  const stripped = line.trim();
+                  if (!stripped || stripped.startsWith("##")) return;
+                  let styledText;
+                  if (/^\d+\./.test(stripped)) {
+                    styledText = stepColor(" " + stripped);
+                  } else if (stripped.startsWith("- `") || stripped.startsWith("- \\`")) {
+                    styledText = " " + fileColor(stripped);
+                  } else if (/^\*\*/.test(stripped)) {
+                    styledText = " " + import_chalk9.default.white.bold(stripped.replace(/\*\*/g, ""));
+                  } else {
+                    styledText = " " + import_chalk9.default.hex("#D1D5DB")(stripped);
+                  }
+                  const visibleText = stripAnsi(styledText);
+                  if (visibleText.length <= planWidth) {
+                    push(boxRow(styledText));
+                  } else {
+                    wrapText(visibleText.trim(), planWidth - 2, 0).forEach((wl) => {
+                      push(boxRow(" " + import_chalk9.default.hex("#D1D5DB")(wl.trim())));
+                    });
+                  }
+                });
+                push("  " + boxBorder("\u2560" + "\u2550".repeat(planWidth) + "\u2563"));
+                const footerText = import_chalk9.default.hex("#4ADE80").bold(" \u2705 y to approve") + import_chalk9.default.hex("#6B7280")("  |  ") + import_chalk9.default.hex("#F87171").bold("\u274C n to cancel");
+                push(boxRow(footerText, "#0c1a0c"));
+                push("  " + boxBorder("\u255A" + "\u2550".repeat(planWidth) + "\u255D"));
+                push("");
+                const afterPlan = rawContent.slice(rawContent.indexOf("<!-- PLAN_END -->") + "<!-- PLAN_END -->".length).trim();
+                if (afterPlan) {
+                  const rendered = renderMarkdownWithOttoStyles(afterPlan, this.W - 4);
+                  rendered.trim().split("\n").forEach((line) => push("  " + line));
+                }
+              } else {
+                let processedContent = rawContent;
+                processedContent = processedContent.replace(/^[*\s]*\u25cf\s*([A-Za-z_]+)\(([^)]*)\)/gm, (_match, tool2, args) => {
+                  return import_chalk9.default.dim("/- ") + import_chalk9.default.white.bold(tool2) + import_chalk9.default.dim("(" + args + ")");
+                });
+                processedContent = processedContent.replace(/^[*\s]*\u2514\s*(.*)/gm, (_match, details) => {
+                  return import_chalk9.default.dim("\\- " + details);
+                });
+                const rendered = renderMarkdownWithOttoStyles(processedContent, this.W - 4);
+                rendered.trim().split("\n").forEach((line) => push("  " + line));
+              }
             }
           }
-          console.log("");
+          push("");
         });
         if (isThinking) {
           const dots = ".".repeat(Math.floor(Date.now() / 350) % 3 + 1);
-          console.log(this.AI_TAG("  O.T.T.O"));
-          console.log("  " + import_chalk9.default.hex("#A78BFA")(`thinking${dots}`));
-          console.log("");
+          push(this.AI_TAG("  O.T.T.O"));
+          push("  " + import_chalk9.default.hex("#A78BFA")(`thinking${dots}`));
+          push("");
         }
-        const terminalHeight = process.stdout.rows || 24;
-        let usedLines = 5;
-        messages.forEach((m) => {
-          usedLines += 3 + Math.ceil(m.content.length / this.W);
-          if (m.content.includes("```")) usedLines += 2;
-        });
-        if (isThinking) usedLines += 3;
-        const emptyLines = Math.max(0, terminalHeight - usedLines - 4);
-        console.log("\n".repeat(emptyLines));
-        console.log(this.DIM("-".repeat(this.W)));
+        if (pendingPlan) {
+          const menuWidth = Math.min(this.W - 6, 60);
+          const border = import_chalk9.default.hex("#F5C400");
+          const menuItems = [
+            { label: "\u2705  Approve \u2014 execute the plan", color: import_chalk9.default.hex("#4ADE80") },
+            { label: "\u270F\uFE0F   Edit \u2014 request changes first", color: import_chalk9.default.hex("#FBBF24") },
+            { label: "\u274C  Cancel \u2014 do not proceed", color: import_chalk9.default.hex("#F87171") }
+          ];
+          push("  " + border("\u2500".repeat(menuWidth + 2)));
+          menuItems.forEach((item, idx) => {
+            const isSelected = idx === planMenuIndex;
+            const cursor = isSelected ? import_chalk9.default.hex("#F5C400").bold(" \u25B6 ") : "   ";
+            const label = isSelected ? import_chalk9.default.bgHex("#1a1200")(item.color.bold(item.label.padEnd(menuWidth - 1))) : import_chalk9.default.hex("#6B7280")(item.label.padEnd(menuWidth - 1));
+            push("  " + border("\u2502") + cursor + label + border("\u2502"));
+          });
+          push("  " + border("\u2500".repeat(menuWidth + 2)));
+          push("");
+        }
+        push(this.DIM("-".repeat(this.W)));
+        this.totalContentLines = lines.length;
+        const viewH = Math.max(1, (process.stdout.rows || 24) - 1);
+        const maxOffset = Math.max(0, lines.length - viewH);
+        this.scrollOffset = Math.min(this.scrollOffset, maxOffset);
+        const viewStart = maxOffset - this.scrollOffset;
+        const visible = lines.slice(viewStart, viewStart + viewH);
+        const linesAbove = viewStart;
+        const linesBelow = this.scrollOffset;
+        if (linesAbove > 0 && visible.length > 0) {
+          visible[0] = this.MUTED(
+            `  \u2191 ${linesAbove} line${linesAbove !== 1 ? "s" : ""} above` + import_chalk9.default.hex("#4B5563")("  (\u2191/\u2193 scroll  PgUp/PgDn page  End to snap)")
+          );
+        }
+        if (linesBelow > 0 && visible.length > 1) {
+          visible[visible.length - 1] = this.MUTED(`  \u2193 ${linesBelow} line${linesBelow !== 1 ? "s" : ""} below`);
+        }
+        process.stdout.write("\x1B[H");
+        for (const line of visible) {
+          process.stdout.write(line + "\x1B[K\n");
+        }
+        const leftover = this.lastLineCount - visible.length;
+        for (let i = 0; i < leftover; i++) {
+          process.stdout.write("\x1B[2K\n");
+        }
+        this.lastLineCount = visible.length;
         const promptPrefix = "  " + this.BRAND(">") + " ";
-        const placeholder = currentInput.length === 0 ? this.MUTED("Type your message... (esc to menu)") : "";
-        process.stdout.write(promptPrefix + import_chalk9.default.white(currentInput) + placeholder);
+        const scrollHint = linesBelow > 0 ? this.MUTED("  [scrolled \u2014 End to return]") : "";
+        const placeholder = currentInput.length === 0 ? pendingPlan ? import_chalk9.default.hex("#F5C400")("\u2191\u2193 choose  \u21B5 confirm") : this.MUTED("Type your message... (esc to menu)") : "";
+        process.stdout.write("\x1B[2K\r" + promptPrefix + import_chalk9.default.white(currentInput) + placeholder + scrollHint);
       }
     };
   }
@@ -314,7 +418,7 @@ function getPrimaryApiKey(entry) {
 var Configurator = {
   normalizeConfig: (config2) => {
     const next = JSON.parse(JSON.stringify(config2));
-    ["groq", "openai", "anthropic", "ollama"].forEach((provider) => {
+    ["groq", "openai", "anthropic", "ollama", "gemini"].forEach((provider) => {
       const entry = getProviderEntry(next, provider);
       if (!entry) return;
       entry.models = normalizeModels(entry.models);
@@ -364,6 +468,7 @@ var Configurator = {
         { name: "Groq", value: "groq" },
         { name: "OpenAI", value: "openai" },
         { name: "Anthropic", value: "anthropic" },
+        { name: "Gemini", value: "gemini" },
         { name: "Ollama (Local)", value: "ollama" }
       ]
     });
@@ -371,6 +476,13 @@ var Configurator = {
     if (primaryProvider === "groq") {
       const apiKey = await (0, import_prompts.input)({ message: "Enter your Groq API Key:" });
       providers.groq = { apiKey, frequency_penalty: 0 };
+    } else if (primaryProvider === "gemini") {
+      const apiKey = await (0, import_prompts.input)({ message: "Enter your Gemini API Key:" });
+      providers.gemini = { apiKey };
+    } else if (primaryProvider === "ollama") {
+      const baseUrl = await (0, import_prompts.input)({ message: "Enter your Ollama base URL (e.g. http://localhost:11434):", default: "http://localhost:11434" });
+      const model = await (0, import_prompts.input)({ message: "Enter your Ollama model name (e.g. llama3):" });
+      providers.ollama = { baseUrl, model, num_ctx: 4096 };
     }
     const securityMode = await (0, import_prompts.select)({
       message: "Select Security Mode:",
@@ -634,6 +746,36 @@ var Configurator = {
       return config2;
     }
     return null;
+  },
+  updateUsername: (username) => {
+    const config2 = Configurator.loadConfig();
+    if (config2) {
+      if (!config2.profile) config2.profile = {};
+      config2.profile.username = username.trim();
+      Configurator.saveConfig(config2);
+      return config2;
+    }
+    return null;
+  },
+  getUsername: (config2) => {
+    return config2.profile?.username?.trim() || "";
+  },
+  /** Returns stored max or a CPU-healthy default: min(20, max(5, cores*2)) */
+  getMaxThreads: (config2) => {
+    if (typeof config2.defaults.maxThreads === "number" && config2.defaults.maxThreads > 0) {
+      return config2.defaults.maxThreads;
+    }
+    const cores = import_os.default.cpus().length;
+    return Math.min(20, Math.max(5, cores * 2));
+  },
+  updateMaxThreads: (n) => {
+    const config2 = Configurator.loadConfig();
+    if (config2) {
+      config2.defaults.maxThreads = Math.max(1, Math.round(n));
+      Configurator.saveConfig(config2);
+      return config2;
+    }
+    return null;
   }
 };
 
@@ -642,10 +784,10 @@ var import_os3 = __toESM(require("os"), 1);
 var import_messages = require("@langchain/core/messages");
 
 // src/db/checkpoint.ts
-var import_better_sqlite3 = __toESM(require("better-sqlite3"), 1);
-var import_langgraph_checkpoint_sqlite = require("@langchain/langgraph-checkpoint-sqlite");
 var import_path2 = __toESM(require("path"), 1);
 var import_os2 = __toESM(require("os"), 1);
+var import_better_sqlite3 = __toESM(require("better-sqlite3"), 1);
+var import_langgraph_checkpoint_sqlite = require("@langchain/langgraph-checkpoint-sqlite");
 var DBManager = class {
   db;
   saver;
@@ -668,6 +810,12 @@ var DBManager = class {
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS otto_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT
+      )
+    `);
     this.ensureThreadColumns();
     this.saver = new import_langgraph_checkpoint_sqlite.SqliteSaver(this.db);
   }
@@ -688,10 +836,20 @@ var DBManager = class {
   async setup() {
     await this.saver.setup();
   }
+  setLastActiveThread(id) {
+    this.db.prepare(`
+      INSERT INTO otto_meta (key, value) VALUES ('last_active_thread', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(id);
+  }
+  getLastActiveThread() {
+    const row = this.db.prepare(`SELECT value FROM otto_meta WHERE key = 'last_active_thread'`).get();
+    return row?.value || null;
+  }
   registerThread(id, displayName) {
     const stmt = this.db.prepare(`
       INSERT INTO otto_threads (id, display_name) VALUES (?, COALESCE(?, 'New Chat'))
-      ON CONFLICT(id) DO UPDATE SET
+      ON CONFLICT(id) DO UPDATE SET 
         display_name = COALESCE(?, otto_threads.display_name),
         updated_at = CURRENT_TIMESTAMP
     `);
@@ -699,12 +857,12 @@ var DBManager = class {
   }
   listThreads() {
     const stmt = this.db.prepare(`
-      SELECT
-        id,
-        COALESCE(NULLIF(TRIM(display_name), ''), 'New Chat') AS display_name,
-        created_at,
-        updated_at
-      FROM otto_threads
+      SELECT 
+        id, 
+        COALESCE(NULLIF(TRIM(display_name), ''), 'New Chat') AS display_name, 
+        created_at, 
+        updated_at 
+      FROM otto_threads 
       ORDER BY updated_at DESC
     `);
     return stmt.all().map((row) => ({
@@ -716,12 +874,12 @@ var DBManager = class {
   }
   getThread(id) {
     const stmt = this.db.prepare(`
-      SELECT
-        id,
-        COALESCE(NULLIF(TRIM(display_name), ''), 'New Chat') AS display_name,
-        created_at,
-        updated_at
-      FROM otto_threads
+      SELECT 
+        id, 
+        COALESCE(NULLIF(TRIM(display_name), ''), 'New Chat') AS display_name, 
+        created_at, 
+        updated_at 
+      FROM otto_threads 
       WHERE id = ?
     `);
     const row = stmt.get(id);
@@ -735,8 +893,8 @@ var DBManager = class {
   }
   updateThreadName(id, displayName) {
     this.db.prepare(`
-      UPDATE otto_threads
-      SET display_name = ?, updated_at = CURRENT_TIMESTAMP
+      UPDATE otto_threads 
+      SET display_name = ?, updated_at = CURRENT_TIMESTAMP 
       WHERE id = ?
     `).run(displayName, id);
   }
@@ -751,8 +909,8 @@ var DBManager = class {
   }
   loadThreadMessages(id) {
     const row = this.db.prepare(`
-      SELECT messages_json
-      FROM otto_thread_state
+      SELECT messages_json 
+      FROM otto_thread_state 
       WHERE thread_id = ?
     `).get(id);
     if (!row?.messages_json) return [];
@@ -801,13 +959,22 @@ var ChatSession = class _ChatSession {
   threadMessages = /* @__PURE__ */ new Map();
   static DEFAULT_THREAD_NAME = "New Chat";
   constructor() {
-    this.threadId = `session-${Math.random().toString(36).substring(2, 8)}`;
-    this.threadName = _ChatSession.DEFAULT_THREAD_NAME;
     this.username = import_os3.default.userInfo().username;
     this.hostname = import_os3.default.hostname();
-    dbManager.registerThread(this.threadId, this.threadName);
-    this.threadMessages.set(this.threadId, []);
-    dbManager.saveThreadMessages(this.threadId, []);
+    const lastId = dbManager.getLastActiveThread();
+    if (lastId) {
+      this.threadId = lastId;
+      const thread = dbManager.getThread(lastId);
+      this.threadName = thread?.displayName ?? _ChatSession.DEFAULT_THREAD_NAME;
+      this.threadMessages.set(this.threadId, this.deserializeMessages(dbManager.loadThreadMessages(this.threadId)));
+    } else {
+      this.threadId = `session-${Math.random().toString(36).substring(2, 8)}`;
+      this.threadName = _ChatSession.DEFAULT_THREAD_NAME;
+      dbManager.registerThread(this.threadId, this.threadName);
+      this.threadMessages.set(this.threadId, []);
+      dbManager.saveThreadMessages(this.threadId, []);
+      dbManager.setLastActiveThread(this.threadId);
+    }
   }
   switchThread(id) {
     this.persistThread(this.threadId);
@@ -815,6 +982,7 @@ var ChatSession = class _ChatSession {
     const thread = dbManager.getThread(this.threadId);
     this.threadName = thread?.displayName ?? _ChatSession.DEFAULT_THREAD_NAME;
     dbManager.registerThread(this.threadId, this.threadName);
+    dbManager.setLastActiveThread(this.threadId);
     this.threadMessages.set(this.threadId, this.deserializeMessages(dbManager.loadThreadMessages(this.threadId)));
     ui.success(`Switched to thread: ${this.threadName}`);
   }
@@ -823,6 +991,7 @@ var ChatSession = class _ChatSession {
     this.threadId = `session-${Math.random().toString(36).substring(2, 8)}`;
     this.threadName = displayName;
     dbManager.registerThread(this.threadId, this.threadName);
+    dbManager.setLastActiveThread(this.threadId);
     this.threadMessages.set(this.threadId, []);
     dbManager.saveThreadMessages(this.threadId, []);
   }
@@ -960,6 +1129,8 @@ var chatSession = new ChatSession();
 var import_groq = require("@langchain/groq");
 var import_openai = require("@langchain/openai");
 var import_anthropic = require("@langchain/anthropic");
+var import_google_genai = require("@langchain/google-genai");
+var import_ollama = require("@langchain/ollama");
 
 // src/llm/quota.ts
 var QuotaManager = class {
@@ -15537,7 +15708,7 @@ var Executor = class {
       ui.warning(`[Full Access Mode] Executing ${cmd} autonomously.`);
     }
     return new Promise((resolve, reject) => {
-      const child = (0, import_child_process.spawn)(cmd, args, { shell: false, stdio: ["ignore", "pipe", "pipe"], cwd: process.cwd() });
+      const child = (0, import_child_process.spawn)(cmd, args, { shell: process.platform === "win32", stdio: ["ignore", "pipe", "pipe"], cwd: process.cwd() });
       let stdout = "";
       let stderr = "";
       child.stdout.on("data", (data) => stdout += data.toString());
@@ -15850,7 +16021,7 @@ var writeFile = (0, import_tools.tool)(
     description: "Creates or overwrites a workspace file with exact content. Use this for all code edits and file creation instead of terminal redirection, echo, Set-Content, heredocs, or shell metacharacters. Return concise results; the UI will show the diff.",
     schema: external_exports.object({
       filePath: external_exports.string().describe("Workspace-relative file path, for example print_primes.cpp."),
-      content: external_exports.string().describe("The complete file content to write.")
+      content: external_exports.union([external_exports.string(), external_exports.any()]).transform((v) => typeof v === "string" ? v : JSON.stringify(v, null, 2)).describe("The complete file content to write as a string.")
     })
   }
 );
@@ -15998,7 +16169,7 @@ var replaceFileLines = (0, import_tools.tool)(
       filePath: external_exports.string().describe("Workspace-relative file path, for example src/index.ts."),
       startLine: external_exports.number().int().min(1).describe("1-based first line to replace."),
       endLine: external_exports.number().int().min(1).describe("1-based last line to replace, inclusive."),
-      content: external_exports.string().describe("Replacement text for the range. Use an empty string to delete the range.")
+      content: external_exports.union([external_exports.string(), external_exports.any()]).transform((v) => typeof v === "string" ? v : JSON.stringify(v, null, 2)).describe("Replacement text for the range. Use an empty string to delete the range.")
     })
   }
 );
@@ -16129,6 +16300,25 @@ var ProviderEngine = class {
           maxRetries: 0
         }).bindTools(tools);
         ui.info(`Switched to Anthropic - ${model}`);
+      } else if (providerName === "gemini" && Configurator.getActiveApiKey(this.config, "gemini")) {
+        const model = Configurator.getActiveModel(this.config, "gemini") ?? "gemini-1.5-pro";
+        const apiKey = Configurator.getActiveApiKey(this.config, "gemini");
+        this.primaryModel = new import_google_genai.ChatGoogleGenerativeAI({
+          apiKey,
+          model,
+          maxRetries: 0
+        }).bindTools(tools);
+        ui.info(`Switched to Gemini - ${model}`);
+      } else if (providerName === "ollama") {
+        const entry = this.config.providers.ollama;
+        const model = entry?.activeModel ?? entry?.model ?? "llama3";
+        const baseUrl = entry?.baseUrl ?? "http://localhost:11434";
+        this.primaryModel = new import_ollama.ChatOllama({
+          baseUrl,
+          model,
+          maxRetries: 0
+        }).bindTools(tools);
+        ui.info(`Switched to Ollama - ${model}`);
       } else {
         ui.warning(`Provider ${providerName} is not fully configured or supported yet.`);
         this.primaryModel = null;
@@ -16250,6 +16440,19 @@ var MemoryManager = class {
     return {
       max: this.C_max,
       filled: this.lastContextSize,
+      compressed: this.totalCompressedTokens
+    };
+  }
+  getBudgetStatsForMessages(messages, systemPrompt = "") {
+    const conversational = messages.filter((message) => message._getType?.() !== "system");
+    const systemTokens = systemPrompt ? this.estimateTokens(systemPrompt) : 0;
+    const filled = conversational.reduce((acc, message) => {
+      const content = message?.content?.toString?.() ?? "";
+      return acc + this.estimateTokens(content);
+    }, systemTokens);
+    return {
+      max: this.C_max,
+      filled,
       compressed: this.totalCompressedTokens
     };
   }
@@ -16417,15 +16620,73 @@ These are the core rules the agent must follow.
     const persistedRules = import_fs4.default.readFileSync(this.rulesPath, "utf-8");
     return `${persistedRules}
 
-Runtime coding UI rules:
-1. Before editing existing code, use search_code to find the relevant function/class/text, then use read_file_lines to inspect only the needed numbered range.
-2. For small edits, use replace_file_lines with the exact line range. For new files or full rewrites, use write_file.
-3. Do not use terminal redirection, echo, heredocs, Set-Content, Out-File, or shell metacharacters to write code.
-4. Use read_file only when a whole file is genuinely needed; prefer read_file_lines for performance and context hygiene.
-5. Use list_files when inspecting folder structure.
-6. Use execute_terminal_command only for commands like compiling, running tests, listing files, or reading command output, and stay inside the current workspace directory.
-7. Keep chat responses concise. Do not paste full source files into chat after writing them; let the diff UI show file changes.
-8. After editing files, summarize what changed in one or two short sentences.`;
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+SECTION A \u2014 CODING RULES (always apply)
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+A1. Before editing existing code, use search_code to locate the relevant function/class, then use read_file_lines to inspect only the needed range.
+A2. For small targeted edits, use replace_file_lines with the exact line range. For new files or full rewrites, use write_file.
+A3. Never use terminal redirection, heredocs, Set-Content, Out-File, or shell metacharacters to write code \u2014 use the write_file or replace_file_lines tools.
+A4. Use read_file only when a whole file is genuinely needed; prefer read_file_lines for performance.
+A5. Use list_files to inspect folder structure before making assumptions about project layout.
+A6. Use execute_terminal_command only for compiling, running tests, or reading command output. Always stay inside the current workspace.
+A7. Keep chat responses concise. Do not paste full source files into chat; the diff UI shows file changes.
+A8. After editing files, summarize what changed in one or two short sentences.
+A9. Never leave TODO comments or placeholder logic \u2014 always implement fully.
+A10. When adding a new feature to an existing file, read the surrounding code first to match style and patterns.
+
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+SECTION B \u2014 PLANNING MODE (CRITICAL \u2014 read carefully)
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+
+WHEN TO PLAN (you MUST produce a plan before doing ANY tool calls when):
+- The request involves 3 or more files being modified or created
+- The request involves a new module, feature, or architectural component
+- The request involves a refactor, migration, or significant restructuring
+- The request involves a multi-step workflow (e.g. "build X, then wire it into Y, then test")
+- The user prefixes their message with /plan
+
+WHEN NOT TO PLAN (act immediately, no plan needed):
+- Single-file bug fixes, typo corrections, or small additions (<30 lines)
+- Answering questions or explaining code
+- Running a command or reading a file
+- Simple config changes
+
+HOW TO PRODUCE A PLAN:
+Output your plan using EXACTLY this format (do not deviate from the delimiters):
+
+<!-- PLAN_START -->
+## \u{1F4CB} Implementation Plan
+
+**Summary:** One sentence describing the goal.
+
+**Files to modify:**
+- \`path/to/file.ts\` \u2014 what changes and why
+- \`path/to/new-file.ts\` [NEW] \u2014 what it will contain
+
+**Steps:**
+1. First thing to do
+2. Second thing to do
+3. Third thing to do
+
+**Estimated scope:** ~N lines changed across M files
+<!-- PLAN_END -->
+
+*Awaiting your approval \u2014 reply **y** to proceed or **n** to cancel.*
+
+CRITICAL RULES AFTER OUTPUTTING A PLAN:
+- After outputting the plan block, STOP. Do NOT use any tools.
+- Wait for the user to reply. Their reply will come as a new human message.
+- If they reply with "y", "yes", "approve", "ok", "proceed", "go", or similar \u2192 execute the plan step-by-step.
+- If they reply with "n", "no", "cancel", "stop", "reject" \u2192 acknowledge and do nothing.
+- If they suggest changes or ask questions \u2192 update the plan and show it again before proceeding.
+
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+SECTION C \u2014 EXECUTION QUALITY
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+C1. Execute plans step-by-step and tell the user which step you are on (e.g., "Step 2/4 \u2014 Creating jwt.ts").
+C2. After all steps complete, run a build or lint command if relevant to verify there are no errors.
+C3. If a step fails, report the error clearly and suggest a fix before continuing.
+C4. Never silently skip a planned step \u2014 if you skip one, explain why.`;
   }
   async requestRuleChange(newRulesContent) {
     const currentRules = this.getRules();
@@ -16583,7 +16844,7 @@ var PhoneOS = class {
   }
   _renderInternal() {
     const view = this.history[this.history.length - 1];
-    const stats = memoryManager.getBudgetStats();
+    const stats = memoryManager.getBudgetStatsForMessages(chatSession.getMessages());
     const ratio = stats.max > 0 ? Math.min(stats.filled / stats.max, 1) : 0;
     const pct = Math.round(ratio * 100);
     const prov = this.config.defaults.primaryProvider;
@@ -16604,8 +16865,8 @@ var PhoneOS = class {
     const BG_HL = import_chalk2.default.bgHex("#374151");
     const hLine = GOLD("\u2550".repeat(W));
     process.stdout.write(GOLD(" \u2554") + hLine + GOLD("\u2557\n"));
-    const leftStr = "  " + GOLD.bold("O.T.T.O") + "   ";
-    const leftLen = 12;
+    const leftStr = "  " + GOLD.bold("Orchestrated Task & Tool Operator (O.T.T.O)") + "   ";
+    const leftLen = 48;
     const dot = hasKey ? GREEN("\u25CF") : RED("\u25CF");
     const provPill = dot + " " + CYAN.bold(prov.toUpperCase());
     const provLen = 2 + prov.length;
@@ -17053,86 +17314,364 @@ function createFileTreeView(phone, dir) {
 // src/cli/views/gitPanel.ts
 var import_chalk6 = __toESM(require("chalk"), 1);
 var import_child_process2 = require("child_process");
+function git(cmd) {
+  return (0, import_child_process2.execSync)(`git ${cmd}`, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+}
+function isRepo() {
+  try {
+    git("rev-parse --git-dir");
+    return true;
+  } catch {
+    return false;
+  }
+}
+function headHash() {
+  try {
+    return git("rev-parse --short HEAD");
+  } catch {
+    return "";
+  }
+}
+var BRANCH_COLORS = [
+  "#56CFE1",
+  // cyan
+  "#9D4EDD",
+  // purple
+  "#22C55E",
+  // green
+  "#F59E0B",
+  // amber
+  "#EF4444",
+  // red
+  "#EC4899",
+  // pink
+  "#3B82F6",
+  // blue
+  "#F97316",
+  // orange
+  "#84CC16",
+  // lime
+  "#06B6D4"
+  // teal
+];
+function colorizeGraph(raw) {
+  const lines = raw.split("\n");
+  const posToColor = /* @__PURE__ */ new Map();
+  let nextColor = 0;
+  return lines.map((line) => {
+    if (!line) return "";
+    const starIdx = line.indexOf("*");
+    const graphRaw = starIdx >= 0 ? line.slice(0, starIdx + 1) : line;
+    const infoRaw = starIdx >= 0 ? line.slice(starIdx + 1) : "";
+    let nodeColor = BRANCH_COLORS[0];
+    if (starIdx >= 0) {
+      if (!posToColor.has(starIdx)) {
+        posToColor.set(starIdx, nextColor++ % BRANCH_COLORS.length);
+      }
+      nodeColor = BRANCH_COLORS[posToColor.get(starIdx)];
+    }
+    let coloredGraph = "";
+    for (let i = 0; i < graphRaw.length; i++) {
+      const ch = graphRaw[i];
+      switch (ch) {
+        case "*": {
+          coloredGraph += import_chalk6.default.hex(nodeColor).bold("\u25CF");
+          break;
+        }
+        case "|": {
+          const col = posToColor.get(i);
+          const c2 = col !== void 0 ? BRANCH_COLORS[col] : "#4B5563";
+          coloredGraph += import_chalk6.default.hex(c2)("\u2502");
+          break;
+        }
+        case "/":
+          coloredGraph += import_chalk6.default.hex("#6B7280")("\u2571");
+          break;
+        case "\\":
+          coloredGraph += import_chalk6.default.hex("#6B7280")("\u2572");
+          break;
+        case "-":
+          coloredGraph += import_chalk6.default.hex("#374151")("\u2500");
+          break;
+        case "_":
+          coloredGraph += import_chalk6.default.hex("#374151")("\u254C");
+          break;
+        default:
+          coloredGraph += ch;
+      }
+    }
+    let coloredInfo = "";
+    if (infoRaw) {
+      const trimmed = infoRaw.replace(/^\s+/, "");
+      const m = trimmed.match(/^([0-9a-f]{5,12})\s+(.*)?$/s);
+      if (m) {
+        const hash2 = m[1];
+        const payload = m[2] ?? "";
+        const coloredPayload = payload.replace(/\(([^)]*)\)/g, (_, inner) => {
+          const parts = inner.split(", ").map((ref) => {
+            if (ref.startsWith("HEAD ->")) {
+              const b = ref.slice("HEAD -> ".length);
+              return import_chalk6.default.bold.white("HEAD") + import_chalk6.default.dim(" \u2192 ") + import_chalk6.default.hex("#22C55E").bold(b);
+            }
+            if (ref === "HEAD") return import_chalk6.default.bold.white("HEAD");
+            if (ref.startsWith("tag:")) return import_chalk6.default.hex("#EC4899")(ref);
+            if (ref.includes("/")) return import_chalk6.default.hex("#F59E0B")(ref);
+            return import_chalk6.default.hex("#56CFE1")(ref);
+          });
+          return import_chalk6.default.dim("(") + parts.join(import_chalk6.default.dim(", ")) + import_chalk6.default.dim(")");
+        });
+        const hasRefs = payload.includes("(");
+        const msgPart = hasRefs ? coloredPayload.replace(/\(.*?\)\s*/g, (m2) => m2) : import_chalk6.default.hex("#D1D5DB")(coloredPayload);
+        coloredInfo = " " + import_chalk6.default.hex("#F5C400")(hash2) + " " + (hasRefs ? coloredPayload.replace(
+          /^(\(.*?\))\s*/,
+          (_, refs) => refs + " " + import_chalk6.default.hex("#D1D5DB")(payload.replace(/^\(.*?\)\s*/, ""))
+        ) : import_chalk6.default.hex("#D1D5DB")(payload));
+      } else {
+        coloredInfo = " " + import_chalk6.default.hex("#4B5563")(infoRaw.trim());
+      }
+    }
+    return coloredGraph + coloredInfo;
+  });
+}
+function createGitGraphView(phone, page = 0) {
+  if (!isRepo()) {
+    return {
+      id: "git_graph",
+      title: "Commit Graph",
+      renderBody: () => {
+        console.log("  " + import_chalk6.default.red("Not a git repository."));
+      },
+      options: [{ label: "Go Back", action: () => phone.goBack() }]
+    };
+  }
+  let rawLines = [];
+  try {
+    const raw = git("log --graph --oneline --all --decorate 2>&1");
+    rawLines = colorizeGraph(raw);
+  } catch (e) {
+    return {
+      id: "git_graph",
+      title: "Commit Graph",
+      renderBody: () => {
+        console.log("  " + import_chalk6.default.red("Error: " + e.message));
+      },
+      options: [{ label: "Go Back", action: () => phone.goBack() }]
+    };
+  }
+  const rows = process.stdout.rows || 30;
+  const perPage = Math.max(5, rows - 14);
+  const totalPages = Math.max(1, Math.ceil(rawLines.length / perPage));
+  const clampedPage = Math.max(0, Math.min(page, totalPages - 1));
+  const start = clampedPage * perPage;
+  const slice = rawLines.slice(start, start + perPage);
+  const navOptions = [];
+  if (clampedPage > 0) {
+    navOptions.push({
+      label: import_chalk6.default.hex("#56CFE1")("\u2191 Older commits"),
+      action: () => {
+        phone.goBack();
+        phone.pushView(createGitGraphView(phone, clampedPage - 1));
+      }
+    });
+  }
+  if (clampedPage < totalPages - 1) {
+    navOptions.push({
+      label: import_chalk6.default.hex("#56CFE1")("\u2193 Newer commits"),
+      action: () => {
+        phone.goBack();
+        phone.pushView(createGitGraphView(phone, clampedPage + 1));
+      }
+    });
+  }
+  navOptions.push({ label: "Go Back", action: () => phone.goBack() });
+  return {
+    id: "git_graph",
+    title: "Commit Graph",
+    subtitle: `Page ${clampedPage + 1}/${totalPages}   \u25CF = commit   \u2500\u2500\u2500 = branch   \u2571\u2572 = merge/split`,
+    renderBody: () => {
+      console.log(
+        "  " + import_chalk6.default.hex("#F5C400")("\u25A0") + import_chalk6.default.hex("#6B7280")(" hash  ") + import_chalk6.default.hex("#22C55E")("\u25A0") + import_chalk6.default.hex("#6B7280")(" local-branch  ") + import_chalk6.default.hex("#F59E0B")("\u25A0") + import_chalk6.default.hex("#6B7280")(" remote  ") + import_chalk6.default.hex("#EC4899")("\u25A0") + import_chalk6.default.hex("#6B7280")(" tag")
+      );
+      console.log("  " + import_chalk6.default.hex("#374151")("\u2500".repeat(Math.min((process.stdout.columns || 80) - 4, 90))));
+      console.log("");
+      slice.forEach((line) => {
+        process.stdout.write("  " + line + "\n");
+      });
+      if (rawLines.length === 0) {
+        console.log("  " + import_chalk6.default.dim("No commits found."));
+      }
+      console.log("");
+    },
+    options: navOptions
+  };
+}
 function createGitPanelView(phone) {
   return {
     id: "git_panel",
     title: "Git Dashboard",
     subtitle: "Version Control & Branches",
     renderBody: () => {
+      if (!isRepo()) {
+        console.log("  " + import_chalk6.default.red("Not a git repository or git is not installed."));
+        return;
+      }
       try {
-        const branch = (0, import_child_process2.execSync)("git branch --show-current").toString().trim();
-        console.log(import_chalk6.default.hex("#64748b")("  Current Branch: ") + import_chalk6.default.green.bold(branch));
+        const branch = git("branch --show-current") || git("rev-parse --abbrev-ref HEAD");
+        const hash2 = headHash();
+        const ahead = (() => {
+          try {
+            return git("rev-list --count @{u}..HEAD");
+          } catch {
+            return "\u2014";
+          }
+        })();
+        const behind = (() => {
+          try {
+            return git("rev-list --count HEAD..@{u}");
+          } catch {
+            return "\u2014";
+          }
+        })();
+        console.log(
+          import_chalk6.default.hex("#64748b")("  Branch: ") + import_chalk6.default.green.bold(branch) + (hash2 ? import_chalk6.default.hex("#64748b")(`  (${hash2})`) : "")
+        );
+        console.log(
+          import_chalk6.default.hex("#64748b")("  Ahead: ") + import_chalk6.default.yellow(ahead) + import_chalk6.default.hex("#64748b")("   Behind: ") + import_chalk6.default.cyan(behind)
+        );
         console.log("");
-        const status = (0, import_child_process2.execSync)("git status -s").toString().trim();
+        const status = git("status -s");
         if (!status) {
-          console.log("  " + import_chalk6.default.dim("Working tree clean."));
+          console.log("  " + import_chalk6.default.dim("\u2714 Working tree clean."));
         } else {
-          console.log("  " + import_chalk6.default.white.bold("Modified Files:"));
+          console.log("  " + import_chalk6.default.white.bold("Changed Files"));
           status.split("\n").forEach((line) => {
-            const stat = line.substring(0, 2);
+            const xy = line.substring(0, 2);
             const file2 = line.substring(3);
-            let color = import_chalk6.default.red;
-            if (stat.startsWith("M") || stat.startsWith("A")) color = import_chalk6.default.green;
-            if (stat.startsWith("?")) color = import_chalk6.default.yellow;
-            console.log("    " + color(stat) + " " + import_chalk6.default.white(file2));
+            const index = xy[0];
+            const work = xy[1];
+            const stageColor = index === "A" || index === "M" || index === "R" || index === "C" ? import_chalk6.default.green : index === "D" ? import_chalk6.default.red : import_chalk6.default.hex("#6B7280");
+            const workColor = work === "M" ? import_chalk6.default.yellow : work === "D" ? import_chalk6.default.red : work === "?" ? import_chalk6.default.hex("#F59E0B") : import_chalk6.default.hex("#6B7280");
+            console.log(
+              "    " + stageColor(index) + workColor(work) + " " + import_chalk6.default.white(file2)
+            );
           });
         }
+        console.log("");
       } catch (e) {
-        console.log("  " + import_chalk6.default.red("Not a git repository or git not installed."));
+        console.log("  " + import_chalk6.default.red("git error: " + e.message));
       }
     },
     options: [
+      // ── Commit Graph ───────────────────────────────────────────────────────
       {
-        label: "Stage/Unstage Files",
+        label: import_chalk6.default.hex("#9D4EDD")("\u25C8") + "  Commit Graph",
+        description: "Visual branch/commit history with colour-coded nodes",
+        action: () => phone.pushView(createGitGraphView(phone, 0))
+      },
+      // ── Stage / Unstage ────────────────────────────────────────────────────
+      {
+        label: "Stage / Unstage Files",
+        description: "Toggle staging for individual files",
         action: () => {
+          if (!isRepo()) return;
           let statusStr = "";
           try {
-            statusStr = (0, import_child_process2.execSync)("git status -s").toString().trim();
-          } catch (e) {
+            statusStr = git("status -s");
+          } catch {
+            return;
           }
-          if (!statusStr) return;
-          const files = statusStr.split("\n").map((l) => ({ stat: l.substring(0, 2), file: l.substring(3) }));
+          if (!statusStr) {
+            ui.success("Nothing to stage \u2014 working tree is clean.");
+            return;
+          }
+          const files = statusStr.split("\n").map((l) => ({
+            xy: l.substring(0, 2),
+            file: l.substring(3)
+          }));
           phone.pushView({
             id: "git_stage",
-            title: "Stage/Unstage",
+            title: "Stage / Unstage",
+            subtitle: "Select a file to toggle its staged state",
             options: [
               ...files.map((f) => {
-                const isStaged = f.stat.charAt(0) !== " " && f.stat.charAt(0) !== "?";
+                const index = f.xy[0];
+                const isStaged = index !== " " && index !== "?";
+                const tag = isStaged ? import_chalk6.default.green("[staged]  ") : import_chalk6.default.yellow("[unstaged]");
                 return {
-                  label: `${isStaged ? import_chalk6.default.green("[STAGED]") : import_chalk6.default.yellow("[UNSTAGED]")} ${f.file}`,
+                  label: `${tag} ${f.file}`,
                   action: async () => {
                     phone.active = false;
                     ui.clearScreen();
                     try {
-                      if (isStaged) (0, import_child_process2.execSync)(`git restore --staged "${f.file}"`);
-                      else (0, import_child_process2.execSync)(`git add "${f.file}"`);
-                      ui.success(isStaged ? "Unstaged." : "Staged.");
+                      if (isStaged) {
+                        git(`restore --staged -- "${f.file}"`);
+                        ui.success(`Unstaged: ${f.file}`);
+                      } else {
+                        git(`add -- "${f.file}"`);
+                        ui.success(`Staged: ${f.file}`);
+                      }
                     } catch (e) {
-                      ui.error("Failed");
+                      ui.error(`Failed: ${e.message}`);
                     }
-                    await new Promise((r) => setTimeout(r, 600));
+                    await new Promise((r) => setTimeout(r, 700));
                     phone.active = true;
                     phone.goBack();
+                    phone.pushView(createGitPanelView(phone));
                   }
                 };
               }),
+              {
+                label: "Stage All",
+                action: async () => {
+                  phone.active = false;
+                  ui.clearScreen();
+                  try {
+                    git("add -A");
+                    ui.success("All files staged.");
+                  } catch (e) {
+                    ui.error(e.message);
+                  }
+                  await new Promise((r) => setTimeout(r, 700));
+                  phone.active = true;
+                  phone.goBack();
+                  phone.pushView(createGitPanelView(phone));
+                }
+              },
               { label: "Go Back", action: () => phone.goBack() }
             ]
           });
         }
       },
+      // ── Commit ────────────────────────────────────────────────────────────
       {
-        label: "Commit Changes",
+        label: "Commit Staged Changes",
+        description: "Write a commit message and commit",
         action: async () => {
+          if (!isRepo()) return;
           phone.active = false;
           ui.clearScreen();
+          let staged = "";
+          try {
+            staged = git("diff --name-only --cached");
+          } catch {
+          }
+          if (!staged) {
+            ui.error("No staged changes. Stage files first.");
+            await new Promise((r) => setTimeout(r, 1200));
+            phone.active = true;
+            phone.render();
+            return;
+          }
+          console.log(import_chalk6.default.hex("#56CFE1")("Staged files:"));
+          staged.split("\n").forEach((f) => console.log("  " + import_chalk6.default.green("+") + " " + f));
+          console.log("");
           const msg = await promptWithEscape("Commit message:");
           if (msg && msg.trim()) {
             try {
-              (0, import_child_process2.execSync)(`git commit -m "${msg.trim()}"`);
-              ui.success("Committed successfully.");
+              git(`commit -m "${msg.trim().replace(/"/g, '\\"')}"`);
+              ui.success(`Committed: "${msg.trim()}"`);
             } catch (e) {
-              ui.error("Failed to commit (are files staged?)");
+              ui.error("Commit failed: " + e.message);
             }
             await new Promise((r) => setTimeout(r, 1200));
           }
@@ -17140,53 +17679,164 @@ function createGitPanelView(phone) {
           phone.render();
         }
       },
+      // ── Push ──────────────────────────────────────────────────────────────
       {
-        label: "Switch/Create Branch",
+        label: "Push to Remote",
+        description: "Push the current branch upstream",
         action: async () => {
-          let branches = "";
+          if (!isRepo()) return;
+          phone.active = false;
+          ui.clearScreen();
           try {
-            branches = (0, import_child_process2.execSync)('git branch --format="%(refname:short)"').toString().trim();
+            const branch = git("branch --show-current");
+            console.log(import_chalk6.default.hex("#6B7280")(`Pushing ${branch} to origin\u2026`));
+            const out = (0, import_child_process2.execSync)(`git push origin "${branch}"`, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
+            ui.success("Pushed successfully.\n" + out.trim());
           } catch (e) {
+            ui.error("Push failed:\n" + e.message);
           }
-          if (!branches) return;
-          const bList = branches.split("\n");
+          await new Promise((r) => setTimeout(r, 1400));
+          phone.active = true;
+          phone.render();
+        }
+      },
+      // ── Pull ──────────────────────────────────────────────────────────────
+      {
+        label: "Pull from Remote",
+        description: "Fetch and merge upstream changes",
+        action: async () => {
+          if (!isRepo()) return;
+          phone.active = false;
+          ui.clearScreen();
+          try {
+            console.log(import_chalk6.default.hex("#6B7280")("Pulling\u2026"));
+            const out = (0, import_child_process2.execSync)("git pull", { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
+            ui.success("Pulled.\n" + out.trim());
+          } catch (e) {
+            ui.error("Pull failed:\n" + e.message);
+          }
+          await new Promise((r) => setTimeout(r, 1400));
+          phone.active = true;
+          phone.render();
+        }
+      },
+      // ── Branch ────────────────────────────────────────────────────────────
+      {
+        label: "Switch / Create Branch",
+        description: "Checkout an existing branch or create a new one",
+        action: async () => {
+          if (!isRepo()) return;
+          let branchList = [];
+          try {
+            branchList = git("branch --format=%(refname:short)").split("\n").filter(Boolean);
+          } catch {
+            return;
+          }
           phone.pushView({
             id: "git_branch",
             title: "Switch Branch",
+            subtitle: "Select a branch or create a new one",
             options: [
-              ...bList.map((b) => ({
-                label: b,
-                action: async () => {
-                  phone.active = false;
-                  ui.clearScreen();
-                  try {
-                    (0, import_child_process2.execSync)(`git checkout ${b}`);
-                    ui.success(`Switched to ${b}`);
-                  } catch (e) {
-                    ui.error("Failed");
-                  }
-                  await new Promise((r) => setTimeout(r, 800));
-                  phone.active = true;
-                  phone.goBack();
+              ...branchList.map((b) => {
+                let current = false;
+                try {
+                  current = git("branch --show-current") === b;
+                } catch {
                 }
-              })),
+                return {
+                  label: (current ? import_chalk6.default.green("* ") : "  ") + b,
+                  action: async () => {
+                    if (current) return;
+                    phone.active = false;
+                    ui.clearScreen();
+                    try {
+                      git(`checkout "${b}"`);
+                      ui.success(`Switched to ${b}`);
+                    } catch (e) {
+                      ui.error("Checkout failed: " + e.message);
+                    }
+                    await new Promise((r) => setTimeout(r, 800));
+                    phone.active = true;
+                    phone.goBack();
+                    phone.pushView(createGitPanelView(phone));
+                  }
+                };
+              }),
               {
                 label: "+ Create New Branch",
+                description: "Create and immediately switch to a new branch",
                 action: async () => {
                   phone.active = false;
                   ui.clearScreen();
                   const nb = await promptWithEscape("New branch name:");
                   if (nb && nb.trim()) {
                     try {
-                      (0, import_child_process2.execSync)(`git checkout -b ${nb.trim()}`);
-                      ui.success("Branch created.");
+                      git(`checkout -b "${nb.trim()}"`);
+                      ui.success(`Created and switched to ${nb.trim()}`);
                     } catch (e) {
-                      ui.error("Failed");
+                      ui.error("Failed: " + e.message);
                     }
-                    await new Promise((r) => setTimeout(r, 800));
+                    await new Promise((r) => setTimeout(r, 900));
                   }
                   phone.active = true;
                   phone.goBack();
+                  phone.pushView(createGitPanelView(phone));
+                }
+              },
+              { label: "Go Back", action: () => phone.goBack() }
+            ]
+          });
+        }
+      },
+      // ── Stash ─────────────────────────────────────────────────────────────
+      {
+        label: "Stash",
+        description: "Stash or pop changes",
+        action: () => {
+          if (!isRepo()) return;
+          phone.pushView({
+            id: "git_stash",
+            title: "Stash",
+            options: [
+              {
+                label: "Stash Changes",
+                description: "git stash push",
+                action: async () => {
+                  phone.active = false;
+                  ui.clearScreen();
+                  const msg = await promptWithEscape("Stash message (optional):");
+                  try {
+                    if (msg && msg.trim()) {
+                      git(`stash push -m "${msg.trim().replace(/"/g, '\\"')}"`);
+                    } else {
+                      git("stash push");
+                    }
+                    ui.success("Changes stashed.");
+                  } catch (e) {
+                    ui.error(e.message);
+                  }
+                  await new Promise((r) => setTimeout(r, 900));
+                  phone.active = true;
+                  phone.goBack();
+                  phone.pushView(createGitPanelView(phone));
+                }
+              },
+              {
+                label: "Pop Latest Stash",
+                description: "git stash pop",
+                action: async () => {
+                  phone.active = false;
+                  ui.clearScreen();
+                  try {
+                    git("stash pop");
+                    ui.success("Stash popped.");
+                  } catch (e) {
+                    ui.error(e.message);
+                  }
+                  await new Promise((r) => setTimeout(r, 900));
+                  phone.active = true;
+                  phone.goBack();
+                  phone.pushView(createGitPanelView(phone));
                 }
               },
               { label: "Go Back", action: () => phone.goBack() }
@@ -17395,7 +18045,6 @@ var import_messages4 = require("@langchain/core/messages");
 var import_stream = require("@langchain/core/utils/stream");
 var import_prompts5 = require("@inquirer/prompts");
 var import_chalk10 = __toESM(require("chalk"), 1);
-var import_os7 = __toESM(require("os"), 1);
 async function main() {
   const args = process.argv.slice(2);
   const cliHandled = await parseAndExecuteCLI(args);
@@ -17408,7 +18057,7 @@ async function main() {
   const rules = ruleGuardrail.getRules();
   const phone = new PhoneOS(config2);
   const startChat = async () => {
-    ui.clearScreen();
+    process.stdout.write("\x1B[?1049h\x1B[H\x1B[J");
     const { ChatUI: ChatUI2 } = await Promise.resolve().then(() => (init_chat(), chat_exports));
     const chatUI = new ChatUI2();
     const messages = chatSession.getMessages();
@@ -17416,6 +18065,15 @@ async function main() {
     let thinkingTimer = null;
     let streamRenderTimer = null;
     let lastStreamRender = 0;
+    let lastStreamContentLength = 0;
+    let pendingPlan = false;
+    let planMenuIndex = 0;
+    const PLAN_MENU_OPTIONS = [
+      { label: "\u2705  Approve \u2014 execute the plan", inject: "approved \u2014 please proceed with the plan exactly as described." },
+      { label: "\u270F\uFE0F   Edit \u2014 request changes first", inject: null },
+      { label: "\u274C  Cancel \u2014 do not proceed", inject: "cancel \u2014 do not proceed with this plan." }
+    ];
+    const PLAN_BLOCK_RE = /<!--\s*PLAN_START\s*-->[\s\S]*?<!--\s*PLAN_END\s*-->/;
     const getRenderMessages = () => {
       const renderMsgs = [];
       messages.forEach((m) => {
@@ -17442,16 +18100,15 @@ async function main() {
         thinkingTimer = null;
       }
     };
-    const flushStreamRender = () => {
+    const flushStreamRender = (isPending = false) => {
       if (streamRenderTimer) {
         clearTimeout(streamRenderTimer);
         streamRenderTimer = null;
       }
       lastStreamRender = Date.now();
-      render(false);
+      render(false, isPending);
     };
-    const scheduleStreamRender = () => {
-      const delay = 75;
+    const scheduleStreamRender = (delay = 160) => {
       const elapsed = Date.now() - lastStreamRender;
       if (elapsed >= delay) {
         flushStreamRender();
@@ -17465,10 +18122,10 @@ async function main() {
       if (thinkingTimer) return;
       thinkingTimer = setInterval(() => render(true), 350);
     };
-    const render = (isThinking = false) => {
+    const render = (isThinking = false, isPendingPlan = false) => {
       if (isThinking) startThinkingAnimation();
       else stopThinkingAnimation();
-      const stats = memoryManager.getBudgetStats();
+      const stats = memoryManager.getBudgetStatsForMessages(messages, rules);
       const prov = config2.defaults.primaryProvider;
       const model = Configurator.getActiveModel(config2, prov) ?? "default";
       const ramMB = Math.round(process.memoryUsage().rss / 1024 / 1024);
@@ -17477,7 +18134,7 @@ async function main() {
         ctxUsed: stats.filled,
         ramMB,
         showContextBar: config2.defaults.showContextBar !== false
-      }, model, isThinking);
+      }, model, isThinking, isPendingPlan || pendingPlan, planMenuIndex);
     };
     const formatToolResult = (toolName, result, diffSummary, args2) => {
       const sections = [`**${toolName}**`];
@@ -17511,10 +18168,12 @@ ${trimmedResult.slice(0, 1200)}
     return new Promise((resolve) => {
       readline3.emitKeypressEvents(process.stdin);
       if (process.stdin.isTTY) process.stdin.setRawMode(true);
+      process.stdin.resume();
       const onKeypress = async (str, key) => {
         if (key.ctrl && key.name === "c") {
           stopThinkingAnimation();
           if (streamRenderTimer) clearTimeout(streamRenderTimer);
+          process.stdout.write("\x1B[?1049l");
           process.exit(0);
         } else if (key.name === "escape") {
           stopThinkingAnimation();
@@ -17522,10 +18181,99 @@ ${trimmedResult.slice(0, 1200)}
             clearTimeout(streamRenderTimer);
             streamRenderTimer = null;
           }
-          if (process.stdin.isTTY) process.stdin.setRawMode(false);
+          process.stdout.write("\x1B[?1049l");
           process.stdin.removeListener("keypress", onKeypress);
           resolve();
         } else if (key.name === "return") {
+          if (pendingPlan) {
+            const chosen = PLAN_MENU_OPTIONS[planMenuIndex];
+            if (chosen.inject !== null) {
+              pendingPlan = false;
+              planMenuIndex = 0;
+              process.stdin.removeListener("keypress", onKeypress);
+              messages.push(new import_messages4.HumanMessage(chosen.inject));
+              syncMessages();
+              chatUI.scrollToBottom();
+              render(true);
+              try {
+                let isDone = false;
+                const preferredName = Configurator.getUsername(config2) || "user";
+                const nameHint = `
+
+User's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.`;
+                while (!isDone) {
+                  const msgsToSend = [new import_messages4.SystemMessage(rules + nameHint), ...messages];
+                  const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
+                  const aiMessage = new import_messages4.AIMessage("");
+                  messages.push(aiMessage);
+                  syncMessages();
+                  let finalMessage = null;
+                  const stream = await provider.stream(optimizedMsgs);
+                  for await (const chunk of stream) {
+                    if (!finalMessage) finalMessage = chunk;
+                    else finalMessage = (0, import_stream.concat)(finalMessage, chunk);
+                    if (chunk && chunk.content) {
+                      aiMessage.content = aiMessage.content + chunk.content;
+                      syncMessages();
+                      scheduleStreamRender(160);
+                    }
+                  }
+                  config2 = provider.getConfig();
+                  phone.updateConfig(config2);
+                  messages[messages.length - 1] = finalMessage;
+                  lastStreamContentLength = 0;
+                  syncMessages();
+                  const responseText = String(finalMessage?.content ?? "");
+                  const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
+                  const hasToolCalls = finalMessage?.tool_calls && finalMessage.tool_calls.length > 0;
+                  if (hasPlanBlock && !hasToolCalls) {
+                    pendingPlan = true;
+                    planMenuIndex = 0;
+                    isDone = true;
+                    flushStreamRender(true);
+                  } else if (hasToolCalls) {
+                    pendingPlan = false;
+                    flushStreamRender();
+                    for (const call of finalMessage.tool_calls) {
+                      const tool2 = tools.find((t) => t.name === call.name);
+                      let toolResultStr = "";
+                      if (tool2) {
+                        try {
+                          const beforeSnapshot = call.name === "execute_terminal_command" ? captureWorkspaceSnapshot() : null;
+                          const res = await tool2.invoke(call.args);
+                          const afterSnapshot = beforeSnapshot ? captureWorkspaceSnapshot() : null;
+                          const diffSummary = beforeSnapshot && afterSnapshot ? formatWorkspaceChanges(beforeSnapshot, afterSnapshot) : "";
+                          toolResultStr = formatToolResult(call.name, String(res), diffSummary, call.args);
+                        } catch (e) {
+                          toolResultStr = formatToolResult(call.name, `Error: ${e.message}`, "", call.args);
+                        }
+                      } else {
+                        toolResultStr = formatToolResult(call.name, `Error: Tool ${call.name} not found.`, "", call.args);
+                      }
+                      messages.push(new import_messages4.ToolMessage({ content: toolResultStr, tool_call_id: call.id, name: call.name }));
+                      syncMessages();
+                    }
+                    render(true);
+                  } else {
+                    pendingPlan = false;
+                    isDone = true;
+                    flushStreamRender();
+                  }
+                }
+                process.stdin.on("keypress", onKeypress);
+              } catch (error51) {
+                messages.push(new import_messages4.SystemMessage(formatChatError(error51)));
+                syncMessages();
+                process.stdin.on("keypress", onKeypress);
+              }
+              render();
+            } else {
+              pendingPlan = false;
+              planMenuIndex = 0;
+              render();
+            }
+            return;
+          }
           if (!currentInput.trim()) return;
           const inputStr = currentInput.trim();
           currentInput = "";
@@ -17548,11 +18296,16 @@ ${trimmedResult.slice(0, 1200)}
           chatSession.ensureNamedFromPrompt(inputStr);
           messages.push(new import_messages4.HumanMessage(inputStr));
           syncMessages();
+          chatUI.scrollToBottom();
           render(true);
           try {
             let isDone = false;
+            const preferredName = Configurator.getUsername(config2) || "user";
+            const nameHint = `
+
+User's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.`;
             while (!isDone) {
-              const msgsToSend = [new import_messages4.SystemMessage(rules), ...messages];
+              const msgsToSend = [new import_messages4.SystemMessage(rules + nameHint), ...messages];
               const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
               const aiMessage = new import_messages4.AIMessage("");
               messages.push(aiMessage);
@@ -17565,15 +18318,33 @@ ${trimmedResult.slice(0, 1200)}
                 if (chunk && chunk.content) {
                   aiMessage.content = aiMessage.content + chunk.content;
                   syncMessages();
-                  scheduleStreamRender();
+                  const currentLength = aiMessage.content.length;
+                  const delta = currentLength - lastStreamContentLength;
+                  const fenceCount = (aiMessage.content.match(/```/g) ?? []).length;
+                  const isInsideCodeFence = fenceCount % 2 === 1;
+                  const shouldRender = delta >= (isInsideCodeFence ? 96 : 24) || !isInsideCodeFence && /[\s,.;:!?)\}\]\n]$/.test(String(chunk.content)) || currentLength < 24;
+                  if (shouldRender) {
+                    lastStreamContentLength = currentLength;
+                    scheduleStreamRender(isInsideCodeFence ? 260 : 160);
+                  }
                 }
               }
               config2 = provider.getConfig();
               phone.updateConfig(config2);
               messages[messages.length - 1] = finalMessage;
+              lastStreamContentLength = 0;
               syncMessages();
-              flushStreamRender();
-              if (finalMessage.tool_calls && finalMessage.tool_calls.length > 0) {
+              const responseText = String(finalMessage?.content ?? "");
+              const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
+              const hasToolCalls = finalMessage?.tool_calls && finalMessage.tool_calls.length > 0;
+              if (hasPlanBlock && !hasToolCalls) {
+                pendingPlan = true;
+                planMenuIndex = 0;
+                isDone = true;
+                flushStreamRender(true);
+              } else if (hasToolCalls) {
+                pendingPlan = false;
+                flushStreamRender();
                 for (const call of finalMessage.tool_calls) {
                   const tool2 = tools.find((t) => t.name === call.name);
                   let toolResultStr = "";
@@ -17590,16 +18361,14 @@ ${trimmedResult.slice(0, 1200)}
                   } else {
                     toolResultStr = formatToolResult(call.name, `Error: Tool ${call.name} not found.`, "", call.args);
                   }
-                  messages.push(new import_messages4.ToolMessage({
-                    content: toolResultStr,
-                    tool_call_id: call.id,
-                    name: call.name
-                  }));
+                  messages.push(new import_messages4.ToolMessage({ content: toolResultStr, tool_call_id: call.id, name: call.name }));
                   syncMessages();
                 }
                 render(true);
               } else {
+                pendingPlan = false;
                 isDone = true;
+                flushStreamRender();
               }
             }
             process.stdin.on("keypress", onKeypress);
@@ -17609,23 +18378,197 @@ ${trimmedResult.slice(0, 1200)}
             process.stdin.on("keypress", onKeypress);
           }
           render();
+        } else if (key.name === "up") {
+          if (pendingPlan) {
+            planMenuIndex = (planMenuIndex - 1 + PLAN_MENU_OPTIONS.length) % PLAN_MENU_OPTIONS.length;
+          } else {
+            chatUI.scrollUp(3);
+          }
+          render();
+        } else if (key.name === "down") {
+          if (pendingPlan) {
+            planMenuIndex = (planMenuIndex + 1) % PLAN_MENU_OPTIONS.length;
+          } else {
+            chatUI.scrollDown(3);
+          }
+          render();
+        } else if (key.name === "pageup") {
+          if (!pendingPlan) chatUI.scrollUp(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
+          render();
+        } else if (key.name === "pagedown") {
+          if (!pendingPlan) chatUI.scrollDown(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
+          render();
+        } else if (key.name === "end") {
+          if (!pendingPlan) chatUI.scrollToBottom();
+          render();
         } else if (key.name === "backspace") {
-          currentInput = currentInput.slice(0, -1);
-          render();
+          if (!pendingPlan) {
+            currentInput = currentInput.slice(0, -1);
+            render();
+          }
         } else if (str && !key.ctrl && !key.meta) {
-          currentInput += str;
-          render();
+          if (!pendingPlan) {
+            currentInput += str;
+            render();
+          }
         }
       };
       process.stdin.on("keypress", onKeypress);
       render();
     });
   };
+  const createProfileView = () => {
+    const currentName = Configurator.getUsername(config2) || "user";
+    return {
+      id: "profile",
+      title: "Profile",
+      subtitle: "Personalise how O.T.T.O addresses you",
+      renderBody: () => {
+        const name = Configurator.getUsername(config2) || "user";
+        const isDefault = !config2.profile?.username;
+        console.log(import_chalk10.default.white.bold("  Current Username"));
+        console.log("  " + import_chalk10.default.hex("#56CFE1")(name) + (isDefault ? "  " + import_chalk10.default.hex("#6B7280")("(default \u2014 not set yet)") : ""));
+        console.log("");
+        console.log(import_chalk10.default.hex("#6B7280")("  The agent will address you by this name in every conversation."));
+        console.log("");
+      },
+      options: [
+        {
+          label: currentName === "user" || !config2.profile?.username ? "Set Username" : `Edit Username  (current: ${currentName})`,
+          description: "Enter the name you want the agent to call you",
+          action: async () => {
+            phone.active = false;
+            ui.clearScreen();
+            const entered = await promptWithEscape(
+              "Enter your preferred username:",
+              Configurator.getUsername(config2) || ""
+            );
+            if (entered !== null && entered.trim()) {
+              config2 = Configurator.updateUsername(entered.trim()) || config2;
+              phone.updateConfig(config2);
+              ui.success(`Username set to "${entered.trim()}". O.T.T.O will now call you that!`);
+              await new Promise((r) => setTimeout(r, 1200));
+            }
+            phone.active = true;
+            phone.goBack();
+            phone.pushView(createProfileView());
+          }
+        },
+        {
+          label: "Reset to Default  (user)",
+          description: "Clear the custom username",
+          action: async () => {
+            config2 = Configurator.updateUsername("") || config2;
+            if (config2.profile) config2.profile.username = void 0;
+            const raw = Configurator.loadConfig();
+            if (raw?.profile) {
+              raw.profile.username = void 0;
+              Configurator.saveConfig(raw);
+              config2 = raw;
+            }
+            phone.updateConfig(config2);
+            ui.success("Username reset to default.");
+            await new Promise((r) => setTimeout(r, 900));
+            phone.goBack();
+            phone.pushView(createProfileView());
+          }
+        },
+        { label: "Go Back", action: () => phone.goBack() }
+      ]
+    };
+  };
+  const createMaxThreadsView = () => {
+    const maxT = Configurator.getMaxThreads(config2);
+    const cores = require("os").cpus().length;
+    const cpuDefault = Math.min(20, Math.max(5, cores * 2));
+    return {
+      id: "max_threads",
+      title: "Max Threads",
+      subtitle: "Limit the number of saved sessions",
+      renderBody: () => {
+        const cur = Configurator.getMaxThreads(config2);
+        const cnt = dbManager.listThreads().length;
+        console.log(import_chalk10.default.white.bold("  Current Limit"));
+        console.log("  " + import_chalk10.default.hex("#56CFE1")(String(cur)) + import_chalk10.default.hex("#6B7280")(`  (${cnt} sessions stored)`));
+        console.log("");
+        console.log(import_chalk10.default.hex("#6B7280")(`  CPU-healthy default for this machine: ${cpuDefault}  (${cores} cores \xD7 2, capped at 20)`));
+        console.log(import_chalk10.default.hex("#6B7280")("  Older threads are kept but new ones cannot be created when at the limit."));
+        console.log("");
+      },
+      options: [
+        {
+          label: `Increase limit  (currently ${maxT})`,
+          description: "Allow more saved sessions",
+          action: async () => {
+            phone.active = false;
+            ui.clearScreen();
+            const entered = await promptWithEscape(`New max threads (current: ${maxT}):`);
+            const n = parseInt(entered ?? "", 10);
+            if (!isNaN(n) && n > 0) {
+              config2 = Configurator.updateMaxThreads(n) || config2;
+              phone.updateConfig(config2);
+              ui.success(`Max threads set to ${n}.`);
+              await new Promise((r) => setTimeout(r, 900));
+            }
+            phone.active = true;
+            phone.goBack();
+            phone.pushView(createMaxThreadsView());
+          }
+        },
+        {
+          label: `Decrease limit  (currently ${maxT})`,
+          description: "Keep fewer sessions around",
+          action: async () => {
+            phone.active = false;
+            ui.clearScreen();
+            const entered = await promptWithEscape(`New max threads (current: ${maxT}):`);
+            const n = parseInt(entered ?? "", 10);
+            if (!isNaN(n) && n > 0) {
+              config2 = Configurator.updateMaxThreads(n) || config2;
+              phone.updateConfig(config2);
+              ui.success(`Max threads set to ${n}.`);
+              await new Promise((r) => setTimeout(r, 900));
+            }
+            phone.active = true;
+            phone.goBack();
+            phone.pushView(createMaxThreadsView());
+          }
+        },
+        {
+          label: `Reset to CPU default  (${cpuDefault})`,
+          description: "Restore the automatically calculated healthy limit",
+          action: async () => {
+            config2 = Configurator.updateMaxThreads(cpuDefault) || config2;
+            phone.updateConfig(config2);
+            ui.success(`Max threads reset to ${cpuDefault}.`);
+            await new Promise((r) => setTimeout(r, 900));
+            phone.goBack();
+            phone.pushView(createMaxThreadsView());
+          }
+        },
+        { label: "Go Back", action: () => phone.goBack() }
+      ]
+    };
+  };
   const createSettingsView = () => ({
     id: "settings",
     title: "Settings & Security",
     subtitle: "Manage keys, models, security mode, and display",
     options: [
+      {
+        label: "Profile",
+        description: "Set the username O.T.T.O uses to address you",
+        action: async () => {
+          phone.pushView(createProfileView());
+        }
+      },
+      {
+        label: `Max Threads  [${Configurator.getMaxThreads(config2)}]`,
+        description: "Limit stored sessions to reduce memory pressure",
+        action: async () => {
+          phone.pushView(createMaxThreadsView());
+        }
+      },
       {
         label: "API Settings",
         description: "Add, select, and rotate provider API keys",
@@ -17803,6 +18746,16 @@ ${trimmedResult.slice(0, 1200)}
         label: `Anthropic  ${Configurator.getActiveModel(config2, "anthropic") ? "-> " + Configurator.getActiveModel(config2, "anthropic") : "(default: claude-3-5-sonnet-20241022)"}`,
         description: "e.g. claude-3-5-sonnet-20241022, claude-3-haiku-20240307",
         action: async () => phone.pushView(createProviderModelView("anthropic", "Anthropic", "claude-3-5-sonnet-20241022", "e.g. claude-3-5-sonnet-20241022, claude-3-haiku-20240307"))
+      },
+      {
+        label: `Gemini  ${Configurator.getActiveModel(config2, "gemini") ? "-> " + Configurator.getActiveModel(config2, "gemini") : "(default: gemini-1.5-pro)"}`,
+        description: "e.g. gemini-1.5-pro, gemini-1.5-flash",
+        action: async () => phone.pushView(createProviderModelView("gemini", "Gemini", "gemini-1.5-pro", "e.g. gemini-1.5-pro, gemini-1.5-flash"))
+      },
+      {
+        label: `Ollama  ${Configurator.getActiveModel(config2, "ollama") ? "-> " + Configurator.getActiveModel(config2, "ollama") : "(default: llama3)"}`,
+        description: "e.g. llama3, mistral, phi3",
+        action: async () => phone.pushView(createProviderModelView("ollama", "Ollama", "llama3", "e.g. llama3, mistral, phi3"))
       }
     ]
   });
@@ -17924,6 +18877,11 @@ ${trimmedResult.slice(0, 1200)}
         label: `Anthropic  ${Configurator.getApiKeys(config2, "anthropic").length} key(s)`,
         description: Configurator.getActiveApiKey(config2, "anthropic") ? `active: ${maskApiKey(Configurator.getActiveApiKey(config2, "anthropic"))}` : "no key",
         action: async () => phone.pushView(createProviderApiKeyView("anthropic", "Anthropic"))
+      },
+      {
+        label: `Gemini  ${Configurator.getApiKeys(config2, "gemini").length} key(s)`,
+        description: Configurator.getActiveApiKey(config2, "gemini") ? `active: ${maskApiKey(Configurator.getActiveApiKey(config2, "gemini"))}` : "no key",
+        action: async () => phone.pushView(createProviderApiKeyView("gemini", "Gemini"))
       },
       { label: "Go Back", action: () => phone.goBack() }
     ]
@@ -18117,6 +19075,42 @@ ${trimmedResult.slice(0, 1200)}
   });
   const createThreadsView = () => {
     const threads = dbManager.listThreads();
+    const maxT = Configurator.getMaxThreads(config2);
+    const atLimit = threads.length >= maxT;
+    const tryCreateThread = () => {
+      if (atLimit) {
+        phone.pushView({
+          id: "thread_limit",
+          title: "Thread Limit Reached",
+          subtitle: `You have ${threads.length}/${maxT} sessions stored`,
+          renderBody: () => {
+            console.log(import_chalk10.default.hex("#F59E0B").bold("  \u26A0  Max thread limit reached"));
+            console.log("");
+            console.log(import_chalk10.default.hex("#6B7280")(`  You have ${threads.length} saved sessions and the limit is ${maxT}.`));
+            console.log(import_chalk10.default.hex("#6B7280")("  Delete a session to make room, or raise the limit in Settings."));
+            console.log("");
+          },
+          options: [
+            {
+              label: "Delete a Thread to Make Room",
+              description: "Remove an old session then create a new one",
+              action: () => phone.pushView(createThreadsView())
+            },
+            {
+              label: "Raise the Thread Limit",
+              description: "Go to Settings \u203A Max Threads",
+              action: () => phone.pushView(createMaxThreadsView())
+            },
+            { label: "Cancel", action: () => phone.goBack() }
+          ]
+        });
+        return;
+      }
+      chatSession.createFreshThread();
+      ui.success("Created a new thread.");
+      phone.goBack();
+      phone.pushView(createThreadsView());
+    };
     if (threads.length === 0) {
       return {
         id: "threads",
@@ -18125,11 +19119,7 @@ ${trimmedResult.slice(0, 1200)}
           {
             label: "Create New Thread",
             description: "Start a new empty thread",
-            action: () => {
-              chatSession.createFreshThread();
-              phone.goBack();
-              phone.pushView(createThreadsView());
-            }
+            action: tryCreateThread
           },
           { label: "No threads available. (Go Back)", action: () => phone.goBack() }
         ]
@@ -18138,16 +19128,12 @@ ${trimmedResult.slice(0, 1200)}
     return {
       id: "threads",
       title: "Manage Threads",
+      subtitle: `${threads.length}/${maxT} sessions${atLimit ? "  \u26A0 limit reached" : ""}`,
       options: [
         {
-          label: "Create New Thread",
-          description: "Start a fresh session and make it active",
-          action: () => {
-            chatSession.createFreshThread();
-            ui.success("Created a new thread.");
-            phone.goBack();
-            phone.pushView(createThreadsView());
-          }
+          label: atLimit ? import_chalk10.default.hex("#F59E0B")("Create New Thread  [limit reached]") : "Create New Thread",
+          description: atLimit ? `At the ${maxT}-thread limit \u2014 delete one first or raise the limit` : "Start a fresh session and make it active",
+          action: tryCreateThread
         },
         {
           label: import_chalk10.default.red("Delete All Threads"),
@@ -18228,7 +19214,7 @@ ${trimmedResult.slice(0, 1200)}
     title: "Analytics Dashboard",
     subtitle: "Real-time performance metrics and usage insights",
     renderBody: () => {
-      const stats = memoryManager.getBudgetStats();
+      const stats = memoryManager.getBudgetStatsForMessages(chatSession.getMessages(), rules);
       const threads = dbManager.listThreads().length;
       console.log("  \x1B[36mTokens Filled:\x1B[0m   " + stats.filled + " tk");
       console.log("  \x1B[36mContext Limit:\x1B[0m  " + stats.max + " tk");
@@ -18262,10 +19248,14 @@ ${trimmedResult.slice(0, 1200)}
       const textDim = import_chalk10.default.hex("#6B7280");
       const accent = import_chalk10.default.hex("#56CFE1");
       const purple = import_chalk10.default.hex("#9D4EDD");
-      const username = import_os7.default.userInfo().username;
+      const displayName = Configurator.getUsername(config2) || "user";
+      const isDefaultName = !config2.profile?.username;
       if (isCompact) {
         console.log(borderDim(" \u256D\u2500 O.T.T.O v1.0.0 " + "\u2500".repeat(Math.max(0, W - 17)) + "\u256E"));
-        console.log(borderDim(" \u2502 ") + import_chalk10.default.whiteBright(`Welcome back, ${username}!`).padEnd(Math.max(0, W - 1)) + borderDim("\u2502"));
+        console.log(borderDim(" \u2502 ") + import_chalk10.default.whiteBright(`Welcome back, ${displayName}!`).padEnd(Math.max(0, W - 1)) + borderDim("\u2502"));
+        if (isDefaultName) {
+          console.log(borderDim(" \u2502 ") + import_chalk10.default.hex("#F59E0B")("\u26A0  Go to Settings \u203A Profile to set your username").padEnd(Math.max(0, W - 1)) + borderDim("\u2502"));
+        }
         console.log(borderDim(" \u2570" + "\u2500".repeat(W) + "\u256F"));
         return;
       }
@@ -18290,8 +19280,12 @@ ${trimmedResult.slice(0, 1200)}
         ""
       ];
       console.log(borderDim(" \u256D\u2500 O.T.T.O v1.0.0 " + "\u2500".repeat(Math.max(0, W - 17)) + "\u256E"));
-      drawRow(`      Welcome back ${username}!`, rightRows[0], import_chalk10.default.white, import_chalk10.default.white);
-      drawRow("", rightRows[1], import_chalk10.default.white, import_chalk10.default.white);
+      drawRow(`      Welcome back, ${displayName}!`, rightRows[0], import_chalk10.default.white, import_chalk10.default.white);
+      if (isDefaultName) {
+        drawRow(`      ${import_chalk10.default.hex("#F59E0B")("\u26A0")} ${import_chalk10.default.hex("#6B7280")("Go to Settings \u203A Profile to set your username")}`, rightRows[1], import_chalk10.default.white, import_chalk10.default.white);
+      } else {
+        drawRow("", rightRows[1], import_chalk10.default.white, import_chalk10.default.white);
+      }
       drawRow(`   ${logoLines[0]}`, rightRows[2], borderDim, import_chalk10.default.white);
       drawRow(`   ${logoLines[1]}`, rightRows[3], borderDim, import_chalk10.default.white);
       drawRow(`   ${logoLines[2]}`, rightRows[4], borderDim, import_chalk10.default.white);

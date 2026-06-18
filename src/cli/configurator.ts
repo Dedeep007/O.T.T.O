@@ -10,11 +10,12 @@ export interface OttoConfig {
     openai?:   { apiKey: string; apiKeys?: string[]; activeApiKey?: string; model?: string; models?: string[]; activeModel?: string; parallel_tool_calls: boolean };
     anthropic?:{ apiKey: string; apiKeys?: string[]; activeApiKey?: string; model?: string; models?: string[]; activeModel?: string; effort: string };
     ollama?:   { baseUrl: string; model?: string; models?: string[]; activeModel?: string; num_ctx: number };
+    gemini?:   { apiKey: string; apiKeys?: string[]; activeApiKey?: string; model?: string; models?: string[]; activeModel?: string };
   };
   defaults: {
-    primaryProvider: 'groq' | 'openai' | 'anthropic' | 'ollama';
-    secondaryProvider?: 'groq' | 'openai' | 'anthropic' | 'ollama';
-    tertiaryProvider?: 'groq' | 'openai' | 'anthropic' | 'ollama';
+    primaryProvider: 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini';
+    secondaryProvider?: 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini';
+    tertiaryProvider?: 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini';
     showContextBar: boolean;
     maxThreads?: number;  // cap on stored sessions; undefined = use cpuHealthyDefault
   };
@@ -33,7 +34,7 @@ export interface OttoConfig {
 }
 
 const rcPath = path.join(os.homedir(), '.ottorc');
-type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama';
+type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini';
 
 function normalizeModels(models?: string[]): string[] {
   return Array.from(new Set((models ?? []).map(m => m.trim()).filter(Boolean)));
@@ -58,7 +59,7 @@ function getPrimaryApiKey(entry: any): string | undefined {
 export const Configurator = {
   normalizeConfig: (config: OttoConfig): OttoConfig => {
     const next: OttoConfig = JSON.parse(JSON.stringify(config));
-    (['groq', 'openai', 'anthropic', 'ollama'] as ProviderName[]).forEach((provider) => {
+    (['groq', 'openai', 'anthropic', 'ollama', 'gemini'] as ProviderName[]).forEach((provider) => {
       const entry = getProviderEntry(next, provider);
       if (!entry) return;
       entry.models = normalizeModels(entry.models);
@@ -114,9 +115,10 @@ export const Configurator = {
         { name: 'Groq', value: 'groq' },
         { name: 'OpenAI', value: 'openai' },
         { name: 'Anthropic', value: 'anthropic' },
+        { name: 'Gemini', value: 'gemini' },
         { name: 'Ollama (Local)', value: 'ollama' }
       ]
-    }) as 'groq' | 'openai' | 'anthropic' | 'ollama';
+    }) as 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini';
 
     const providers: OttoConfig['providers'] = {};
     
@@ -125,6 +127,13 @@ export const Configurator = {
       const apiKey = await input({ message: 'Enter your Groq API Key:' });
       // Validate lightweight request could be done here. For now, trust the input and validate at runtime.
       providers.groq = { apiKey, frequency_penalty: 0.0 };
+    } else if (primaryProvider === 'gemini') {
+      const apiKey = await input({ message: 'Enter your Gemini API Key:' });
+      providers.gemini = { apiKey };
+    } else if (primaryProvider === 'ollama') {
+      const baseUrl = await input({ message: 'Enter your Ollama base URL (e.g. http://localhost:11434):', default: 'http://localhost:11434' });
+      const model = await input({ message: 'Enter your Ollama model name (e.g. llama3):' });
+      providers.ollama = { baseUrl, model, num_ctx: 4096 };
     }
 
     const securityMode = await select({
@@ -195,7 +204,7 @@ export const Configurator = {
     return null;
   },
 
-  updateApiKey: (provider: 'groq' | 'openai' | 'anthropic', apiKey: string) => {
+  updateApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini', apiKey: string) => {
     const config = Configurator.loadConfig();
     if (config) {
       if (!config.providers[provider]) {
@@ -212,7 +221,7 @@ export const Configurator = {
     return null;
   },
 
-  addApiKey: (provider: 'groq' | 'openai' | 'anthropic', apiKey: string) => {
+  addApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini', apiKey: string) => {
     const config = Configurator.loadConfig();
     if (config) {
       if (!config.providers[provider]) {
@@ -231,7 +240,7 @@ export const Configurator = {
     return null;
   },
 
-  removeApiKey: (provider: 'groq' | 'openai' | 'anthropic', apiKey: string) => {
+  removeApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini', apiKey: string) => {
     const config = Configurator.loadConfig();
     if (config && config.providers[provider]) {
       const entry = config.providers[provider] as any;
@@ -247,7 +256,7 @@ export const Configurator = {
     return null;
   },
 
-  setActiveApiKey: (provider: 'groq' | 'openai' | 'anthropic', apiKey: string) => {
+  setActiveApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini', apiKey: string) => {
     const config = Configurator.loadConfig();
     if (config) {
       if (!config.providers[provider]) {
@@ -264,7 +273,7 @@ export const Configurator = {
     return null;
   },
 
-  rotateApiKey: (provider: 'groq' | 'openai' | 'anthropic'): OttoConfig | null => {
+  rotateApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini'): OttoConfig | null => {
     const config = Configurator.loadConfig();
     if (config && config.providers[provider]) {
       const entry = config.providers[provider] as any;

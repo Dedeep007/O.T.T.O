@@ -1,6 +1,8 @@
 import { ChatGroq } from '@langchain/groq';
 import { ChatOpenAI } from '@langchain/openai';
 import { ChatAnthropic } from '@langchain/anthropic';
+import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
+import { ChatOllama } from '@langchain/ollama';
 import { OttoConfig } from '../cli/configurator.js';
 import { Configurator } from '../cli/configurator.js';
 import { quotaManager } from './quota.js';
@@ -8,7 +10,7 @@ import { ui } from '../cli/ui.js';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { tools } from './tools.js';
 
-type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama';
+type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini';
 
 export class ProviderEngine {
   private config: OttoConfig;
@@ -51,6 +53,25 @@ export class ProviderEngine {
           maxRetries: 0
         }).bindTools(tools) as any;
         ui.info(`Switched to Anthropic - ${model}`);
+      } else if (providerName === 'gemini' && Configurator.getActiveApiKey(this.config, 'gemini')) {
+        const model = Configurator.getActiveModel(this.config, 'gemini') ?? 'gemini-1.5-pro';
+        const apiKey = Configurator.getActiveApiKey(this.config, 'gemini')!;
+        this.primaryModel = new ChatGoogleGenerativeAI({
+          apiKey,
+          model: model,
+          maxRetries: 0
+        }).bindTools(tools) as any;
+        ui.info(`Switched to Gemini - ${model}`);
+      } else if (providerName === 'ollama') {
+        const entry = this.config.providers.ollama;
+        const model = entry?.activeModel ?? entry?.model ?? 'llama3';
+        const baseUrl = entry?.baseUrl ?? 'http://localhost:11434';
+        this.primaryModel = new ChatOllama({
+          baseUrl,
+          model,
+          maxRetries: 0
+        }).bindTools(tools) as any;
+        ui.info(`Switched to Ollama - ${model}`);
       } else {
         ui.warning(`Provider ${providerName} is not fully configured or supported yet.`);
         this.primaryModel = null;

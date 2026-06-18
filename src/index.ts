@@ -618,7 +618,7 @@ async function main() {
 
 
   const createProviderModelView = (
-    providerName: 'groq' | 'openai' | 'anthropic' | 'ollama',
+    providerName: 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini',
     providerLabel: string,
     defaultModel: string,
     examples: string
@@ -768,6 +768,16 @@ async function main() {
         description: 'e.g. claude-3-5-sonnet-20241022, claude-3-haiku-20240307',
         action: async () => phone.pushView(createProviderModelView('anthropic', 'Anthropic', 'claude-3-5-sonnet-20241022', 'e.g. claude-3-5-sonnet-20241022, claude-3-haiku-20240307'))
       },
+      {
+        label: `Gemini  ${Configurator.getActiveModel(config, 'gemini') ? '-> ' + Configurator.getActiveModel(config, 'gemini') : '(default: gemini-1.5-pro)'}`,
+        description: 'e.g. gemini-1.5-pro, gemini-1.5-flash',
+        action: async () => phone.pushView(createProviderModelView('gemini', 'Gemini', 'gemini-1.5-pro', 'e.g. gemini-1.5-pro, gemini-1.5-flash'))
+      },
+      {
+        label: `Ollama  ${Configurator.getActiveModel(config, 'ollama') ? '-> ' + Configurator.getActiveModel(config, 'ollama') : '(default: llama3)'}`,
+        description: 'e.g. llama3, mistral, phi3',
+        action: async () => phone.pushView(createProviderModelView('ollama', 'Ollama', 'llama3', 'e.g. llama3, mistral, phi3'))
+      },
     ]
   });
 
@@ -778,7 +788,7 @@ async function main() {
   };
 
   const createProviderApiKeyView = (
-    providerName: 'groq' | 'openai' | 'anthropic',
+    providerName: 'groq' | 'openai' | 'anthropic' | 'gemini',
     providerLabel: string
   ): PhoneView => {
     const apiKeys = Configurator.getApiKeys(config, providerName);
@@ -895,6 +905,11 @@ async function main() {
         label: `Anthropic  ${Configurator.getApiKeys(config, 'anthropic').length} key(s)`,
         description: Configurator.getActiveApiKey(config, 'anthropic') ? `active: ${maskApiKey(Configurator.getActiveApiKey(config, 'anthropic')!)}` : 'no key',
         action: async () => phone.pushView(createProviderApiKeyView('anthropic', 'Anthropic'))
+      },
+      {
+        label: `Gemini  ${Configurator.getApiKeys(config, 'gemini').length} key(s)`,
+        description: Configurator.getActiveApiKey(config, 'gemini') ? `active: ${maskApiKey(Configurator.getActiveApiKey(config, 'gemini')!)}` : 'no key',
+        action: async () => phone.pushView(createProviderApiKeyView('gemini', 'Gemini'))
       },
       { label: 'Go Back', action: () => phone.goBack() }
     ]

@@ -41,7 +41,7 @@ export class Executor {
     }
 
     return new Promise((resolve, reject) => {
-      const child = spawn(cmd, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], cwd: process.cwd() });
+      const child = spawn(cmd, args, { shell: process.platform === 'win32', stdio: ['ignore', 'pipe', 'pipe'], cwd: process.cwd() });
       
       let stdout = '';
       let stderr = '';
