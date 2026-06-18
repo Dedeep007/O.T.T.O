@@ -125,15 +125,24 @@ export const Configurator = {
     // As per user request, we have a Groq API Key explicitly, so we should prioritize it if selected or default to it.
     if (primaryProvider === 'groq') {
       const apiKey = await input({ message: 'Enter your Groq API Key:' });
-      // Validate lightweight request could be done here. For now, trust the input and validate at runtime.
-      providers.groq = { apiKey, frequency_penalty: 0.0 };
+      const model = await input({ message: 'Enter Groq Model (e.g. qwen-qwq-32b):', default: 'qwen-qwq-32b' });
+      providers.groq = { apiKey, model, frequency_penalty: 0.0 };
     } else if (primaryProvider === 'gemini') {
       const apiKey = await input({ message: 'Enter your Gemini API Key:' });
-      providers.gemini = { apiKey };
+      const model = await input({ message: 'Enter Gemini Model (e.g. gemini-1.5-pro):', default: 'gemini-1.5-pro' });
+      providers.gemini = { apiKey, model };
     } else if (primaryProvider === 'ollama') {
       const baseUrl = await input({ message: 'Enter your Ollama base URL (e.g. http://localhost:11434):', default: 'http://localhost:11434' });
-      const model = await input({ message: 'Enter your Ollama model name (e.g. llama3):' });
+      const model = await input({ message: 'Enter your Ollama model name (e.g. llama3):', default: 'llama3' });
       providers.ollama = { baseUrl, model, num_ctx: 4096 };
+    } else if (primaryProvider === 'openai') {
+      const apiKey = await input({ message: 'Enter your OpenAI API Key:' });
+      const model = await input({ message: 'Enter OpenAI Model (e.g. gpt-4o):', default: 'gpt-4o' });
+      providers.openai = { apiKey, model, parallel_tool_calls: true };
+    } else if (primaryProvider === 'anthropic') {
+      const apiKey = await input({ message: 'Enter your Anthropic API Key:' });
+      const model = await input({ message: 'Enter Anthropic Model (e.g. claude-3-5-sonnet-20241022):', default: 'claude-3-5-sonnet-20241022' });
+      providers.anthropic = { apiKey, model, effort: 'high' };
     }
 
     const securityMode = await select({

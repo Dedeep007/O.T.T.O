@@ -1186,6 +1186,43 @@ async function main() {
           phone.goBack(); phone.pushView(createProviderView());
         }
       },
+      {
+        label: `Gemini  ${config.defaults.primaryProvider === 'gemini' ? '[active]' : ''}  ${Configurator.getActiveApiKey(config, 'gemini') ? '' : '-- no key'}`,
+        description: Configurator.getActiveModel(config, 'gemini') ? `model: ${Configurator.getActiveModel(config, 'gemini')}` : 'model: gemini-1.5-pro (default)',
+        action: async () => {
+          if (!Configurator.getActiveApiKey(config, 'gemini')) {
+            phone.active = false;
+            ui.clearScreen();
+            const key = await promptWithEscape('Enter API Key for Gemini:');
+            if (key === null) {
+              phone.active = true;
+              phone.goBack();
+              phone.pushView(createProviderView());
+              return;
+            }
+            config = Configurator.updateApiKey('gemini', key) || config;
+            phone.active = true;
+          }
+          config = Configurator.updatePrimaryProvider('gemini') || config;
+          provider.setConfig(config);
+          phone.updateConfig(config);
+          ui.success('Switched to Gemini.');
+          await new Promise(r => setTimeout(r, 1000));
+          phone.goBack(); phone.pushView(createProviderView());
+        }
+      },
+      {
+        label: `Ollama (Local)  ${config.defaults.primaryProvider === 'ollama' ? '[active]' : ''}`,
+        description: Configurator.getActiveModel(config, 'ollama') ? `model: ${Configurator.getActiveModel(config, 'ollama')}` : 'model: llama3 (default)',
+        action: async () => {
+          config = Configurator.updatePrimaryProvider('ollama') || config;
+          provider.setConfig(config);
+          phone.updateConfig(config);
+          ui.success('Switched to Ollama.');
+          await new Promise(r => setTimeout(r, 1000));
+          phone.goBack(); phone.pushView(createProviderView());
+        }
+      },
       { label: 'Go Back', action: () => phone.goBack() }
     ]
   });
