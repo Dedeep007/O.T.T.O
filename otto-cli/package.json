@@ -1,6 +1,6 @@
 {
   "name": "@dpv007/otto-cli",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "O.T.T.O - Orchestrated Task & Tool Operator CLI",
   "main": "dist/index.js",
   "type": "module",

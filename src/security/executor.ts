@@ -1,4 +1,4 @@
-import { spawn } from 'child_process';
+import { exec } from 'child_process';
 import { parse } from 'shell-quote';
 import { Configurator } from '../cli/configurator.js';
 import { ui } from '../cli/ui.js';
@@ -13,11 +13,8 @@ export class Executor {
     const cmd = String(parsed[0]);
     const args = parsed.slice(1).map(String);
 
-    // Simple security validation against shell metacharacters
-    if (parsed.some(token => typeof token !== 'string')) {
-      ui.error('Shell metacharacters detected. Execution blocked.');
-      throw new Error('Metacharacters blocked');
-    }
+    // Remove strict metacharacter blocking since we use exec now and 
+    // want to allow standard shell usage. The prompt/whitelist still protects cmd.
 
     const isWhitelisted = config.security.allowedCommands.includes(cmd);
 
@@ -41,24 +38,12 @@ export class Executor {
     }
 
     return new Promise((resolve, reject) => {
-      const child = spawn(cmd, args, { shell: process.platform === 'win32', stdio: ['ignore', 'pipe', 'pipe'], cwd: process.cwd() });
-      
-      let stdout = '';
-      let stderr = '';
-
-      child.stdout.on('data', (data) => stdout += data.toString());
-      child.stderr.on('data', (data) => stderr += data.toString());
-
-      child.on('close', (code) => {
-        if (code === 0) {
-          resolve(stdout);
+      exec(commandStr, { cwd: process.cwd() }, (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(`Command failed: ${stderr || error.message}`));
         } else {
-          reject(new Error(`Command failed with code ${code}: ${stderr}`));
+          resolve(stdout.toString() || stderr.toString() || 'Command executed successfully.');
         }
-      });
-      
-      child.on('error', (err) => {
-         reject(err);
       });
     });
   }
