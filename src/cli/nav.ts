@@ -211,12 +211,15 @@ export class PhoneOS {
     const rightStr = rightParts.join('  ') + '  ';
     const rightTotLen = rightLens.reduce((a, b) => a + b, 0) + (Math.max(0, rightParts.length - 1) * 2) + 2;
 
-    let leftStr = '  ' + GOLD.bold(`Orchestrated Task & Tool Operator (O.T.T.O) v${CLI_VERSION}`) + '   ';
-    let leftLen = 48; // visible length of left side
+    const titleFull = `Orchestrated Task & Tool Operator v${CLI_VERSION}`;
+    const titleShort = `O.T.T.O v${CLI_VERSION}`;
+    
+    let leftStr = '  ' + GOLD.bold(titleFull) + '   ';
+    let leftLen = 2 + titleFull.length + 3;
 
     if (W < leftLen + rightTotLen) {
-      leftStr = '  ' + GOLD.bold('O.T.T.O') + '   ';
-      leftLen = 12;
+      leftStr = '  ' + GOLD.bold(titleShort) + '   ';
+      leftLen = 2 + titleShort.length + 3;
     }
 
     const midSpace = Math.max(0, W - leftLen - rightTotLen);
