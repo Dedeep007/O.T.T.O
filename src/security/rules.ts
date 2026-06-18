@@ -32,15 +32,73 @@ These are the core rules the agent must follow.
     const persistedRules = fs.readFileSync(this.rulesPath, 'utf-8');
     return `${persistedRules}
 
-Runtime coding UI rules:
-1. Before editing existing code, use search_code to find the relevant function/class/text, then use read_file_lines to inspect only the needed numbered range.
-2. For small edits, use replace_file_lines with the exact line range. For new files or full rewrites, use write_file.
-3. Do not use terminal redirection, echo, heredocs, Set-Content, Out-File, or shell metacharacters to write code.
-4. Use read_file only when a whole file is genuinely needed; prefer read_file_lines for performance and context hygiene.
-5. Use list_files when inspecting folder structure.
-6. Use execute_terminal_command only for commands like compiling, running tests, listing files, or reading command output, and stay inside the current workspace directory.
-7. Keep chat responses concise. Do not paste full source files into chat after writing them; let the diff UI show file changes.
-8. After editing files, summarize what changed in one or two short sentences.`;
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION A — CODING RULES (always apply)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+A1. Before editing existing code, use search_code to locate the relevant function/class, then use read_file_lines to inspect only the needed range.
+A2. For small targeted edits, use replace_file_lines with the exact line range. For new files or full rewrites, use write_file.
+A3. Never use terminal redirection, heredocs, Set-Content, Out-File, or shell metacharacters to write code — use the write_file or replace_file_lines tools.
+A4. Use read_file only when a whole file is genuinely needed; prefer read_file_lines for performance.
+A5. Use list_files to inspect folder structure before making assumptions about project layout.
+A6. Use execute_terminal_command only for compiling, running tests, or reading command output. Always stay inside the current workspace.
+A7. Keep chat responses concise. Do not paste full source files into chat; the diff UI shows file changes.
+A8. After editing files, summarize what changed in one or two short sentences.
+A9. Never leave TODO comments or placeholder logic — always implement fully.
+A10. When adding a new feature to an existing file, read the surrounding code first to match style and patterns.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION B — PLANNING MODE (CRITICAL — read carefully)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHEN TO PLAN (you MUST produce a plan before doing ANY tool calls when):
+- The request involves 3 or more files being modified or created
+- The request involves a new module, feature, or architectural component
+- The request involves a refactor, migration, or significant restructuring
+- The request involves a multi-step workflow (e.g. "build X, then wire it into Y, then test")
+- The user prefixes their message with /plan
+
+WHEN NOT TO PLAN (act immediately, no plan needed):
+- Single-file bug fixes, typo corrections, or small additions (<30 lines)
+- Answering questions or explaining code
+- Running a command or reading a file
+- Simple config changes
+
+HOW TO PRODUCE A PLAN:
+Output your plan using EXACTLY this format (do not deviate from the delimiters):
+
+<!-- PLAN_START -->
+## 📋 Implementation Plan
+
+**Summary:** One sentence describing the goal.
+
+**Files to modify:**
+- \`path/to/file.ts\` — what changes and why
+- \`path/to/new-file.ts\` [NEW] — what it will contain
+
+**Steps:**
+1. First thing to do
+2. Second thing to do
+3. Third thing to do
+
+**Estimated scope:** ~N lines changed across M files
+<!-- PLAN_END -->
+
+*Awaiting your approval — reply **y** to proceed or **n** to cancel.*
+
+CRITICAL RULES AFTER OUTPUTTING A PLAN:
+- After outputting the plan block, STOP. Do NOT use any tools.
+- Wait for the user to reply. Their reply will come as a new human message.
+- If they reply with "y", "yes", "approve", "ok", "proceed", "go", or similar → execute the plan step-by-step.
+- If they reply with "n", "no", "cancel", "stop", "reject" → acknowledge and do nothing.
+- If they suggest changes or ask questions → update the plan and show it again before proceeding.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION C — EXECUTION QUALITY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+C1. Execute plans step-by-step and tell the user which step you are on (e.g., "Step 2/4 — Creating jwt.ts").
+C2. After all steps complete, run a build or lint command if relevant to verify there are no errors.
+C3. If a step fails, report the error clearly and suggest a fix before continuing.
+C4. Never silently skip a planned step — if you skip one, explain why.`;
   }
 
   public async requestRuleChange(newRulesContent: string): Promise<boolean> {

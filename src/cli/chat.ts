@@ -150,7 +150,8 @@ export class ChatUI {
     currentInput: string,
     telemetry: ChatTelemetry,
     model: string,
-    isThinking: boolean = false
+    isThinking: boolean = false,
+    pendingPlan: boolean = false
   ) {
     // ── 1. Build the FULL content buffer ─────────────────────────────────────
     const lines: string[] = [];
@@ -226,18 +227,92 @@ export class ChatUI {
           const wrappedLines = wrapText(rawContent, this.W, 2);
           wrappedLines.forEach(line => push(chalk.white(line)));
         } else {
-          let processedContent = rawContent;
-          processedContent = processedContent.replace(/^[*\s]*●\s*([A-Za-z_]+)\(([^)]*)\)/gm, (_match, tool, args) => {
-            return chalk.dim('/- ') + chalk.white.bold(tool) + chalk.dim('(' + args + ')');
-          });
-          processedContent = processedContent.replace(/^[*\s]*└\s*(.*)/gm, (_match, details) => {
-            return chalk.dim('\\- ' + details);
-          });
+          // ── Detect and render plan block with special styling ──
+          const PLAN_RE = /<!--\s*PLAN_START\s*-->([\s\S]*?)<!--\s*PLAN_END\s*-->/;
+          const planMatch = rawContent.match(PLAN_RE);
 
-          const rendered = renderMarkdownWithOttoStyles(processedContent, this.W - 4);
-          rendered.trim().split('\n').forEach(line => push('  ' + line));
+          if (planMatch) {
+            // Render everything before the plan normally
+            const beforePlan = rawContent.slice(0, rawContent.indexOf('<!-- PLAN_START')).trim();
+            if (beforePlan) {
+              const rendered = renderMarkdownWithOttoStyles(beforePlan, this.W - 4);
+              rendered.trim().split('\n').forEach(line => push('  ' + line));
+              push('');
+            }
+
+            // Render the plan block as a styled box
+            const planContent = planMatch[1].trim();
+            const planWidth = Math.min(this.W - 4, 90);
+            const boxBorder = chalk.hex('#F5C400');
+            const boxFill   = chalk.hex('#FEF9C3');
+            const stepColor = chalk.hex('#22D3EE');
+            const fileColor = chalk.hex('#86EFAC');
+
+            push('  ' + boxBorder('╔' + '═'.repeat(planWidth) + '╗'));
+            push('  ' + boxBorder('║') + chalk.bgHex('#422006').hex('#F5C400').bold(
+              ' 📋 IMPLEMENTATION PLAN '.padEnd(planWidth)
+            ) + boxBorder('║'));
+            push('  ' + boxBorder('╠' + '═'.repeat(planWidth) + '╣'));
+
+            planContent.split('\n').forEach(line => {
+              const stripped = line.trim();
+              if (!stripped || stripped.startsWith('##')) return; // skip heading, blank
+
+              let styled: string;
+              if (/^\d+\./.test(stripped)) {
+                // Numbered step
+                styled = stepColor('  ' + stripped);
+              } else if (stripped.startsWith('- `')) {
+                // File reference
+                styled = '  ' + fileColor(stripped);
+              } else if (stripped.startsWith('**')) {
+                // Bold label line
+                styled = '  ' + chalk.white.bold(stripped.replace(/\*\*/g, ''));
+              } else {
+                styled = '  ' + chalk.hex('#D1D5DB')(stripped);
+              }
+
+              // Word-wrap to fit box
+              const maxLineLen = planWidth - 2;
+              const rawStyled = stripAnsi(styled);
+              if (rawStyled.length <= maxLineLen) {
+                push('  ' + boxBorder('║') + styled.padEnd(planWidth - rawStyled.length + styled.length) + boxBorder('║'));
+              } else {
+                wrapText(stripAnsi(styled), maxLineLen, 2).forEach(wl => {
+                  push('  ' + boxBorder('║') + '  ' + chalk.hex('#D1D5DB')(wl.trim()).padEnd(planWidth - 2) + boxBorder('║'));
+                });
+              }
+            });
+
+            push('  ' + boxBorder('╠' + '═'.repeat(planWidth) + '╣'));
+            push('  ' + boxBorder('║') + chalk.bgHex('#0c1a0c').hex('#4ADE80').bold(
+              ' ✅ Reply y to approve  |  ❌ Reply n to cancel '.padEnd(planWidth)
+            ) + boxBorder('║'));
+            push('  ' + boxBorder('╚' + '═'.repeat(planWidth) + '╝'));
+            push('');
+
+            // Render everything after the plan normally
+            const afterPlan = rawContent.slice(rawContent.indexOf('<!-- PLAN_END -->') + '<!-- PLAN_END -->'.length).trim();
+            if (afterPlan) {
+              const rendered = renderMarkdownWithOttoStyles(afterPlan, this.W - 4);
+              rendered.trim().split('\n').forEach(line => push('  ' + line));
+            }
+          } else {
+            // No plan block — normal rendering
+            let processedContent = rawContent;
+            processedContent = processedContent.replace(/^[*\s]*●\s*([A-Za-z_]+)\(([^)]*)\)/gm, (_match, tool, args) => {
+              return chalk.dim('/- ') + chalk.white.bold(tool) + chalk.dim('(' + args + ')');
+            });
+            processedContent = processedContent.replace(/^[*\s]*└\s*(.*)/gm, (_match, details) => {
+              return chalk.dim('\\- ' + details);
+            });
+
+            const rendered = renderMarkdownWithOttoStyles(processedContent, this.W - 4);
+            rendered.trim().split('\n').forEach(line => push('  ' + line));
+          }
         }
       }
+
 
       push('');
     });
@@ -299,7 +374,9 @@ export class ChatUI {
       ? this.MUTED('  [scrolled — End to return]')
       : '';
     const placeholder  = currentInput.length === 0
-      ? this.MUTED('Type your message... (esc to menu)')
+      ? (pendingPlan
+          ? chalk.hex('#4ADE80').bold('⏳ Awaiting approval — type y to proceed or n to cancel')
+          : this.MUTED('Type your message... (esc to menu)'))
       : '';
     process.stdout.write('\x1B[2K\r' + promptPrefix + chalk.white(currentInput) + placeholder + scrollHint);
   }

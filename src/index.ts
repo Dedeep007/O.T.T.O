@@ -53,6 +53,13 @@ async function main() {
     let lastStreamRender = 0;
     let lastStreamContentLength = 0;
     
+    // pendingPlan: true when the AI last response contained a plan block and
+    // we're waiting for the user's y/n before executing any tool calls.
+    let pendingPlan = false;
+
+    const PLAN_BLOCK_RE = /<!--\s*PLAN_START\s*-->[\s\S]*?<!--\s*PLAN_END\s*-->/;
+    const REJECTION_WORDS = /^(n|no|cancel|stop|reject|nope|abort|dont|don't)[\s.!]*$/i;
+    
     // Convert history for rendering
     const getRenderMessages = () => {
       const renderMsgs: any[] = [];
@@ -90,13 +97,13 @@ async function main() {
       }
     };
 
-    const flushStreamRender = () => {
+    const flushStreamRender = (isPending = false) => {
       if (streamRenderTimer) {
         clearTimeout(streamRenderTimer);
         streamRenderTimer = null;
       }
       lastStreamRender = Date.now();
-      render(false);
+      render(false, isPending);
     };
 
     const scheduleStreamRender = (delay = 160) => {
@@ -115,7 +122,7 @@ async function main() {
       thinkingTimer = setInterval(() => render(true), 350);
     };
 
-    const render = (isThinking = false) => {
+    const render = (isThinking = false, isPendingPlan = false) => {
       if (isThinking) startThinkingAnimation();
       else stopThinkingAnimation();
       const stats = memoryManager.getBudgetStatsForMessages(messages, rules);
@@ -127,7 +134,7 @@ async function main() {
         ctxUsed: stats.filled,
         ramMB,
         showContextBar: config.defaults.showContextBar !== false
-      }, model, isThinking);
+      }, model, isThinking, isPendingPlan || pendingPlan);
     };
 
     const formatToolResult = (toolName: string, result: string, diffSummary: string, args: any) => {
@@ -262,41 +269,66 @@ async function main() {
               messages[messages.length - 1] = finalMessage;
               lastStreamContentLength = 0;
               syncMessages();
-              flushStreamRender();
-              
-              if (finalMessage.tool_calls && finalMessage.tool_calls.length > 0) {
-                for (const call of finalMessage.tool_calls) {
-                  const tool = tools.find(t => t.name === call.name);
-                  let toolResultStr = '';
-                  
-                  if (tool) {
-                    try {
-                      const beforeSnapshot = call.name === 'execute_terminal_command'
-                        ? captureWorkspaceSnapshot()
-                        : null;
-                      const res = await (tool as any).invoke(call.args);
-                      const afterSnapshot = beforeSnapshot ? captureWorkspaceSnapshot() : null;
-                      const diffSummary = beforeSnapshot && afterSnapshot
-                        ? formatWorkspaceChanges(beforeSnapshot, afterSnapshot)
-                        : '';
-                      toolResultStr = formatToolResult(call.name, String(res), diffSummary, call.args);
-                    } catch (e: any) {
-                      toolResultStr = formatToolResult(call.name, `Error: ${e.message}`, '', call.args);
-                    }
-                  } else {
-                    toolResultStr = formatToolResult(call.name, `Error: Tool ${call.name} not found.`, '', call.args);
-                  }
-                  
-                  messages.push(new ToolMessage({
-                    content: toolResultStr,
-                    tool_call_id: call.id,
-                    name: call.name
-                  }));
-                  syncMessages();
-                }
-                render(true); // Loop back, show "thinking..."
-              } else {
+
+              // ── PLAN DETECTION ─────────────────────────────────────────────
+              // If the response contains a plan block and no tool calls were attached,
+              // set pendingPlan and stop the loop — wait for user's y/n.
+              const responseText = String(finalMessage?.content ?? '');
+              const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
+              const hasToolCalls = finalMessage?.tool_calls && finalMessage.tool_calls.length > 0;
+
+              if (hasPlanBlock && !hasToolCalls) {
+                // Plan shown — pause and wait for user approval
+                pendingPlan = true;
                 isDone = true;
+                flushStreamRender(true);
+              } else if (hasToolCalls) {
+                // Check if user just rejected a pending plan
+                const lastHuman = [...messages].reverse().find(m => m._getType() === 'human');
+                const lastHumanText = String(lastHuman?.content ?? '').trim();
+                if (pendingPlan && REJECTION_WORDS.test(lastHumanText)) {
+                  pendingPlan = false;
+                  isDone = true;
+                  flushStreamRender();
+                } else {
+                  pendingPlan = false;
+                  flushStreamRender();
+                  for (const call of finalMessage.tool_calls) {
+                    const tool = tools.find(t => t.name === call.name);
+                    let toolResultStr = '';
+                    
+                    if (tool) {
+                      try {
+                        const beforeSnapshot = call.name === 'execute_terminal_command'
+                          ? captureWorkspaceSnapshot()
+                          : null;
+                        const res = await (tool as any).invoke(call.args);
+                        const afterSnapshot = beforeSnapshot ? captureWorkspaceSnapshot() : null;
+                        const diffSummary = beforeSnapshot && afterSnapshot
+                          ? formatWorkspaceChanges(beforeSnapshot, afterSnapshot)
+                          : '';
+                        toolResultStr = formatToolResult(call.name, String(res), diffSummary, call.args);
+                      } catch (e: any) {
+                        toolResultStr = formatToolResult(call.name, `Error: ${e.message}`, '', call.args);
+                      }
+                    } else {
+                      toolResultStr = formatToolResult(call.name, `Error: Tool ${call.name} not found.`, '', call.args);
+                    }
+                    
+                    messages.push(new ToolMessage({
+                      content: toolResultStr,
+                      tool_call_id: call.id,
+                      name: call.name
+                    }));
+                    syncMessages();
+                  }
+                  render(true); // Loop back, show "thinking..."
+                }
+              } else {
+                // Normal response — no plan, no tools
+                pendingPlan = false;
+                isDone = true;
+                flushStreamRender();
               }
             }
             
