@@ -1412,7 +1412,7 @@ async function main() {
       const isDefaultName = !config.profile?.username;
 
       if (isCompact) {
-        console.log(borderDim(' ╭─ O.T.T.O v1.1.10 ' + '─'.repeat(Math.max(0, W - 18)) + '╮'));
+        console.log(borderDim(' ╭─ O.T.T.Ov1.1.11 ' + '─'.repeat(Math.max(0, W - 18)) + '╮'));
         console.log(borderDim(' │ ') + chalk.whiteBright(`Welcome back, ${displayName}!`).padEnd(Math.max(0, W - 1)) + borderDim('│'));
         if (isDefaultName) {
           console.log(borderDim(' │ ') + chalk.hex('#F59E0B')('⚠  Go to Settings › Profile to set your username').padEnd(Math.max(0, W - 1)) + borderDim('│'));
@@ -1444,7 +1444,7 @@ async function main() {
         ''
       ];
 
-      console.log(borderDim(' ╭─ O.T.T.O v1.1.10 ' + '─'.repeat(Math.max(0, W - 18)) + '╮'));
+      console.log(borderDim(' ╭─ O.T.T.Ov1.1.11 ' + '─'.repeat(Math.max(0, W - 18)) + '╮'));
 
       drawRow(`      Welcome back, ${displayName}!`, rightRows[0], chalk.white, chalk.white);
       if (isDefaultName) {
