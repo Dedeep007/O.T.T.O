@@ -242,52 +242,55 @@ export class ChatUI {
 
             // Render the plan block as a styled box
             const planContent = planMatch[1].trim();
-            const planWidth = Math.min(this.W - 4, 90);
+            const planWidth = Math.min(this.W - 6, 86);  // inner content width
             const boxBorder = chalk.hex('#F5C400');
-            const boxFill   = chalk.hex('#FEF9C3');
             const stepColor = chalk.hex('#22D3EE');
             const fileColor = chalk.hex('#86EFAC');
 
+            // ANSI-aware box row: pads styled string to planWidth using visible length
+            const boxRow = (styledContent: string, bgHex?: string) => {
+              const visLen = stripAnsi(styledContent).length;
+              const pad = ' '.repeat(Math.max(0, planWidth - visLen));
+              const inner = bgHex
+                ? chalk.bgHex(bgHex)(styledContent + pad)
+                : styledContent + pad;
+              return '  ' + boxBorder('║') + inner + boxBorder('║');
+            };
+
             push('  ' + boxBorder('╔' + '═'.repeat(planWidth) + '╗'));
-            push('  ' + boxBorder('║') + chalk.bgHex('#422006').hex('#F5C400').bold(
-              ' 📋 IMPLEMENTATION PLAN '.padEnd(planWidth)
-            ) + boxBorder('║'));
+            push(boxRow(chalk.hex('#F5C400').bold(' \uD83D\uDCCB IMPLEMENTATION PLAN '), '#1a1200'));
             push('  ' + boxBorder('╠' + '═'.repeat(planWidth) + '╣'));
 
             planContent.split('\n').forEach(line => {
               const stripped = line.trim();
-              if (!stripped || stripped.startsWith('##')) return; // skip heading, blank
+              if (!stripped || stripped.startsWith('##')) return;
 
-              let styled: string;
+              let styledText: string;
               if (/^\d+\./.test(stripped)) {
-                // Numbered step
-                styled = stepColor('  ' + stripped);
-              } else if (stripped.startsWith('- `')) {
-                // File reference
-                styled = '  ' + fileColor(stripped);
-              } else if (stripped.startsWith('**')) {
-                // Bold label line
-                styled = '  ' + chalk.white.bold(stripped.replace(/\*\*/g, ''));
+                styledText = stepColor(' ' + stripped);
+              } else if (stripped.startsWith('- `') || stripped.startsWith('- \\`')) {
+                styledText = ' ' + fileColor(stripped);
+              } else if (/^\*\*/.test(stripped)) {
+                styledText = ' ' + chalk.white.bold(stripped.replace(/\*\*/g, ''));
               } else {
-                styled = '  ' + chalk.hex('#D1D5DB')(stripped);
+                styledText = ' ' + chalk.hex('#D1D5DB')(stripped);
               }
 
-              // Word-wrap to fit box
-              const maxLineLen = planWidth - 2;
-              const rawStyled = stripAnsi(styled);
-              if (rawStyled.length <= maxLineLen) {
-                push('  ' + boxBorder('║') + styled.padEnd(planWidth - rawStyled.length + styled.length) + boxBorder('║'));
+              const visibleText = stripAnsi(styledText);
+              if (visibleText.length <= planWidth) {
+                push(boxRow(styledText));
               } else {
-                wrapText(stripAnsi(styled), maxLineLen, 2).forEach(wl => {
-                  push('  ' + boxBorder('║') + '  ' + chalk.hex('#D1D5DB')(wl.trim()).padEnd(planWidth - 2) + boxBorder('║'));
+                wrapText(visibleText.trim(), planWidth - 2, 0).forEach(wl => {
+                  push(boxRow(' ' + chalk.hex('#D1D5DB')(wl.trim())));
                 });
               }
             });
 
             push('  ' + boxBorder('╠' + '═'.repeat(planWidth) + '╣'));
-            push('  ' + boxBorder('║') + chalk.bgHex('#0c1a0c').hex('#4ADE80').bold(
-              ' ✅ Reply y to approve  |  ❌ Reply n to cancel '.padEnd(planWidth)
-            ) + boxBorder('║'));
+            const footerText = chalk.hex('#4ADE80').bold(' \u2705 y to approve') +
+              chalk.hex('#6B7280')('  |  ') +
+              chalk.hex('#F87171').bold('\u274C n to cancel');
+            push(boxRow(footerText, '#0c1a0c'));
             push('  ' + boxBorder('╚' + '═'.repeat(planWidth) + '╝'));
             push('');
 
@@ -300,10 +303,10 @@ export class ChatUI {
           } else {
             // No plan block — normal rendering
             let processedContent = rawContent;
-            processedContent = processedContent.replace(/^[*\s]*●\s*([A-Za-z_]+)\(([^)]*)\)/gm, (_match, tool, args) => {
+            processedContent = processedContent.replace(/^[*\s]*\u25cf\s*([A-Za-z_]+)\(([^)]*)\)/gm, (_match, tool, args) => {
               return chalk.dim('/- ') + chalk.white.bold(tool) + chalk.dim('(' + args + ')');
             });
-            processedContent = processedContent.replace(/^[*\s]*└\s*(.*)/gm, (_match, details) => {
+            processedContent = processedContent.replace(/^[*\s]*\u2514\s*(.*)/gm, (_match, details) => {
               return chalk.dim('\\- ' + details);
             });
 
@@ -312,7 +315,6 @@ export class ChatUI {
           }
         }
       }
-
 
       push('');
     });

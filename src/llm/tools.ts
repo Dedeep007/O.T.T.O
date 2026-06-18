@@ -93,7 +93,9 @@ const writeFile = tool(
     description: "Creates or overwrites a workspace file with exact content. Use this for all code edits and file creation instead of terminal redirection, echo, Set-Content, heredocs, or shell metacharacters. Return concise results; the UI will show the diff.",
     schema: z.object({
       filePath: z.string().describe("Workspace-relative file path, for example print_primes.cpp."),
-      content: z.string().describe("The complete file content to write."),
+      content: z.union([z.string(), z.any()])
+        .transform(v => typeof v === 'string' ? v : JSON.stringify(v, null, 2))
+        .describe("The complete file content to write as a string."),
     }),
   }
 );
@@ -254,7 +256,9 @@ const replaceFileLines = tool(
       filePath: z.string().describe("Workspace-relative file path, for example src/index.ts."),
       startLine: z.number().int().min(1).describe("1-based first line to replace."),
       endLine: z.number().int().min(1).describe("1-based last line to replace, inclusive."),
-      content: z.string().describe("Replacement text for the range. Use an empty string to delete the range."),
+      content: z.union([z.string(), z.any()])
+        .transform(v => typeof v === 'string' ? v : JSON.stringify(v, null, 2))
+        .describe("Replacement text for the range. Use an empty string to delete the range."),
     }),
   }
 );
