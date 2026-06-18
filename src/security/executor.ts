@@ -66,7 +66,13 @@ export class Executor {
     return new Promise((resolve, reject) => {
       exec(commandStr, { cwd: process.cwd() }, (error, stdout, stderr) => {
         if (error) {
-          reject(new Error(`Command failed: ${stderr || error.message}`));
+          const out = stdout.toString().trim();
+          const err = stderr.toString().trim();
+          let msg = `Command failed with exit code ${error.code || 'unknown'}:`;
+          if (err) msg += `\nSTDERR:\n${err}`;
+          if (out) msg += `\nSTDOUT:\n${out}`;
+          if (!err && !out) msg += ` ${error.message}`;
+          reject(new Error(msg));
         } else {
           resolve(stdout.toString() || stderr.toString() || 'Command executed successfully.');
         }

@@ -45,6 +45,8 @@ A7. KEEP RESPONSES EXTREMELY CONCISE. NEVER dump full source files into the chat
 A8. When making edits, ONLY show the specific lines modified in your response if absolutely necessary to explain something, otherwise rely on the automatic UI diffs.
 A9. Never leave TODO comments or placeholder logic — always implement fully.
 A10. When adding a new feature to an existing file, read the surrounding code first to match style and patterns.
+A11. NEVER run TypeScript files directly with 'node file.ts'. TypeScript must be executed via: (1) 'npx ts-node file.ts', (2) 'npx tsx file.ts', or (3) compile first with 'npx tsc' then run the compiled JS. Always check package.json scripts first — prefer 'npm run dev' or 'npm start' if they exist.
+A12. Terminal Execution Rules: (a) Always check if a package.json exists and use its scripts (npm run dev, npm start, npm test) before crafting raw commands. (b) For servers/long-running processes, ALWAYS use background:true so the tool returns immediately. (c) After starting a background server, wait 2-3 seconds then read its log file to confirm the port it is listening on before telling the user it is ready. (d) On Windows, use PowerShell-compatible syntax — no bash heredocs, no 'touch', use 'New-Item' for file creation if needed. (e) If 'npx tsc' fails, read the tsconfig.json first and check for missing files or wrong paths.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 SECTION B — PLANNING MODE (CRITICAL — read carefully)
