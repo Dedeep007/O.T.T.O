@@ -126,6 +126,8 @@ async function main() {
       thinkingTimer = setInterval(() => render(true), 350);
     };
 
+    let diffsExpanded = false;
+
     const render = (isThinking = false, isPendingPlan = false) => {
       if (isThinking) startThinkingAnimation();
       else stopThinkingAnimation();
@@ -138,7 +140,7 @@ async function main() {
         ctxUsed: stats.filled,
         ramMB,
         showContextBar: config.defaults.showContextBar !== false
-      }, model, isThinking, isPendingPlan || pendingPlan, planMenuIndex);
+      }, model, isThinking, isPendingPlan || pendingPlan, planMenuIndex, diffsExpanded);
     };
 
     const formatToolResult = (toolName: string, result: string, diffSummary: string, args: any) => {
@@ -209,6 +211,10 @@ async function main() {
           // Exit alternate screen before hard-quitting so the terminal is clean
           process.stdout.write('\x1B[?1049l');
           process.exit(0);
+        } else if (key.ctrl && key.name === 'e') {
+          diffsExpanded = !diffsExpanded;
+          render(isStreaming);
+          return;
         } else if (key.name === 'escape') {
           stopThinkingAnimation();
           if (streamRenderTimer) {

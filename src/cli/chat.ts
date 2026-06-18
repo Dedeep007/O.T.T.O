@@ -54,14 +54,24 @@ function wrapText(text: string, maxWidth: number, indent: number): string[] {
   return lines;
 }
 
-function renderDiffBlock(codeStr: string, diffWidth: number): string {
+function renderDiffBlock(codeStr: string, diffWidth: number, isExpanded: boolean): string {
   let output = '\n';
 
   const bar = (bg: string, fg: string) => chalk.bgHex(bg).hex(fg)('  ');
   const row = (bg: string, fg: string, text: string) =>
     chalk.bgHex(bg).hex(fg)(padVisible(` ${text}`, diffWidth - 2));
 
-  codeStr.split('\n').forEach(line => {
+  const allLines = codeStr.split('\n');
+  const total = allLines.length;
+
+  let toRender = allLines;
+  if (!isExpanded && total > 15) {
+    const top = allLines.slice(0, 7);
+    const bottom = allLines.slice(total - 3);
+    toRender = [...top, `... (${total - 10} hidden lines) [Press Ctrl+E to Expand] ...`, ...bottom];
+  }
+
+  toRender.forEach(line => {
     if (line.startsWith('+++') || line.startsWith('---')) {
       output += chalk.bgHex('#1E293B').hex('#CBD5E1')(padVisible(` ${line}`, diffWidth)) + '\n';
     } else if (line.startsWith('@@')) {
@@ -70,6 +80,8 @@ function renderDiffBlock(codeStr: string, diffWidth: number): string {
       output += bar('#16A34A', '#052e16') + row('#15803D', '#F0FDF4', line) + '\n';
     } else if (line.startsWith('-')) {
       output += bar('#DC2626', '#450a0a') + row('#B91C1C', '#FFF1F2', line) + '\n';
+    } else if (line.startsWith('... (')) {
+      output += chalk.bgHex('#374151').hex('#FBBF24')(padVisible(` ${line}`, diffWidth)) + '\n';
     } else {
       output += chalk.bgHex('#0F172A').hex('#94A3B8')(padVisible(` ${line}`, diffWidth)) + '\n';
     }
@@ -77,7 +89,7 @@ function renderDiffBlock(codeStr: string, diffWidth: number): string {
   return output + '\n';
 }
 
-function renderMarkdownWithOttoStyles(content: string, width: number): string {
+function renderMarkdownWithOttoStyles(content: string, width: number, diffsExpanded: boolean): string {
   const diffWidth = Math.max(48, Math.min(width, 96));
 
   // Pre-extract diff code fences so marked never touches the ANSI-colored rows
@@ -85,7 +97,7 @@ function renderMarkdownWithOttoStyles(content: string, width: number): string {
   const withPlaceholders = content.replace(
     /```diff\n([\s\S]*?)```/g,
     (_match, codeStr: string) => {
-      const rendered = renderDiffBlock(codeStr, diffWidth);
+      const rendered = renderDiffBlock(codeStr, diffWidth, diffsExpanded);
       const key = `\u0000DIFF${placeholders.length}\u0000`;
       placeholders.push(rendered);
       return key;
@@ -154,7 +166,8 @@ export class ChatUI {
     model: string,
     isThinking: boolean = false,
     pendingPlan: boolean = false,
-    planMenuIndex: number = 0
+    planMenuIndex: number = 0,
+    diffsExpanded: boolean = false
   ) {
     // ── 1. Build the FULL content buffer ─────────────────────────────────────
     const lines: string[] = [];
@@ -185,7 +198,7 @@ export class ChatUI {
 
       if (msg.role === 'tool') {
         push('  ' + chalk.bgHex('#1F2937').white.bold(' TOOL '));
-        const rendered = renderMarkdownWithOttoStyles(msg.content, this.W - 4);
+        const rendered = renderMarkdownWithOttoStyles(msg.content, this.W - 4, diffsExpanded);
         rendered.trim().split('\n').forEach(line => push('  ' + line));
         push('');
         return;
@@ -238,7 +251,7 @@ export class ChatUI {
             // Render everything before the plan normally
             const beforePlan = rawContent.slice(0, rawContent.indexOf('<!-- PLAN_START')).trim();
             if (beforePlan) {
-              const rendered = renderMarkdownWithOttoStyles(beforePlan, this.W - 4);
+              const rendered = renderMarkdownWithOttoStyles(beforePlan, this.W - 4, diffsExpanded);
               rendered.trim().split('\n').forEach(line => push('  ' + line));
               push('');
             }
@@ -300,11 +313,11 @@ export class ChatUI {
             // Render everything after the plan normally
             const afterPlan = rawContent.slice(rawContent.indexOf('<!-- PLAN_END -->') + '<!-- PLAN_END -->'.length).trim();
             if (afterPlan) {
-              const rendered = renderMarkdownWithOttoStyles(afterPlan, this.W - 4);
+              const rendered = renderMarkdownWithOttoStyles(afterPlan, this.W - 4, diffsExpanded);
               rendered.trim().split('\n').forEach(line => push('  ' + line));
             }
           } else {
-            // No plan block — normal rendering
+            // No plan, render entire content
             let processedContent = rawContent;
             processedContent = processedContent.replace(/^[*\s]*\u25cf\s*([A-Za-z_]+)\(([^)]*)\)/gm, (_match, tool, args) => {
               return chalk.dim('/- ') + chalk.white.bold(tool) + chalk.dim('(' + args + ')');
@@ -313,7 +326,7 @@ export class ChatUI {
               return chalk.dim('\\- ' + details);
             });
 
-            const rendered = renderMarkdownWithOttoStyles(processedContent, this.W - 4);
+            const rendered = renderMarkdownWithOttoStyles(processedContent, this.W - 4, diffsExpanded);
             rendered.trim().split('\n').forEach(line => push('  ' + line));
           }
         }
