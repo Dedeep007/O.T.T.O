@@ -166,11 +166,11 @@ export class PhoneOS {
     process.stdout.write(GOLD(' ╔') + hLine + GOLD('╗\n'));
 
     // Left Section
-    const leftStr = '  ' + GOLD.bold('Orchestrated Task & Tool Operator (O.T.T.O)') + '   ';
-    const leftLen = 48; // visible length of left side
 
     // Right Section Components
-    const dot = hasKey ? GREEN('●') : RED('●');
+    const isOllama = prov === 'ollama';
+    const isLocal = isOllama && !!providerConfig?.baseUrl;
+    const dot = (hasKey || isLocal) ? GREEN('●') : RED('●');
     const provPill = dot + ' ' + CYAN.bold(prov.toUpperCase());
     const provLen = 2 + prov.length;
 
@@ -204,7 +204,15 @@ export class PhoneOS {
     rightLens.push(ramLen, secLen);
 
     const rightStr = rightParts.join('  ') + '  ';
-    const rightTotLen = rightLens.reduce((a, b) => a + b, 0) + (3 * 2) + 2;
+    const rightTotLen = rightLens.reduce((a, b) => a + b, 0) + (Math.max(0, rightParts.length - 1) * 2) + 2;
+
+    let leftStr = '  ' + GOLD.bold('Orchestrated Task & Tool Operator (O.T.T.O)') + '   ';
+    let leftLen = 48; // visible length of left side
+
+    if (W < leftLen + rightTotLen) {
+      leftStr = '  ' + GOLD.bold('O.T.T.O') + '   ';
+      leftLen = 12;
+    }
 
     const midSpace = Math.max(0, W - leftLen - rightTotLen);
     const content = leftStr + ' '.repeat(midSpace) + rightStr;

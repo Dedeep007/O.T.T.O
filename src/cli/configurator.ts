@@ -433,6 +433,20 @@ export const Configurator = {
     return null;
   },
 
+  updateOllamaUrl: (url: string) => {
+    const config = Configurator.loadConfig();
+    if (config) {
+      if (!config.providers.ollama) {
+        config.providers.ollama = { baseUrl: url, num_ctx: 4096 };
+      } else {
+        config.providers.ollama.baseUrl = url;
+      }
+      Configurator.saveConfig(config);
+      return config;
+    }
+    return null;
+  },
+
   getUsername: (config: OttoConfig): string => {
     return config.profile?.username?.trim() || '';
   },

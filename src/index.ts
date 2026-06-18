@@ -183,6 +183,9 @@ async function main() {
       if (process.stdin.isTTY) process.stdin.setRawMode(true);
       process.stdin.resume(); // ensure stdin is flowing after phone.cleanup() may have paused it
 
+      let isStreaming = false;
+      let isDetached = false;
+
       const onKeypress = async (str: string, key: any) => {
         if (key.ctrl && key.name === 'c') {
           stopThinkingAnimation();
@@ -196,10 +199,10 @@ async function main() {
             clearTimeout(streamRenderTimer);
             streamRenderTimer = null;
           }
-          // Exit the alternate screen — restore the main buffer
+          if (isStreaming) {
+            isDetached = true;
+          }
           process.stdout.write('\x1B[?1049l');
-          // Do NOT call setRawMode(false) here — phone.startListening() is the
-          // sole owner of rawMode and will re-enable it immediately after resolve().
           process.stdin.removeListener('keypress', onKeypress);
           resolve();
         } else if (key.name === 'return') {
@@ -210,7 +213,9 @@ async function main() {
               // Approve or Cancel: inject the canned response as human message
               pendingPlan = false;
               planMenuIndex = 0;
-              process.stdin.removeListener('keypress', onKeypress);
+              // Do not remove keypress listener here!
+              isStreaming = true;
+              isDetached = false;
               messages.push(new HumanMessage(chosen.inject));
               syncMessages();
               chatUI.scrollToBottom();
@@ -233,7 +238,7 @@ async function main() {
                     if (chunk && chunk.content) {
                       aiMessage.content = (aiMessage.content as string) + chunk.content;
                       syncMessages();
-                      scheduleStreamRender(160);
+                      if (!isDetached) scheduleStreamRender(160);
                     }
                   }
                   config = provider.getConfig();
@@ -248,10 +253,10 @@ async function main() {
                     pendingPlan = true;
                     planMenuIndex = 0;
                     isDone = true;
-                    flushStreamRender(true);
+                    if (!isDetached) flushStreamRender(true);
                   } else if (hasToolCalls) {
                     pendingPlan = false;
-                    flushStreamRender();
+                    if (!isDetached) flushStreamRender();
                     for (const call of finalMessage.tool_calls) {
                       const tool = tools.find(t => t.name === call.name);
                       let toolResultStr = '';
@@ -267,20 +272,22 @@ async function main() {
                       messages.push(new ToolMessage({ content: toolResultStr, tool_call_id: call.id, name: call.name }));
                       syncMessages();
                     }
-                    render(true);
+                    if (!isDetached) render(true);
                   } else {
                     pendingPlan = false;
                     isDone = true;
-                    flushStreamRender();
+                    if (!isDetached) flushStreamRender();
                   }
                 }
-                process.stdin.on('keypress', onKeypress);
+                isStreaming = false;
+                if (!isDetached) process.stdin.on('keypress', onKeypress);
               } catch (error: any) {
+                isStreaming = false;
                 messages.push(new SystemMessage(formatChatError(error)));
                 syncMessages();
-                process.stdin.on('keypress', onKeypress);
+                if (!isDetached) process.stdin.on('keypress', onKeypress);
               }
-              render();
+              if (!isDetached) render();
             } else {
               // Edit mode: drop into normal input so user can type modifications
               pendingPlan = false;
@@ -295,7 +302,6 @@ async function main() {
           currentInput = '';
           
           if (inputStr === '/rewind') {
-            // Session Time Travel: pop back to the last state before the human's last message
             let lastHumanIdx = -1;
             for (let i = messages.length - 1; i >= 0; i--) {
               if (messages[i]._getType() === 'human') {
@@ -310,7 +316,8 @@ async function main() {
             render(false);
             return;
           }
-          process.stdin.removeListener('keypress', onKeypress);
+          isStreaming = true;
+          isDetached = false;
           chatSession.ensureNamedFromPrompt(inputStr);
           messages.push(new HumanMessage(inputStr));
           syncMessages();
@@ -349,7 +356,7 @@ async function main() {
                     currentLength < 24;
                   if (shouldRender) {
                     lastStreamContentLength = currentLength;
-                    scheduleStreamRender(isInsideCodeFence ? 260 : 160);
+                    if (!isDetached) scheduleStreamRender(isInsideCodeFence ? 260 : 160);
                   }
                 }
               }
@@ -368,10 +375,10 @@ async function main() {
                 pendingPlan = true;
                 planMenuIndex = 0;
                 isDone = true;
-                flushStreamRender(true);
+                if (!isDetached) flushStreamRender(true);
               } else if (hasToolCalls) {
                 pendingPlan = false;
-                flushStreamRender();
+                if (!isDetached) flushStreamRender();
                 for (const call of finalMessage.tool_calls) {
                   const tool = tools.find(t => t.name === call.name);
                   let toolResultStr = '';
@@ -387,23 +394,25 @@ async function main() {
                   messages.push(new ToolMessage({ content: toolResultStr, tool_call_id: call.id, name: call.name }));
                   syncMessages();
                 }
-                render(true);
+                if (!isDetached) render(true);
               } else {
                 pendingPlan = false;
                 isDone = true;
-                flushStreamRender();
+                if (!isDetached) flushStreamRender();
               }
             }
-            
-            process.stdin.on('keypress', onKeypress);
+            isStreaming = false;
+            if (!isDetached) process.stdin.on('keypress', onKeypress);
           } catch (error: any) {
+            isStreaming = false;
             messages.push(new SystemMessage(formatChatError(error)));
             syncMessages();
-            process.stdin.on('keypress', onKeypress);
+            if (!isDetached) process.stdin.on('keypress', onKeypress);
           }
           
-          render();
+          if (!isDetached) render();
         } else if (key.name === 'up') {
+          if (isStreaming) return;
           if (pendingPlan) {
             planMenuIndex = (planMenuIndex - 1 + PLAN_MENU_OPTIONS.length) % PLAN_MENU_OPTIONS.length;
           } else {
@@ -411,6 +420,7 @@ async function main() {
           }
           render();
         } else if (key.name === 'down') {
+          if (isStreaming) return;
           if (pendingPlan) {
             planMenuIndex = (planMenuIndex + 1) % PLAN_MENU_OPTIONS.length;
           } else {
@@ -418,17 +428,22 @@ async function main() {
           }
           render();
         } else if (key.name === 'pageup') {
+          if (isStreaming) return;
           if (!pendingPlan) chatUI.scrollUp(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
           render();
         } else if (key.name === 'pagedown') {
+          if (isStreaming) return;
           if (!pendingPlan) chatUI.scrollDown(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
           render();
         } else if (key.name === 'end') {
+          if (isStreaming) return;
           if (!pendingPlan) chatUI.scrollToBottom();
           render();
         } else if (key.name === 'backspace') {
+          if (isStreaming) return;
           if (!pendingPlan) { currentInput = currentInput.slice(0, -1); render(); }
         } else if (str && !key.ctrl && !key.meta) {
+          if (isStreaming) return;
           if (!pendingPlan) { currentInput += str; render(); }
         }
       };
@@ -598,7 +613,26 @@ async function main() {
         action: async () => { phone.pushView(createModelEditView()); }
       },
       {
-        label: 'Change Security Mode',
+        label: 'Edit Ollama Base URL',
+        description: 'Set localhost or remote URL for Ollama',
+        action: async () => {
+          phone.active = false;
+          ui.clearScreen();
+          const currentUrl = config.providers.ollama?.baseUrl || 'http://localhost:11434';
+          const entered = await promptWithEscape(`Enter new Ollama Base URL (current: ${currentUrl}):`);
+          if (entered !== null && entered.trim()) {
+            config = Configurator.updateOllamaUrl(entered.trim()) || config;
+            phone.updateConfig(config);
+            ui.success(`Ollama URL updated to ${entered.trim()}`);
+            await new Promise(r => setTimeout(r, 900));
+          }
+          phone.active = true;
+          phone.goBack();
+          phone.pushView(createSettingsView());
+        }
+      },
+      {
+        label: 'Allowed Tools & Commands',
         description: 'Set the execution guardrail policy',
         action: async () => { phone.pushView(createSecurityEditView()); }
       },
