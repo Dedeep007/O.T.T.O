@@ -1,11 +1,12 @@
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 import { parse } from 'shell-quote';
 import { Configurator } from '../cli/configurator.js';
 import { ui } from '../cli/ui.js';
 import { select } from '@inquirer/prompts';
+import { backgroundManager } from './background.js';
 
 export class Executor {
-  async executeCommand(commandStr: string): Promise<string> {
+  async executeCommand(commandStr: string, background: boolean = false): Promise<string> {
     const config = await Configurator.init();
     
     // Tokenized Whitelist Engine
@@ -38,6 +39,19 @@ export class Executor {
       // Operational frames under full access are forced into Docker containers typically.
       // For this implementation, we simulate it or execute natively.
       ui.warning(`[Full Access Mode] Executing ${cmd} autonomously.`);
+    }
+
+    if (background) {
+      const child = spawn(commandStr, {
+        cwd: process.cwd(),
+        shell: true,
+        stdio: 'ignore', // detached background process
+        detached: true
+      });
+      child.unref(); // allow the main process to exit even if this is running
+      
+      backgroundManager.addProcess(commandStr, child);
+      return Promise.resolve(`Background process started successfully with PID: ${child.pid}. You can manage it from the Home menu.`);
     }
 
     return new Promise((resolve, reject) => {

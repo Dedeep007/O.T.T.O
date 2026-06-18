@@ -6,6 +6,7 @@ import { executor } from './security/executor.js';
 import { memoryManager } from './memory/budget.js';
 import { vectorMemory } from './memory/vector.js';
 import { ruleGuardrail } from './security/rules.js';
+import { backgroundManager } from './security/background.js';
 import { osController } from './hardware/os.js';
 import { browserAutomation } from './hardware/browser.js';
 import { serialBridge } from './hardware/serial.js';
@@ -1460,8 +1461,44 @@ async function main() {
       },
       {
         label: 'Manage Threads',
-        description: 'View and switch between saved sessions',
+        description: `Manage your chat sessions (${dbManager.listThreads().length})`,
         action: () => phone.pushView(createThreadsView())
+      },
+      {
+        label: 'Manage Terminal Sessions',
+        description: 'View or kill running background processes',
+        action: () => {
+          const procs = backgroundManager.getProcesses();
+          phone.pushView({
+            id: 'terminal_sessions',
+            title: 'Manage Terminal Sessions',
+            options: procs.length === 0 ? [
+              { label: 'No background processes running. (Go Back)', action: () => phone.goBack() }
+            ] : [
+              ...procs.map(p => ({
+                label: `[PID ${p.pid}] ${p.command}`,
+                description: `Running for ${Math.round((Date.now() - p.startTime) / 1000)}s`,
+                action: async () => {
+                  phone.active = false;
+                  ui.clearScreen();
+                  const confirmKill = await confirm({ message: `Kill process ${p.pid} (${p.command})?`, default: false });
+                  if (confirmKill) {
+                    try {
+                      await backgroundManager.killProcess(p.pid);
+                      ui.success(`Killed process ${p.pid}`);
+                    } catch (e: any) {
+                      ui.error(`Failed to kill: ${e.message}`);
+                    }
+                    await new Promise(r => setTimeout(r, 1000));
+                  }
+                  phone.active = true;
+                  phone.goBack();
+                }
+              })),
+              { label: 'Go Back', action: () => phone.goBack() }
+            ]
+          });
+        }
       },
       {
         label: 'Command Palette',

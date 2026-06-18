@@ -50,6 +50,7 @@
     "puppeteer-core": "^25.1.0",
     "serialport": "^13.0.0",
     "shell-quote": "^1.8.4",
-    "sqlite-vec": "^0.1.9"
+    "sqlite-vec": "^0.1.9",
+    "tree-kill": "^1.2.2"
   }
 }

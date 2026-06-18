@@ -56,18 +56,19 @@ function diffForSingleFile(filePath: string, before: string | undefined, after: 
 }
 
 const executeTerminalCommand = tool(
-  async ({ command }: { command: string }) => {
+  async ({ command, background }: { command: string, background?: boolean }) => {
     try {
-      return await executor.executeCommand(command);
+      return await executor.executeCommand(command, background);
     } catch (e: any) {
       return `Error executing command: ${e.message}`;
     }
   },
   {
     name: "execute_terminal_command",
-    description: "Executes a shell/terminal command natively on the user's OS from the current workspace directory. Use this for running build/test/compile commands only. Do not use this to create or edit files; use write_file instead.",
+    description: "Executes a shell/terminal command natively on the user's OS from the current workspace directory. Use this for running build/test/compile commands. If starting a long-running server or watcher, set background: true. Do not use this to create or edit files; use write_file instead.",
     schema: z.object({
       command: z.string().describe("The exact shell command string to execute."),
+      background: z.boolean().optional().describe("If true, starts the process in the background and returns a task ID immediately, without waiting for completion."),
     }),
   }
 );
