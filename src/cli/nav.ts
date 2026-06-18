@@ -4,6 +4,11 @@ import chalk from 'chalk';
 import { memoryManager } from '../memory/budget.js';
 import { OttoConfig } from './configurator.js';
 import { chatSession } from './session.js';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const pkg = require('../../package.json');
+const CLI_VERSION = pkg.version;
 
 export interface PhoneMenuOption {
   label: string;
@@ -206,7 +211,7 @@ export class PhoneOS {
     const rightStr = rightParts.join('  ') + '  ';
     const rightTotLen = rightLens.reduce((a, b) => a + b, 0) + (Math.max(0, rightParts.length - 1) * 2) + 2;
 
-    let leftStr = '  ' + GOLD.bold('Orchestrated Task & Tool Operator (O.T.T.O)') + '   ';
+    let leftStr = '  ' + GOLD.bold(`Orchestrated Task & Tool Operator (O.T.T.O) v${CLI_VERSION}`) + '   ';
     let leftLen = 48; // visible length of left side
 
     if (W < leftLen + rightTotLen) {

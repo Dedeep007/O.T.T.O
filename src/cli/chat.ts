@@ -99,6 +99,8 @@ function renderMarkdownWithOttoStyles(content: string, width: number): string {
       width,
       reflowText: true,
       codespan: chalk.hex('#F5C400'),
+      strong: chalk.white.bold,
+      em: chalk.italic,
     }) as any
   });
 

@@ -470,33 +470,28 @@ async function main() {
             render();
           }
         } else if (key.name === 'up') {
-          if (isStreaming) return;
           if (pendingPlan) {
             planMenuIndex = (planMenuIndex - 1 + PLAN_MENU_OPTIONS.length) % PLAN_MENU_OPTIONS.length;
           } else {
             chatUI.scrollUp(3);
           }
-          render();
+          render(isStreaming);
         } else if (key.name === 'down') {
-          if (isStreaming) return;
           if (pendingPlan) {
             planMenuIndex = (planMenuIndex + 1) % PLAN_MENU_OPTIONS.length;
           } else {
             chatUI.scrollDown(3);
           }
-          render();
+          render(isStreaming);
         } else if (key.name === 'pageup') {
-          if (isStreaming) return;
           if (!pendingPlan) chatUI.scrollUp(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
-          render();
+          render(isStreaming);
         } else if (key.name === 'pagedown') {
-          if (isStreaming) return;
           if (!pendingPlan) chatUI.scrollDown(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
-          render();
+          render(isStreaming);
         } else if (key.name === 'end') {
-          if (isStreaming) return;
           if (!pendingPlan) chatUI.scrollToBottom();
-          render();
+          render(isStreaming);
         } else if (key.name === 'backspace') {
           if (isStreaming) return;
           if (!pendingPlan) { currentInput = currentInput.slice(0, -1); render(); }
