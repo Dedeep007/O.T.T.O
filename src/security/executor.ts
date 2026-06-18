@@ -4,6 +4,9 @@ import { Configurator } from '../cli/configurator.js';
 import { ui } from '../cli/ui.js';
 import { select } from '@inquirer/prompts';
 import { backgroundManager } from './background.js';
+import * as os from 'os';
+import * as fs from 'fs';
+import * as path from 'path';
 
 export class Executor {
   async executeCommand(commandStr: string, background: boolean = false): Promise<string> {
@@ -42,16 +45,22 @@ export class Executor {
     }
 
     if (background) {
+      const logDir = path.join(os.tmpdir(), 'otto-cli-logs');
+      if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+      const logPath = path.join(logDir, `bg-${Date.now()}.log`);
+      const out = fs.openSync(logPath, 'a');
+      const err = fs.openSync(logPath, 'a');
+
       const child = spawn(commandStr, {
         cwd: process.cwd(),
         shell: true,
-        stdio: 'ignore', // detached background process
+        stdio: ['ignore', out, err],
         detached: true
       });
       child.unref(); // allow the main process to exit even if this is running
       
       backgroundManager.addProcess(commandStr, child);
-      return Promise.resolve(`Background process started successfully with PID: ${child.pid}. You can manage it from the Home menu.`);
+      return Promise.resolve(`Background process started successfully with PID: ${child.pid}.\nOutput is being logged to: ${logPath}\nUse the read_file tool to check this log file for startup errors or server listening ports.`);
     }
 
     return new Promise((resolve, reject) => {
