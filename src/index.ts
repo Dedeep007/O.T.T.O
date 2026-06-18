@@ -1275,9 +1275,13 @@ async function main() {
             phone.pushView(createThreadsView());
           }
         },
-        ...threads.map(t => ({
-          label: t.displayName + (t.id === chatSession.threadId ? ' (active)' : ''),
-          description: t.id,
+        ...threads.map(t => {
+          const isRunning = chatSession.activeStreams.has(t.id);
+          const runningTag = isRunning ? chalk.green(' 🟢 [running]') : '';
+          const activeTag = t.id === chatSession.threadId ? chalk.hex('#6B7280')(' (active)') : '';
+          return {
+            label: t.displayName + activeTag + runningTag,
+            description: t.id,
           action: () => {
              phone.pushView({
                id: 'thread_actions',
@@ -1322,7 +1326,8 @@ async function main() {
                ]
              });
           }
-        })),
+        };
+        }),
         { label: 'Go Back', action: () => phone.goBack() }
       ]
     };
