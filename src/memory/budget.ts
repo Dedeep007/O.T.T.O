@@ -7,8 +7,19 @@ export class MemoryManager {
   get C_max(): number {
     try {
       const config = Configurator.loadConfig();
-      if (config && typeof config.defaults.maxCtx === 'number') {
-        return config.defaults.maxCtx;
+      if (config) {
+        const prov = config.defaults.primaryProvider;
+        const model = Configurator.getActiveModel(config, prov as any);
+        if (model) {
+          const limits = config.modelLimits?.[model];
+          if (limits && typeof limits.tpm === 'number' && limits.tpm > 0) {
+            const safetyBuffer = Math.min(1000, Math.floor(limits.tpm * 0.1));
+            return Math.min(config.defaults.maxCtx || 64000, limits.tpm - safetyBuffer);
+          }
+        }
+        if (typeof config.defaults.maxCtx === 'number') {
+          return config.defaults.maxCtx;
+        }
       }
     } catch {}
     return 64000;
@@ -23,7 +34,10 @@ export class MemoryManager {
   private lastSummary: string = '';
 
   getChatBudget(): number {
-    return this.C_max - (this.B_sys + this.B_out);
+    const cMax = this.C_max;
+    const bSys = cMax < 10000 ? Math.floor(cMax * 0.25) : this.B_sys;
+    const bOut = cMax < 10000 ? Math.floor(cMax * 0.25) : this.B_out;
+    return cMax - (bSys + bOut);
   }
 
   getBudgetStats(): { max: number; filled: number; compressed: number } {
@@ -60,10 +74,11 @@ export class MemoryManager {
 
   public perMessageTruncate(text: string): string {
     const tokens = this.estimateTokens(text);
-    if (tokens > this.Max_Msg_Tokens) {
-      ui.alert(`Payload truncated. Original size: ~${tokens} tokens, limit: ${this.Max_Msg_Tokens}`);
-      const allowedChars = this.Max_Msg_Tokens * 4;
-      this.totalCompressedTokens += (tokens - this.Max_Msg_Tokens);
+    const limit = Math.min(this.Max_Msg_Tokens, Math.max(1000, Math.floor(this.C_max * 0.5)));
+    if (tokens > limit) {
+      ui.alert(`Payload truncated. Original size: ~${tokens} tokens, limit: ${limit}`);
+      const allowedChars = limit * 4;
+      this.totalCompressedTokens += (tokens - limit);
       return text.substring(0, allowedChars) + '\n\n...[TRUNCATED BY OTTO BUDGETER]...';
     }
     return text;

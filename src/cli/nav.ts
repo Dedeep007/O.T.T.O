@@ -57,6 +57,10 @@ export class PhoneOS {
   }
 
   private onKey = async (_: string, key: any) => {
+    try {
+      const fs = await import('fs');
+      fs.appendFileSync('C:\\Users\\dedeep vasireddy\\keypresses.log', `onKey: active=${this.active} key=${JSON.stringify(key)}\n`);
+    } catch {}
     if (!this.active) return;
     if (key.ctrl && key.name === 'c') { this.cleanup(); process.exit(0); }
     if (key.ctrl && key.name === 'k') {
@@ -71,7 +75,7 @@ export class PhoneOS {
     else if (key.name === 'down')  { this.cursor = this.cursor < view.options.length - 1 ? this.cursor + 1 : 0; this.render(); }
     else if (key.name === 'left' || key.name === 'escape' || key.name === 'backspace')  { this.goBack(); }
     else if (key.name === 'right') { if (this.forward.length) { this.history.push(this.forward.pop()!); this.cursor = 0; this.render(); } else { this.select(); } }
-    else if (key.name === 'return'){ this.select(); }
+    else if (key.name === 'return' || key.name === 'enter'){ this.select(); }
   };
 
   public goBack() {

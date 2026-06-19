@@ -47,6 +47,15 @@ export class Executor {
       ui.warning(`[Full Access Mode] Executing ${cmd} autonomously.`);
     }
 
+    // Detect background tasks run synchronously
+    if (!background) {
+      const trimmedCmd = commandStr.trim();
+      const isBgRegex = /&$/i.test(trimmedCmd) || /^(npm\s+(run\s+)?(dev|start|watch)|node\s+server|python\s+-m\s+http\.server)/i.test(trimmedCmd);
+      if (isBgRegex) {
+        throw new Error(`Command "${commandStr}" appears to be a long-running process or server. You must call execute_terminal_command with the "background" argument set to true. Do not use "&" at the end of the command string to background it on Windows.`);
+      }
+    }
+
     const runCore = async (): Promise<string> => {
       if (background) {
         const logDir = path.join(os.tmpdir(), 'otto-cli-logs');
@@ -102,14 +111,20 @@ export class Executor {
       }
 
       return new Promise<string>((resolve, reject) => {
-        exec(commandStr, { cwd: process.cwd() }, (error, stdout, stderr) => {
+        // Add a 45-second execution timeout to prevent hanging commands
+        exec(commandStr, { cwd: process.cwd(), timeout: 45000 }, (error, stdout, stderr) => {
           if (error) {
             const out = stdout.toString().trim();
             const err = stderr.toString().trim();
-            let msg = `Command failed with exit code ${error.code || 'unknown'}:`;
+            let msg = '';
+            if ((error as any).killed) {
+              msg = `Command timed out and was killed after 45 seconds of inactivity. If this is a long-running process, run it with background: true.`;
+            } else {
+              msg = `Command failed with exit code ${error.code || 'unknown'}:`;
+            }
             if (err) msg += `\nSTDERR:\n${err}`;
             if (out) msg += `\nSTDOUT:\n${out}`;
-            if (!err && !out) msg += ` ${error.message}`;
+            if (!err && !out && !(error as any).killed) msg += ` ${error.message}`;
             reject(new Error(msg));
           } else {
             resolve(stdout.toString() || stderr.toString() || 'Command executed successfully.');

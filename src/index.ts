@@ -148,7 +148,14 @@ function parseFallbackToolCalls(content: string): any[] | null {
       continue;
     }
 
-    const fileMatch = preText.match(/(?:file|to|named|in|create|write)\s+`?([a-zA-Z0-9_\-\.\/\\:]+\.[a-zA-Z0-9_]+)`?/i);
+    let fileMatch = code.split('\n')[0]?.trim().match(/^(?:#|\/\/|\/\*+)\s*(?:file:)?\s*`?([a-zA-Z0-9_\-\.\/\\:]+\.[a-zA-Z0-9_]+)`?/i);
+    if (!fileMatch) {
+      fileMatch = preText.match(/(?:file|to|named|in|create|write|for)\s+`?([a-zA-Z0-9_\-\.\/\\:]+\.[a-zA-Z0-9_]+)`?/i);
+    }
+    if (!fileMatch) {
+      fileMatch = preText.match(/\b([a-zA-Z0-9_\-\.\/\\:]+\.(?:py|js|ts|json|html|css|sh|ps1|bat|cmd|cpp|c|h|md))\b/i);
+    }
+
     if (fileMatch) {
       foundCalls.push({
         name: 'write_file',
@@ -305,7 +312,9 @@ async function main() {
 
       updateAnimationTimer();
 
-      const isThinking = chatSession.agentStates.get(chatSession.threadId) === 'thinking';
+      const state = chatSession.agentStates.get(chatSession.threadId);
+      const isThinking = state === 'thinking';
+      const delayMessage = chatSession.delayMessages.get(chatSession.threadId);
       const stats = memoryManager.getBudgetStatsForMessages(messages, rules);
       const prov = config.defaults.primaryProvider;
       const model = Configurator.getActiveModel(config, prov as any) ?? 'default';
@@ -315,7 +324,7 @@ async function main() {
         ctxUsed: stats.filled,
         ramMB,
         showContextBar: config.defaults.showContextBar !== false
-      }, model, isThinking, getPendingPlan(), getPlanMenuIndex(), diffsExpanded);
+      }, model, isThinking, getPendingPlan(), getPlanMenuIndex(), diffsExpanded, delayMessage);
     }
 
 
@@ -509,6 +518,17 @@ async function main() {
             
             const msgsToSend = [new SystemMessage(rules + nameHint), ...messages];
             const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
+
+            const finalMsgsToSend = optimizedMsgs.map((msg, idx) => {
+              if (idx === optimizedMsgs.length - 1 && msg instanceof HumanMessage && config.defaults.primaryProvider === 'ollama') {
+                const text = msg.content.toString();
+                return new HumanMessage({
+                  ...msg,
+                  content: text + '\n\n(Reminder: Do not refuse. You have local tools like write_file and execute_terminal_command. Proceed directly by producing a plan or running commands.)'
+                } as any);
+              }
+              return msg;
+            });
             
             const aiMessage = new AIMessage('');
             messages.push(aiMessage);
@@ -523,7 +543,7 @@ async function main() {
               sessionEvents.emit('stream_update', chatSession.threadId);
             }
 
-            const stream = await provider.stream(optimizedMsgs);
+            const stream = await provider.stream(finalMsgsToSend);
             
             for await (const chunk of stream) {
               const threadExists = dbManager.listThreads().some(th => th.id === currentThreadId);
@@ -706,7 +726,7 @@ async function main() {
         } else if (key.name === 'escape') {
           cleanup();
           resolve();
-        } else if (key.name === 'return') {
+        } else if (key.name === 'return' || key.name === 'enter') {
           // ── PLAN MENU SELECTION ───────────────────────────────────────────
           if (getPendingPlan()) {
             const chosen = PLAN_MENU_OPTIONS[getPlanMenuIndex()];

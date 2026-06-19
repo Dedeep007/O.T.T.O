@@ -190,7 +190,7 @@ var init_chat = __esm({
       isAtBottom() {
         return this.scrollOffset === 0;
       }
-      render(messages, currentInput, telemetry, model, isThinking = false, pendingPlan = false, planMenuIndex = 0, diffsExpanded = false) {
+      render(messages, currentInput, telemetry, model, isThinking = false, pendingPlan = false, planMenuIndex = 0, diffsExpanded = false, delayMessage) {
         const lines = [];
         const push = (line = "") => lines.push(line);
         push(this.DIM("-".repeat(this.W)));
@@ -317,7 +317,12 @@ var init_chat = __esm({
           }
           push("");
         });
-        if (isThinking) {
+        if (delayMessage) {
+          const dots = ".".repeat(Math.floor(Date.now() / 350) % 3 + 1);
+          push(this.AI_TAG("  O.T.T.O"));
+          push("  " + import_chalk9.default.hex("#FBBF24")(`${delayMessage}${dots}`));
+          push("");
+        } else if (isThinking) {
           const dots = ".".repeat(Math.floor(Date.now() / 350) % 3 + 1);
           push(this.AI_TAG("  O.T.T.O"));
           push("  " + import_chalk9.default.hex("#A78BFA")(`thinking${dots}`));
@@ -345,6 +350,12 @@ var init_chat = __esm({
           push("");
         }
         push(this.DIM("-".repeat(this.W)));
+        if (this.totalContentLines > 0 && this.scrollOffset > 0) {
+          const deltaLines = lines.length - this.totalContentLines;
+          if (deltaLines > 0) {
+            this.scrollOffset += deltaLines;
+          }
+        }
         this.totalContentLines = lines.length;
         const viewH = Math.max(1, (process.stdout.rows || 24) - 1);
         const maxOffset = Math.max(0, lines.length - viewH);
@@ -1105,6 +1116,7 @@ var ChatSession = class _ChatSession {
   pendingApprovals = [];
   pendingPlans = /* @__PURE__ */ new Set();
   agentStates = /* @__PURE__ */ new Map();
+  delayMessages = /* @__PURE__ */ new Map();
   planMenuIndices = /* @__PURE__ */ new Map();
   static DEFAULT_THREAD_NAME = "New Chat";
   constructor() {
@@ -1414,11 +1426,22 @@ var QuotaManager = class {
     if (!limits) return;
     const hasAnyLimit = limits.rpm || limits.rpd || limits.tpm || limits.tpd || limits.itpm || limits.otpm;
     if (!hasAnyLimit) return;
+    const threadId = chatSession.threadId || "default";
     while (true) {
       const waitTime = this.checkLimits(model, limits);
       if (waitTime <= 0) break;
       ui.warning(`Rate limit threshold approached for ${model}. Pausing execution for ${Math.ceil(waitTime / 1e3)}s to remain within configured limits.`);
-      await new Promise((resolve) => setTimeout(resolve, waitTime));
+      let remaining = Math.ceil(waitTime / 1e3);
+      chatSession.agentStates.set(threadId, "delaying");
+      while (remaining > 0) {
+        chatSession.delayMessages.set(threadId, `Output is delayed to evade rate limits... Waiting ${remaining}s`);
+        sessionEvents.emit("stream_update", threadId);
+        await new Promise((resolve) => setTimeout(resolve, 1e3));
+        remaining--;
+      }
+      chatSession.agentStates.set(threadId, "thinking");
+      chatSession.delayMessages.delete(threadId);
+      sessionEvents.emit("stream_update", threadId);
     }
   }
   async handleRateLimit(retryAfterHeader) {
@@ -1429,11 +1452,20 @@ var QuotaManager = class {
         waitTime = parsed * 1e3;
       }
     }
+    const threadId = chatSession.threadId || "default";
     ui.warning(`Rate limit hit (429). Pausing execution for ${waitTime}ms to prevent TPM exhaustion.`);
-    return new Promise((resolve) => setTimeout(() => {
-      this.backoffTime = Math.min(this.backoffTime * 2 + Math.random() * 500, 6e4);
-      resolve();
-    }, waitTime));
+    let remaining = Math.ceil(waitTime / 1e3);
+    chatSession.agentStates.set(threadId, "delaying");
+    while (remaining > 0) {
+      chatSession.delayMessages.set(threadId, `Rate limit hit. Pausing execution... Waiting ${remaining}s`);
+      sessionEvents.emit("stream_update", threadId);
+      await new Promise((resolve) => setTimeout(resolve, 1e3));
+      remaining--;
+    }
+    chatSession.agentStates.set(threadId, "thinking");
+    chatSession.delayMessages.delete(threadId);
+    sessionEvents.emit("stream_update", threadId);
+    this.backoffTime = Math.min(this.backoffTime * 2 + Math.random() * 500, 6e4);
   }
   resetBackoff() {
     this.backoffTime = 1e3;
@@ -16065,6 +16097,13 @@ var Executor = class {
     } else if (config2.security.mode === "full") {
       ui.warning(`[Full Access Mode] Executing ${cmd} autonomously.`);
     }
+    if (!background) {
+      const trimmedCmd = commandStr.trim();
+      const isBgRegex = /&$/i.test(trimmedCmd) || /^(npm\s+(run\s+)?(dev|start|watch)|node\s+server|python\s+-m\s+http\.server)/i.test(trimmedCmd);
+      if (isBgRegex) {
+        throw new Error(`Command "${commandStr}" appears to be a long-running process or server. You must call execute_terminal_command with the "background" argument set to true. Do not use "&" at the end of the command string to background it on Windows.`);
+      }
+    }
     const runCore = async () => {
       if (background) {
         const logDir = path3.join(os4.tmpdir(), "otto-cli-logs");
@@ -16113,18 +16152,23 @@ Output is being logged to: ${logPath}${logMsg}
 Use the read_file tool to check this log file if you need more details.`;
       }
       return new Promise((resolve, reject) => {
-        (0, import_child_process.exec)(commandStr, { cwd: process.cwd() }, (error51, stdout, stderr) => {
+        (0, import_child_process.exec)(commandStr, { cwd: process.cwd(), timeout: 45e3 }, (error51, stdout, stderr) => {
           if (error51) {
             const out = stdout.toString().trim();
             const err = stderr.toString().trim();
-            let msg = `Command failed with exit code ${error51.code || "unknown"}:`;
+            let msg = "";
+            if (error51.killed) {
+              msg = `Command timed out and was killed after 45 seconds of inactivity. If this is a long-running process, run it with background: true.`;
+            } else {
+              msg = `Command failed with exit code ${error51.code || "unknown"}:`;
+            }
             if (err) msg += `
 STDERR:
 ${err}`;
             if (out) msg += `
 STDOUT:
 ${out}`;
-            if (!err && !out) msg += ` ${error51.message}`;
+            if (!err && !out && !error51.killed) msg += ` ${error51.message}`;
             reject(new Error(msg));
           } else {
             resolve(stdout.toString() || stderr.toString() || "Command executed successfully.");
@@ -17075,8 +17119,19 @@ var MemoryManager = class {
   get C_max() {
     try {
       const config2 = Configurator.loadConfig();
-      if (config2 && typeof config2.defaults.maxCtx === "number") {
-        return config2.defaults.maxCtx;
+      if (config2) {
+        const prov = config2.defaults.primaryProvider;
+        const model = Configurator.getActiveModel(config2, prov);
+        if (model) {
+          const limits = config2.modelLimits?.[model];
+          if (limits && typeof limits.tpm === "number" && limits.tpm > 0) {
+            const safetyBuffer = Math.min(1e3, Math.floor(limits.tpm * 0.1));
+            return Math.min(config2.defaults.maxCtx || 64e3, limits.tpm - safetyBuffer);
+          }
+        }
+        if (typeof config2.defaults.maxCtx === "number") {
+          return config2.defaults.maxCtx;
+        }
       }
     } catch {
     }
@@ -17093,7 +17148,10 @@ var MemoryManager = class {
   totalCompressedTokens = 0;
   lastSummary = "";
   getChatBudget() {
-    return this.C_max - (this.B_sys + this.B_out);
+    const cMax = this.C_max;
+    const bSys = cMax < 1e4 ? Math.floor(cMax * 0.25) : this.B_sys;
+    const bOut = cMax < 1e4 ? Math.floor(cMax * 0.25) : this.B_out;
+    return cMax - (bSys + bOut);
   }
   getBudgetStats() {
     return {
@@ -17124,10 +17182,11 @@ var MemoryManager = class {
   }
   perMessageTruncate(text) {
     const tokens = this.estimateTokens(text);
-    if (tokens > this.Max_Msg_Tokens) {
-      ui.alert(`Payload truncated. Original size: ~${tokens} tokens, limit: ${this.Max_Msg_Tokens}`);
-      const allowedChars = this.Max_Msg_Tokens * 4;
-      this.totalCompressedTokens += tokens - this.Max_Msg_Tokens;
+    const limit = Math.min(this.Max_Msg_Tokens, Math.max(1e3, Math.floor(this.C_max * 0.5)));
+    if (tokens > limit) {
+      ui.alert(`Payload truncated. Original size: ~${tokens} tokens, limit: ${limit}`);
+      const allowedChars = limit * 4;
+      this.totalCompressedTokens += tokens - limit;
       return text.substring(0, allowedChars) + "\n\n...[TRUNCATED BY OTTO BUDGETER]...";
     }
     return text;
@@ -17289,17 +17348,21 @@ SECTION A \u2014 CODING RULES (always apply)
 7. BACKGROUND RUNS: For servers/watchers, always set background: true. Read logs/status after 2-3 seconds to verify startup.
 8. PARALLEL TOOLS: Proactively call multiple tools in parallel in a single turn if operations are independent.
 9. ZERO RESISTANCE: Resolve implementation details directly without asking for confirmation unless severely ambiguous.
+10. ACTUAL TOOL CALLS: You MUST invoke tools programmatically. Do not simulate tool outputs in your text response. If you cannot use native tool calling, output a valid JSON code block containing the tool calls: \`\`\`json
+[{"name": "tool_name", "args": {...}}]
+\`\`\`.
+11. NO REFUSALS: Do not refuse tasks or output capability refusals (e.g. 'I'm sorry, but I can't assist', 'as an AI language model'). You have access to local terminal execution via execute_terminal_command. You CAN run scripts, install packages, train models, compile code, and inspect systems natively. Always proceed by writing code and executing it.
 
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-SECTION B \u2014 PLANNING MODE (when triggered)
+SECTION B \u2014 PLANNING MODE (always apply for code/file edits)
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-Produce a plan if: 3+ files are changed, a new feature/module is added, or the user task requires multi-step workflow (/plan or /goal).
-Plan format:
+Before creating, writing, or modifying any code or files, you MUST produce an implementation plan first. Do not directly output code blocks or write files without an approved plan.
+Produce a plan using this exact format:
 <!-- PLAN_START -->
 ## \u{1F4CB} Implementation Plan
 **Summary:** One sentence goal.
-**Files to modify:**
-- \`path/to/file.ts\`
+**Files to modify/create:**
+- \`path/to/file\`
 **Steps:**
 1. Step description
 <!-- PLAN_END -->
@@ -17377,6 +17440,12 @@ var PhoneOS = class {
     this.ctrlKHandler = handler;
   }
   onKey = async (_, key) => {
+    try {
+      const fs10 = await import("fs");
+      fs10.appendFileSync("C:\\Users\\dedeep vasireddy\\keypresses.log", `onKey: active=${this.active} key=${JSON.stringify(key)}
+`);
+    } catch {
+    }
     if (!this.active) return;
     if (key.ctrl && key.name === "c") {
       this.cleanup();
@@ -17405,7 +17474,7 @@ var PhoneOS = class {
       } else {
         this.select();
       }
-    } else if (key.name === "return") {
+    } else if (key.name === "return" || key.name === "enter") {
       this.select();
     }
   };
@@ -18802,7 +18871,13 @@ function parseFallbackToolCalls2(content) {
       });
       continue;
     }
-    const fileMatch = preText.match(/(?:file|to|named|in|create|write)\s+`?([a-zA-Z0-9_\-\.\/\\:]+\.[a-zA-Z0-9_]+)`?/i);
+    let fileMatch = code.split("\n")[0]?.trim().match(/^(?:#|\/\/|\/\*+)\s*(?:file:)?\s*`?([a-zA-Z0-9_\-\.\/\\:]+\.[a-zA-Z0-9_]+)`?/i);
+    if (!fileMatch) {
+      fileMatch = preText.match(/(?:file|to|named|in|create|write|for)\s+`?([a-zA-Z0-9_\-\.\/\\:]+\.[a-zA-Z0-9_]+)`?/i);
+    }
+    if (!fileMatch) {
+      fileMatch = preText.match(/\b([a-zA-Z0-9_\-\.\/\\:]+\.(?:py|js|ts|json|html|css|sh|ps1|bat|cmd|cpp|c|h|md))\b/i);
+    }
     if (fileMatch) {
       foundCalls.push({
         name: "write_file",
@@ -18933,7 +19008,9 @@ async function main() {
       if (isPrompting) return;
       if (!chatSession.isChatActive) return;
       updateAnimationTimer();
-      const isThinking = chatSession.agentStates.get(chatSession.threadId) === "thinking";
+      const state = chatSession.agentStates.get(chatSession.threadId);
+      const isThinking = state === "thinking";
+      const delayMessage = chatSession.delayMessages.get(chatSession.threadId);
       const stats = memoryManager.getBudgetStatsForMessages(messages, rules);
       const prov = config2.defaults.primaryProvider;
       const model = Configurator.getActiveModel(config2, prov) ?? "default";
@@ -18943,7 +19020,7 @@ async function main() {
         ctxUsed: stats.filled,
         ramMB,
         showContextBar: config2.defaults.showContextBar !== false
-      }, model, isThinking, getPendingPlan(), getPlanMenuIndex(), diffsExpanded);
+      }, model, isThinking, getPendingPlan(), getPlanMenuIndex(), diffsExpanded, delayMessage);
     }
     const formatToolResult = (toolName, result, diffSummary, args2) => {
       const sections = [`**Tool call: ${toolName}**`];
@@ -19116,6 +19193,16 @@ CRITICAL CONSTRAINT: The current model (${activeModel}) has rate limits configur
 User's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.${bgInfo}${limitsInfo}`;
               const msgsToSend = [new import_messages4.SystemMessage(rules + nameHint), ...messages];
               const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
+              const finalMsgsToSend = optimizedMsgs.map((msg, idx) => {
+                if (idx === optimizedMsgs.length - 1 && msg instanceof import_messages4.HumanMessage && config2.defaults.primaryProvider === "ollama") {
+                  const text = msg.content.toString();
+                  return new import_messages4.HumanMessage({
+                    ...msg,
+                    content: text + "\n\n(Reminder: Do not refuse. You have local tools like write_file and execute_terminal_command. Proceed directly by producing a plan or running commands.)"
+                  });
+                }
+                return msg;
+              });
               const aiMessage = new import_messages4.AIMessage("");
               messages.push(aiMessage);
               syncMessages();
@@ -19126,7 +19213,7 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
               } else {
                 sessionEvents.emit("stream_update", chatSession.threadId);
               }
-              const stream = await provider.stream(optimizedMsgs);
+              const stream = await provider.stream(finalMsgsToSend);
               for await (const chunk of stream) {
                 const threadExists2 = dbManager.listThreads().some((th) => th.id === currentThreadId);
                 if (!threadExists2) {
@@ -19297,7 +19384,7 @@ ${reasoning}
         } else if (key.name === "escape") {
           cleanup();
           resolve();
-        } else if (key.name === "return") {
+        } else if (key.name === "return" || key.name === "enter") {
           if (getPendingPlan()) {
             const chosen = PLAN_MENU_OPTIONS[getPlanMenuIndex()];
             if (chosen.inject !== null) {

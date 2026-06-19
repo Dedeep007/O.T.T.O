@@ -223,7 +223,8 @@ export class ChatUI {
     isThinking: boolean = false,
     pendingPlan: boolean = false,
     planMenuIndex: number = 0,
-    diffsExpanded: boolean = false
+    diffsExpanded: boolean = false,
+    delayMessage?: string
   ) {
     // ── 1. Build the FULL content buffer ─────────────────────────────────────
     const lines: string[] = [];
@@ -401,7 +402,12 @@ export class ChatUI {
       push('');
     });
 
-    if (isThinking) {
+    if (delayMessage) {
+      const dots = '.'.repeat((Math.floor(Date.now() / 350) % 3) + 1);
+      push(this.AI_TAG('  O.T.T.O'));
+      push('  ' + chalk.hex('#FBBF24')(`${delayMessage}${dots}`));
+      push('');
+    } else if (isThinking) {
       const dots = '.'.repeat((Math.floor(Date.now() / 350) % 3) + 1);
       push(this.AI_TAG('  O.T.T.O'));
       push('  ' + chalk.hex('#A78BFA')(`thinking${dots}`));
@@ -439,6 +445,12 @@ export class ChatUI {
     push(this.DIM('-'.repeat(this.W)));
 
     // ── 2. Compute viewport slice ─────────────────────────────────────────────
+    if (this.totalContentLines > 0 && this.scrollOffset > 0) {
+      const deltaLines = lines.length - this.totalContentLines;
+      if (deltaLines > 0) {
+        this.scrollOffset += deltaLines;
+      }
+    }
     this.totalContentLines = lines.length;
 
     const viewH     = Math.max(1, (process.stdout.rows || 24) - 1); // leave 1 row for prompt

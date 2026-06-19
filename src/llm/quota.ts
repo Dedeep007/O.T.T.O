@@ -1,4 +1,5 @@
 import { ui } from '../cli/ui.js';
+import { chatSession, sessionEvents } from '../cli/session.js';
 
 export interface RequestRecord {
   timestamp: number;
@@ -162,11 +163,24 @@ export class QuotaManager {
     const hasAnyLimit = limits.rpm || limits.rpd || limits.tpm || limits.tpd || limits.itpm || limits.otpm;
     if (!hasAnyLimit) return;
 
+    const threadId = chatSession.threadId || 'default';
+
     while (true) {
       const waitTime = this.checkLimits(model, limits);
       if (waitTime <= 0) break;
       ui.warning(`Rate limit threshold approached for ${model}. Pausing execution for ${Math.ceil(waitTime / 1000)}s to remain within configured limits.`);
-      await new Promise(resolve => setTimeout(resolve, waitTime));
+      
+      let remaining = Math.ceil(waitTime / 1000);
+      chatSession.agentStates.set(threadId, 'delaying');
+      while (remaining > 0) {
+        chatSession.delayMessages.set(threadId, `Output is delayed to evade rate limits... Waiting ${remaining}s`);
+        sessionEvents.emit('stream_update', threadId);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        remaining--;
+      }
+      chatSession.agentStates.set(threadId, 'thinking');
+      chatSession.delayMessages.delete(threadId);
+      sessionEvents.emit('stream_update', threadId);
     }
   }
 
@@ -180,12 +194,22 @@ export class QuotaManager {
       }
     }
 
+    const threadId = chatSession.threadId || 'default';
     ui.warning(`Rate limit hit (429). Pausing execution for ${waitTime}ms to prevent TPM exhaustion.`);
     
-    return new Promise((resolve) => setTimeout(() => {
-      this.backoffTime = Math.min((this.backoffTime * 2) + Math.random() * 500, 60000);
-      resolve();
-    }, waitTime));
+    let remaining = Math.ceil(waitTime / 1000);
+    chatSession.agentStates.set(threadId, 'delaying');
+    while (remaining > 0) {
+      chatSession.delayMessages.set(threadId, `Rate limit hit. Pausing execution... Waiting ${remaining}s`);
+      sessionEvents.emit('stream_update', threadId);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      remaining--;
+    }
+    chatSession.agentStates.set(threadId, 'thinking');
+    chatSession.delayMessages.delete(threadId);
+    sessionEvents.emit('stream_update', threadId);
+
+    this.backoffTime = Math.min((this.backoffTime * 2) + Math.random() * 500, 60000);
   }
 
   resetBackoff() {
