@@ -78,11 +78,30 @@ async function main() {
       messages.forEach(m => {
         const messageType = m._getType();
         let content = m.content.toString();
+        
         if (messageType === 'ai' && m.tool_calls && m.tool_calls.length > 0) {
-          content += '\n\n- tool call sent';
+          content += '\n\n> Calling tools...';
+        }
+
+        if (messageType === 'tool') {
+          let args = {};
+          const toolName = (m as any).name || 'tool';
+          const toolCallId = (m as any).tool_call_id;
+          if (toolCallId) {
+            for (let i = messages.indexOf(m) - 1; i >= 0; i--) {
+              if (messages[i]._getType() === 'ai' && (messages[i] as any).tool_calls) {
+                const tc = (messages[i] as any).tool_calls.find((c: any) => c.id === toolCallId);
+                if (tc) {
+                  args = tc.args;
+                  break;
+                }
+              }
+            }
+          }
+          content = formatToolResult(toolName, content, '', args);
         }
         
-        if (content.trim() || m.tool_calls?.length > 0) {
+        if (content.trim() || (m as any).tool_calls?.length > 0) {
           renderMsgs.push({
             role: messageType === 'human'
               ? 'user'
@@ -210,10 +229,16 @@ async function main() {
       sessionEvents.on('prompt_start', () => {
         isPrompting = true;
         if (streamRenderTimer) clearTimeout(streamRenderTimer);
+        process.stdout.write('\x1B[?1049l');
+        process.stdin.removeListener('keypress', onKeypress);
+        if (process.stdin.isTTY) process.stdin.setRawMode(false);
       });
 
       sessionEvents.on('prompt_end', () => {
         isPrompting = false;
+        process.stdout.write('\x1B[?1049h');
+        if (process.stdin.isTTY) process.stdin.setRawMode(true);
+        process.stdin.on('keypress', onKeypress);
         render(true);
       });
 
@@ -1398,7 +1423,7 @@ async function main() {
     id: 'home',
     title: 'Home',
     renderBody: () => {
-      const W = process.stdout.columns ? Math.max(Math.min(process.stdout.columns - 8, 110), 60) : 95;
+      const W = process.stdout.columns ? Math.max(Math.min(process.stdout.columns - 8, 150), 60) : 95;
       const isCompact = (process.stdout.columns && process.stdout.columns < 85) || (process.stdout.rows && process.stdout.rows < 28);
       const threads = dbManager.listThreads();
       const model = (config.providers as any)[config.defaults.primaryProvider]?.model || 'Default Model';

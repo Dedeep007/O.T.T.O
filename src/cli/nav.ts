@@ -150,7 +150,7 @@ export class PhoneOS {
     const hasKey = !!(providerConfig?.activeApiKey || providerConfig?.apiKey || providerConfig?.apiKeys?.length);
     const mem    = process.memoryUsage();
     const ramMB  = Math.round(mem.rss / 1024 / 1024);
-    const W = process.stdout.columns ? Math.max(Math.min(process.stdout.columns - 8, 110), 60) : 95;
+    const W = process.stdout.columns ? Math.max(Math.min(process.stdout.columns - 8, 150), 60) : 95;
 
     // Palette
     const GOLD  = chalk.hex('#F5C400');
@@ -185,7 +185,7 @@ export class PhoneOS {
     
     const BAR = 6; // Compact bar for header
     const fill = Math.round(ratio * BAR);
-    const ctxBar = barChalk('▰'.repeat(fill)) + DIM('▱'.repeat(BAR - fill));
+    const ctxBar = barChalk('█'.repeat(fill)) + DIM('░'.repeat(BAR - fill));
     const pctStr = `${pct}%`;
     const ctxUsageStr = `${stats.filled}/${stats.max}`;
     const ctxPill = MUTED('ctx ') + ctxBar + ' ' + MUTED(ctxUsageStr) + ' ' + MUTED(pctStr);

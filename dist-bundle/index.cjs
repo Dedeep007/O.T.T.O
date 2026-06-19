@@ -17019,7 +17019,7 @@ var PhoneOS = class {
     const hasKey = !!(providerConfig?.activeApiKey || providerConfig?.apiKey || providerConfig?.apiKeys?.length);
     const mem = process.memoryUsage();
     const ramMB = Math.round(mem.rss / 1024 / 1024);
-    const W = process.stdout.columns ? Math.max(Math.min(process.stdout.columns - 8, 110), 60) : 95;
+    const W = process.stdout.columns ? Math.max(Math.min(process.stdout.columns - 8, 150), 60) : 95;
     const GOLD = import_chalk2.default.hex("#F5C400");
     const CYAN = import_chalk2.default.hex("#56CFE1");
     const GREEN = import_chalk2.default.hex("#57CC99");
@@ -17042,7 +17042,7 @@ var PhoneOS = class {
     if (ratio > 0.85) barChalk = RED;
     const BAR = 6;
     const fill = Math.round(ratio * BAR);
-    const ctxBar = barChalk("\u25B0".repeat(fill)) + DIM("\u25B1".repeat(BAR - fill));
+    const ctxBar = barChalk("\u2588".repeat(fill)) + DIM("\u2591".repeat(BAR - fill));
     const pctStr = `${pct}%`;
     const ctxUsageStr = `${stats.filled}/${stats.max}`;
     const ctxPill = MUTED("ctx ") + ctxBar + " " + MUTED(ctxUsageStr) + " " + MUTED(pctStr);
@@ -18270,7 +18270,24 @@ async function main() {
         const messageType = m._getType();
         let content = m.content.toString();
         if (messageType === "ai" && m.tool_calls && m.tool_calls.length > 0) {
-          content += "\n\n- tool call sent";
+          content += "\n\n> Calling tools...";
+        }
+        if (messageType === "tool") {
+          let args2 = {};
+          const toolName = m.name || "tool";
+          const toolCallId = m.tool_call_id;
+          if (toolCallId) {
+            for (let i = messages.indexOf(m) - 1; i >= 0; i--) {
+              if (messages[i]._getType() === "ai" && messages[i].tool_calls) {
+                const tc = messages[i].tool_calls.find((c2) => c2.id === toolCallId);
+                if (tc) {
+                  args2 = tc.args;
+                  break;
+                }
+              }
+            }
+          }
+          content = formatToolResult(toolName, content, "", args2);
         }
         if (content.trim() || m.tool_calls?.length > 0) {
           renderMsgs.push({
@@ -18375,9 +18392,15 @@ ${trimmedResult.slice(0, 1200)}
       sessionEvents.on("prompt_start", () => {
         isPrompting = true;
         if (streamRenderTimer) clearTimeout(streamRenderTimer);
+        process.stdout.write("\x1B[?1049l");
+        process.stdin.removeListener("keypress", onKeypress);
+        if (process.stdin.isTTY) process.stdin.setRawMode(false);
       });
       sessionEvents.on("prompt_end", () => {
         isPrompting = false;
+        process.stdout.write("\x1B[?1049h");
+        if (process.stdin.isTTY) process.stdin.setRawMode(true);
+        process.stdin.on("keypress", onKeypress);
         render(true);
       });
       const cleanup = () => {
@@ -19524,7 +19547,7 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
     id: "home",
     title: "Home",
     renderBody: () => {
-      const W = process.stdout.columns ? Math.max(Math.min(process.stdout.columns - 8, 110), 60) : 95;
+      const W = process.stdout.columns ? Math.max(Math.min(process.stdout.columns - 8, 150), 60) : 95;
       const isCompact = process.stdout.columns && process.stdout.columns < 85 || process.stdout.rows && process.stdout.rows < 28;
       const threads = dbManager.listThreads();
       const model = config2.providers[config2.defaults.primaryProvider]?.model || "Default Model";
