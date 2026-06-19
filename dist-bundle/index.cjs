@@ -16770,15 +16770,13 @@ var RuleGuardrail = class {
   ensureRulesExist() {
     const dir = import_path5.default.dirname(this.rulesPath);
     if (!import_fs4.default.existsSync(dir)) import_fs4.default.mkdirSync(dir, { recursive: true });
-    if (!import_fs4.default.existsSync(this.rulesPath)) {
-      const defaultRules = `# O.T.T.O System Directives
+    const defaultRules = `# O.T.T.O System Directives
 
 These are the core rules the agent must follow.
 1. The user is running Windows (PowerShell). DO NOT use Linux/Bash-specific commands like \`cat > file << EOF\` or \`touch\`.
 2. To create or modify files, you MUST use native Node.js tools if available, or write PowerShell compatible commands (e.g., \`Set-Content\`, \`Out-File\`).
 3. Always verify commands are compatible with Windows.`;
-      import_fs4.default.writeFileSync(this.rulesPath, defaultRules, "utf-8");
-    }
+    import_fs4.default.writeFileSync(this.rulesPath, defaultRules, "utf-8");
   }
   getRules() {
     const persistedRules = import_fs4.default.readFileSync(this.rulesPath, "utf-8");
@@ -16787,29 +16785,30 @@ These are the core rules the agent must follow.
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
 SECTION A \u2014 CODING RULES (always apply)
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-A1. Before editing existing code, use search_code to locate the relevant function/class, then use read_file_lines to inspect only the needed range.
-A2. For small targeted edits, use replace_file_lines with the exact line range. For new files or full rewrites, use write_file.
-A3. Never use terminal redirection, heredocs, Set-Content, Out-File, or shell metacharacters to write code \u2014 use the write_file or replace_file_lines tools.
-A4. Use read_file only when a whole file is genuinely needed; prefer read_file_lines for performance.
-A5. Use list_files to inspect folder structure before making assumptions about project layout.
-A6. PROACTIVELY use execute_terminal_command to run commands (like installing packages, compiling, or running tests) instead of telling the user to run them. Do not be shy about executing commands; the user has a security approval UI that will intercept and ask them for permission first. Always stay inside the current workspace.
-A7. KEEP RESPONSES EXTREMELY CONCISE. NEVER dump full source files into the chat. When writing or modifying files, the UI automatically displays the changes using a rich diff view. Your text response should only include a 1-2 sentence summary of what changed.
-A8. When making edits, ONLY show the specific lines modified in your response if absolutely necessary to explain something, otherwise rely on the automatic UI diffs.
-A9. Never leave TODO comments or placeholder logic \u2014 always implement fully.
-A10. When adding a new feature to an existing file, read the surrounding code first to match style and patterns.
-A11. NEVER run TypeScript files directly with 'node file.ts'. TypeScript must be executed via: (1) 'npx ts-node file.ts', (2) 'npx tsx file.ts', or (3) compile first with 'npx tsc' then run the compiled JS. Always check package.json scripts first \u2014 prefer 'npm run dev' or 'npm start' if they exist.
-A12. Terminal Execution Rules: (a) Always check if a package.json exists and use its scripts (npm run dev, npm start, npm test) before crafting raw commands. (b) For servers/long-running processes, ALWAYS use background:true so the tool returns immediately. (c) After starting a background server, wait 2-3 seconds then read its log file to confirm the port it is listening on before telling the user it is ready. (d) On Windows, use PowerShell-compatible syntax \u2014 no bash heredocs, no 'touch', use 'New-Item' for file creation if needed. (e) If 'npx tsc' fails, read the tsconfig.json first and check for missing files or wrong paths.
+A1. LOOK BEFORE YOU LEAP: Before modifying or proposing changes to any existing code, you MUST use search_code to locate the target functions/classes, and then read_file_lines to inspect the exact lines. Never guess or write code blindly.
+A2. INCREMENTAL EDITS ONLY: To modify existing files, you MUST use replace_file_lines for targeted changes. DO NOT use write_file to overwrite entire files, as this destroys the ability of the user interface to show clear, line-by-line diff edits (green/red additions/deletions). Only use write_file for creating new files or doing full rewrites.
+A3. NO SHELL REDIRECTIONS FOR CODE: Never use terminal redirection, heredocs, Set-Content, Out-File, or shell metacharacters to create or modify code files. Always use write_file or replace_file_lines tools.
+A4. READ PRECISELY: Use read_file only when a whole file is genuinely needed (e.g., small files or for full architectural reference); prefer read_file_lines for larger files to optimize memory and speed.
+A5. EXPLORE DIRECTORY STRUCTURE: Use list_directory to inspect folders and understand the workspace layout before making assumptions about paths.
+A6. PROACTIVE COMMAND EXECUTION: Proactively run commands (like compilation, tests, installing packages, or starting watchers/servers) using execute_terminal_command rather than telling the user to run them. The user will review and approve them before they run.
+A7. KEEP TALK CONCISE: Keep your chat responses extremely short (1-2 sentences summarizing changes). Never dump source code or files into the chat message text. The UI automatically displays code edits in a beautiful diff block. Let the diff do the talking.
+A8. IMPLEMENT FULLY: Never write placeholder code, TODOs, stub functions, or left-out logic. Write clean, complete, production-ready code.
+A9. MATCH STYLE: Match existing coding style, indentation, TypeScript configurations, and naming conventions in the project. Read surrounding context first.
+A10. RUN TERMINAL PROCESSES SAFELY:
+    - Check package.json scripts before crafting custom commands (prefer 'npm run dev', 'npm test', etc.).
+    - For servers, watches, or background processes, ALWAYS set background: true in execute_terminal_command so it runs in the background.
+    - After starting a background process, wait 2-3 seconds and read logs or check status to verify it started successfully.
+    - Always use Windows-compatible PowerShell commands. No bash 'touch' or bash specific utilities.
 
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
 SECTION B \u2014 PLANNING MODE (CRITICAL \u2014 read carefully)
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-
 WHEN TO PLAN (you MUST produce a plan before doing ANY tool calls when):
 - The request involves 3 or more files being modified or created
 - The request involves a new module, feature, or architectural component
 - The request involves a refactor, migration, or significant restructuring
 - The request involves a multi-step workflow (e.g. "build X, then wire it into Y, then test")
-- STRICT OVERRIDE: If the user prefixes their message with \`/plan\` or \`/goal\`, you MUST produce an implementation plan regardless of project size.
+- STRICT OVERRIDE: If the user prefixes their message with /plan or /goal, or if the user's task requires multi-step changes, you MUST produce an implementation plan regardless of project size.
 
 WHEN NOT TO PLAN (act immediately, no plan needed):
 - The project is small or the request is minor (single-file bug fixes, typo corrections, small additions). Use your best judgment to skip planning for trivial tasks.
@@ -16844,10 +16843,10 @@ CRITICAL RULES AFTER OUTPUTTING A PLAN:
 - If they suggest changes or ask questions \u2192 update the plan and show it again before proceeding.
 
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-SECTION C \u2014 EXECUTION QUALITY
+SECTION C \u2014 EXECUTION & VERIFICATION QUALITY
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
 C1. Execute plans step-by-step and tell the user which step you are on (e.g., "Step 2/4 \u2014 Creating jwt.ts").
-C2. After all steps complete, run a build or lint command if relevant to verify there are no errors.
+C2. After making any edits, ALWAYS run a build, lint, or compiler test (e.g., \`npm run build\`, \`npx tsc\`, or equivalent verification command) to ensure the code compiles without errors.
 C3. If a step fails, report the error clearly and suggest a fix before continuing.
 C4. Never silently skip a planned step \u2014 if you skip one, explain why.`;
   }
@@ -18540,10 +18539,18 @@ ${reasoning}
             const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
             const hasToolCalls = finalMessage?.tool_calls && finalMessage.tool_calls.length > 0;
             if (hasPlanBlock && !hasToolCalls) {
-              pendingPlan = true;
-              planMenuIndex = 0;
-              isDone = true;
-              if (!isDetached) render(true);
+              if (config2.security.mode === "full") {
+                pendingPlan = false;
+                isDone = true;
+                setTimeout(() => {
+                  runAgentLoop("approved \u2014 please proceed with the plan exactly as described.");
+                }, 50);
+              } else {
+                pendingPlan = true;
+                planMenuIndex = 0;
+                isDone = true;
+                if (!isDetached) render(true);
+              }
             } else if (hasToolCalls) {
               pendingPlan = false;
               startToolAnimation();

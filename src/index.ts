@@ -391,10 +391,18 @@ async function main() {
             const hasToolCalls = finalMessage?.tool_calls && finalMessage.tool_calls.length > 0;
 
             if (hasPlanBlock && !hasToolCalls) {
-              pendingPlan = true;
-              planMenuIndex = 0;
-              isDone = true;
-              if (!isDetached) render(true);
+              if (config.security.mode === 'full') {
+                pendingPlan = false;
+                isDone = true;
+                setTimeout(() => {
+                  runAgentLoop('approved — please proceed with the plan exactly as described.');
+                }, 50);
+              } else {
+                pendingPlan = true;
+                planMenuIndex = 0;
+                isDone = true;
+                if (!isDetached) render(true);
+              }
             } else if (hasToolCalls) {
               pendingPlan = false;
               startToolAnimation();
