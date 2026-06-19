@@ -20,6 +20,11 @@ import { promptWithEscape } from './cli/prompt.js';
 import { captureWorkspaceSnapshot, formatWorkspaceChanges } from './cli/workspaceDiff.js';
 import { parseAndExecuteCLI } from './cli/parser.js';
 import * as readline from 'readline';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const pkg = require('../package.json');
+const CLI_VERSION = pkg.version;
 
 import { SystemMessage, HumanMessage, AIMessage, ToolMessage } from '@langchain/core/messages';
 import { concat } from '@langchain/core/utils/stream';
@@ -1416,7 +1421,7 @@ async function main() {
       const isDefaultName = !config.profile?.username;
 
       if (isCompact) {
-        console.log(borderDim(' ╭─ O.T.T.O v1.1.12 ' + '─'.repeat(Math.max(0, W - 18)) + '╮'));
+        console.log(borderDim(` ╭─ O.T.T.O v${CLI_VERSION} ` + '─'.repeat(Math.max(0, W - 14 - CLI_VERSION.length)) + '╮'));
         console.log(borderDim(' │ ') + chalk.whiteBright(`Welcome back, ${displayName}!`).padEnd(Math.max(0, W - 1)) + borderDim('│'));
         if (isDefaultName) {
           console.log(borderDim(' │ ') + chalk.hex('#F59E0B')('⚠  Go to Settings › Profile to set your username').padEnd(Math.max(0, W - 1)) + borderDim('│'));
@@ -1448,7 +1453,7 @@ async function main() {
         ''
       ];
 
-      console.log(borderDim(' ╭─ O.T.T.O v1.1.12 ' + '─'.repeat(Math.max(0, W - 18)) + '╮'));
+      console.log(borderDim(` ╭─ O.T.T.O v${CLI_VERSION} ` + '─'.repeat(Math.max(0, W - 14 - CLI_VERSION.length)) + '╮'));
 
       drawRow(`      Welcome back, ${displayName}!`, rightRows[0], chalk.white, chalk.white);
       if (isDefaultName) {

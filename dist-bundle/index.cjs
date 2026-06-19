@@ -55,11 +55,19 @@ function wrapText(text, maxWidth, indent) {
   if (currentLine) lines.push(" ".repeat(indent) + currentLine.trim());
   return lines;
 }
-function renderDiffBlock(codeStr, diffWidth) {
+function renderDiffBlock(codeStr, diffWidth, isExpanded) {
   let output = "\n";
   const bar = (bg, fg) => import_chalk9.default.bgHex(bg).hex(fg)("  ");
   const row = (bg, fg, text) => import_chalk9.default.bgHex(bg).hex(fg)(padVisible(` ${text}`, diffWidth - 2));
-  codeStr.split("\n").forEach((line) => {
+  const allLines = codeStr.split("\n");
+  const total = allLines.length;
+  let toRender = allLines;
+  if (!isExpanded && total > 15) {
+    const top = allLines.slice(0, 7);
+    const bottom = allLines.slice(total - 3);
+    toRender = [...top, `... (${total - 10} hidden lines) [Press Ctrl+E to Expand] ...`, ...bottom];
+  }
+  toRender.forEach((line) => {
     if (line.startsWith("+++") || line.startsWith("---")) {
       output += import_chalk9.default.bgHex("#1E293B").hex("#CBD5E1")(padVisible(` ${line}`, diffWidth)) + "\n";
     } else if (line.startsWith("@@")) {
@@ -68,19 +76,21 @@ function renderDiffBlock(codeStr, diffWidth) {
       output += bar("#16A34A", "#052e16") + row("#15803D", "#F0FDF4", line) + "\n";
     } else if (line.startsWith("-")) {
       output += bar("#DC2626", "#450a0a") + row("#B91C1C", "#FFF1F2", line) + "\n";
+    } else if (line.startsWith("... (")) {
+      output += import_chalk9.default.bgHex("#374151").hex("#FBBF24")(padVisible(` ${line}`, diffWidth)) + "\n";
     } else {
       output += import_chalk9.default.bgHex("#0F172A").hex("#94A3B8")(padVisible(` ${line}`, diffWidth)) + "\n";
     }
   });
   return output + "\n";
 }
-function renderMarkdownWithOttoStyles(content, width) {
+function renderMarkdownWithOttoStyles(content, width, diffsExpanded) {
   const diffWidth = Math.max(48, Math.min(width, 96));
   const placeholders = [];
   const withPlaceholders = content.replace(
     /```diff\n([\s\S]*?)```/g,
     (_match, codeStr) => {
-      const rendered = renderDiffBlock(codeStr, diffWidth);
+      const rendered = renderDiffBlock(codeStr, diffWidth, diffsExpanded);
       const key = `\0DIFF${placeholders.length}\0`;
       placeholders.push(rendered);
       return key;
@@ -92,19 +102,22 @@ function renderMarkdownWithOttoStyles(content, width) {
     renderer: new CustomRenderer({
       width,
       reflowText: true,
-      codespan: import_chalk9.default.hex("#F5C400")
+      codespan: import_chalk9.default.hex("#F5C400"),
+      strong: import_chalk9.default.white.bold,
+      em: import_chalk9.default.italic
     })
   });
   const parsed = import_marked2.marked.parse(withPlaceholders);
   return parsed.replace(/\u0000DIFF(\d+)\u0000/g, (_m, idx) => placeholders[Number(idx)]);
 }
-var import_chalk9, import_marked2, import_marked_terminal2, ChatUI;
+var import_chalk9, import_marked2, import_marked_terminal2, import_fs8, ChatUI;
 var init_chat = __esm({
   "src/cli/chat.ts"() {
     "use strict";
     import_chalk9 = __toESM(require("chalk"), 1);
     import_marked2 = require("marked");
     import_marked_terminal2 = __toESM(require("marked-terminal"), 1);
+    import_fs8 = __toESM(require("fs"), 1);
     ChatUI = class {
       W = 72;
       lastLineCount = 0;
@@ -135,7 +148,7 @@ var init_chat = __esm({
       isAtBottom() {
         return this.scrollOffset === 0;
       }
-      render(messages, currentInput, telemetry, model, isThinking = false, pendingPlan = false, planMenuIndex = 0) {
+      render(messages, currentInput, telemetry, model, isThinking = false, pendingPlan = false, planMenuIndex = 0, diffsExpanded = false) {
         const lines = [];
         const push = (line = "") => lines.push(line);
         push(this.DIM("-".repeat(this.W)));
@@ -155,7 +168,7 @@ var init_chat = __esm({
           }
           if (msg.role === "tool") {
             push("  " + import_chalk9.default.bgHex("#1F2937").white.bold(" TOOL "));
-            const rendered = renderMarkdownWithOttoStyles(msg.content, this.W - 4);
+            const rendered = renderMarkdownWithOttoStyles(msg.content, this.W - 4, diffsExpanded);
             rendered.trim().split("\n").forEach((line) => push("  " + line));
             push("");
             return;
@@ -189,7 +202,7 @@ var init_chat = __esm({
               if (planMatch) {
                 const beforePlan = rawContent.slice(0, rawContent.indexOf("<!-- PLAN_START")).trim();
                 if (beforePlan) {
-                  const rendered = renderMarkdownWithOttoStyles(beforePlan, this.W - 4);
+                  const rendered = renderMarkdownWithOttoStyles(beforePlan, this.W - 4, diffsExpanded);
                   rendered.trim().split("\n").forEach((line) => push("  " + line));
                   push("");
                 }
@@ -236,7 +249,7 @@ var init_chat = __esm({
                 push("");
                 const afterPlan = rawContent.slice(rawContent.indexOf("<!-- PLAN_END -->") + "<!-- PLAN_END -->".length).trim();
                 if (afterPlan) {
-                  const rendered = renderMarkdownWithOttoStyles(afterPlan, this.W - 4);
+                  const rendered = renderMarkdownWithOttoStyles(afterPlan, this.W - 4, diffsExpanded);
                   rendered.trim().split("\n").forEach((line) => push("  " + line));
                 }
               } else {
@@ -247,7 +260,7 @@ var init_chat = __esm({
                 processedContent = processedContent.replace(/^[*\s]*\u2514\s*(.*)/gm, (_match, details) => {
                   return import_chalk9.default.dim("\\- " + details);
                 });
-                const rendered = renderMarkdownWithOttoStyles(processedContent, this.W - 4);
+                const rendered = renderMarkdownWithOttoStyles(processedContent, this.W - 4, diffsExpanded);
                 rendered.trim().split("\n").forEach((line) => push("  " + line));
               }
             }
@@ -306,7 +319,18 @@ var init_chat = __esm({
         this.lastLineCount = visible.length;
         const promptPrefix = "  " + this.BRAND(">") + " ";
         const scrollHint = linesBelow > 0 ? this.MUTED("  [scrolled \u2014 End to return]") : "";
-        const placeholder = currentInput.length === 0 ? pendingPlan ? import_chalk9.default.hex("#F5C400")("\u2191\u2193 choose  \u21B5 confirm") : this.MUTED("Type your message... (esc to menu)") : "";
+        let placeholder = "";
+        if (currentInput.length === 0) {
+          placeholder = pendingPlan ? import_chalk9.default.hex("#F5C400")("\u2191\u2193 choose  \u21B5 confirm") : this.MUTED("Type your message... (esc to menu)");
+        } else if (currentInput.endsWith("@")) {
+          try {
+            const entries = import_fs8.default.readdirSync(process.cwd(), { withFileTypes: true }).filter((e) => !e.name.startsWith(".") && e.name !== "node_modules").map((e) => e.isDirectory() ? e.name + "/" : e.name);
+            if (entries.length > 0) {
+              placeholder = this.MUTED("  [Recs: " + entries.slice(0, 5).join(", ") + (entries.length > 5 ? "..." : "") + "]");
+            }
+          } catch (e) {
+          }
+        }
         process.stdout.write("\x1B[2K\r" + promptPrefix + import_chalk9.default.white(currentInput) + placeholder + scrollHint);
       }
     };
@@ -475,14 +499,24 @@ var Configurator = {
     const providers = {};
     if (primaryProvider === "groq") {
       const apiKey = await (0, import_prompts.input)({ message: "Enter your Groq API Key:" });
-      providers.groq = { apiKey, frequency_penalty: 0 };
+      const model = await (0, import_prompts.input)({ message: "Enter Groq Model (e.g. qwen-qwq-32b):", default: "qwen-qwq-32b" });
+      providers.groq = { apiKey, model, frequency_penalty: 0 };
     } else if (primaryProvider === "gemini") {
       const apiKey = await (0, import_prompts.input)({ message: "Enter your Gemini API Key:" });
-      providers.gemini = { apiKey };
+      const model = await (0, import_prompts.input)({ message: "Enter Gemini Model (e.g. gemini-1.5-pro):", default: "gemini-1.5-pro" });
+      providers.gemini = { apiKey, model };
     } else if (primaryProvider === "ollama") {
       const baseUrl = await (0, import_prompts.input)({ message: "Enter your Ollama base URL (e.g. http://localhost:11434):", default: "http://localhost:11434" });
-      const model = await (0, import_prompts.input)({ message: "Enter your Ollama model name (e.g. llama3):" });
+      const model = await (0, import_prompts.input)({ message: "Enter your Ollama model name (e.g. llama3):", default: "llama3" });
       providers.ollama = { baseUrl, model, num_ctx: 4096 };
+    } else if (primaryProvider === "openai") {
+      const apiKey = await (0, import_prompts.input)({ message: "Enter your OpenAI API Key:" });
+      const model = await (0, import_prompts.input)({ message: "Enter OpenAI Model (e.g. gpt-4o):", default: "gpt-4o" });
+      providers.openai = { apiKey, model, parallel_tool_calls: true };
+    } else if (primaryProvider === "anthropic") {
+      const apiKey = await (0, import_prompts.input)({ message: "Enter your Anthropic API Key:" });
+      const model = await (0, import_prompts.input)({ message: "Enter Anthropic Model (e.g. claude-3-5-sonnet-20241022):", default: "claude-3-5-sonnet-20241022" });
+      providers.anthropic = { apiKey, model, effort: "high" };
     }
     const securityMode = await (0, import_prompts.select)({
       message: "Select Security Mode:",
@@ -757,6 +791,19 @@ var Configurator = {
     }
     return null;
   },
+  updateOllamaUrl: (url2) => {
+    const config2 = Configurator.loadConfig();
+    if (config2) {
+      if (!config2.providers.ollama) {
+        config2.providers.ollama = { baseUrl: url2, num_ctx: 4096 };
+      } else {
+        config2.providers.ollama.baseUrl = url2;
+      }
+      Configurator.saveConfig(config2);
+      return config2;
+    }
+    return null;
+  },
   getUsername: (config2) => {
     return config2.profile?.username?.trim() || "";
   },
@@ -951,12 +998,17 @@ var DBManager = class {
 var dbManager = new DBManager();
 
 // src/cli/session.ts
+var import_events = require("events");
+var sessionEvents = new import_events.EventEmitter();
 var ChatSession = class _ChatSession {
   threadId;
   threadName;
   username;
   hostname;
   threadMessages = /* @__PURE__ */ new Map();
+  activeStreams = /* @__PURE__ */ new Set();
+  isChatActive = false;
+  pendingApprovals = [];
   static DEFAULT_THREAD_NAME = "New Chat";
   constructor() {
     this.username = import_os3.default.userInfo().username;
@@ -1925,10 +1977,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path9) {
-  if (!path9)
+function getElementAtPath(obj, path10) {
+  if (!path10)
     return obj;
-  return path9.reduce((acc, key) => acc?.[key], obj);
+  return path10.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -2337,11 +2389,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path9, issues) {
+function prefixIssues(path10, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path9);
+    iss.path.unshift(path10);
     return iss;
   });
 }
@@ -2488,16 +2540,16 @@ function flattenError(error51, mapper = (issue2) => issue2.message) {
 }
 function formatError(error51, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error52, path9 = []) => {
+  const processError = (error52, path10 = []) => {
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path9, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path10, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
       } else {
-        const fullpath = [...path9, ...issue2.path];
+        const fullpath = [...path10, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -2524,17 +2576,17 @@ function formatError(error51, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error51, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error52, path9 = []) => {
+  const processError = (error52, path10 = []) => {
     var _a3, _b;
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path9, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path10, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
       } else {
-        const fullpath = [...path9, ...issue2.path];
+        const fullpath = [...path10, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -2566,8 +2618,8 @@ function treeifyError(error51, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path9 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path9) {
+  const path10 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path10) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -15259,13 +15311,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path9 = ref.slice(1).split("/").filter(Boolean);
-  if (path9.length === 0) {
+  const path10 = ref.slice(1).split("/").filter(Boolean);
+  if (path10.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path9[0] === defsKey) {
-    const key = path9[1];
+  if (path10[0] === defsKey) {
+    const key = path10[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -15681,71 +15733,142 @@ var import_path4 = __toESM(require("path"), 1);
 var import_child_process = require("child_process");
 var import_shell_quote = require("shell-quote");
 var import_prompts2 = require("@inquirer/prompts");
+
+// src/security/background.ts
+var import_tree_kill = __toESM(require("tree-kill"), 1);
+var BackgroundManager = class {
+  processes = /* @__PURE__ */ new Map();
+  addProcess(command, child) {
+    if (child.pid) {
+      this.processes.set(child.pid, {
+        pid: child.pid,
+        command,
+        startTime: Date.now(),
+        process: child
+      });
+      child.on("exit", () => {
+        this.removeProcess(child.pid);
+      });
+      child.on("error", () => {
+        this.removeProcess(child.pid);
+      });
+    }
+  }
+  removeProcess(pid) {
+    this.processes.delete(pid);
+  }
+  getProcesses() {
+    return Array.from(this.processes.values()).sort((a, b) => b.startTime - a.startTime);
+  }
+  killProcess(pid) {
+    return new Promise((resolve, reject) => {
+      const procInfo = this.processes.get(pid);
+      if (!procInfo) {
+        resolve();
+        return;
+      }
+      (0, import_tree_kill.default)(pid, "SIGKILL", (err) => {
+        if (err) {
+          reject(err);
+        } else {
+          this.removeProcess(pid);
+          resolve();
+        }
+      });
+    });
+  }
+};
+var backgroundManager = new BackgroundManager();
+
+// src/security/executor.ts
+var os4 = __toESM(require("os"), 1);
+var fs2 = __toESM(require("fs"), 1);
+var path3 = __toESM(require("path"), 1);
 var Executor = class {
-  async executeCommand(commandStr) {
+  async executeCommand(commandStr, background = false) {
     const config2 = await Configurator.init();
     const parsed = (0, import_shell_quote.parse)(commandStr);
     const cmd = String(parsed[0]);
     const args = parsed.slice(1).map(String);
-    if (parsed.some((token) => typeof token !== "string")) {
-      ui.error("Shell metacharacters detected. Execution blocked.");
-      throw new Error("Metacharacters blocked");
-    }
     const isWhitelisted = config2.security.allowedCommands.includes(cmd);
-    if (config2.security.mode === "ask") {
-      const approved = await this.askApproval(commandStr);
-      if (!approved) throw new Error("Execution denied by user.");
-    } else if (config2.security.mode === "approve") {
-      if (!isWhitelisted) {
-        const choice = await this.promptUnknownAction(cmd);
-        if (choice === "deny") throw new Error("Execution denied by user.");
-        if (choice === "always") {
+    if (config2.security.mode === "ask" || config2.security.mode === "approve" && !isWhitelisted) {
+      const choice = await this.promptAction(cmd, commandStr);
+      if (choice === "deny") throw new Error("Execution denied by user.");
+      if (choice === "always") {
+        if (!isWhitelisted) {
           config2.security.allowedCommands.push(cmd);
-          Configurator.saveConfig(config2);
         }
+        if (config2.security.mode === "ask") {
+          config2.security.mode = "approve";
+          ui.info("Security mode updated to 'Approve' (whitelisted commands run silently).");
+        }
+        Configurator.saveConfig(config2);
       }
     } else if (config2.security.mode === "full") {
       ui.warning(`[Full Access Mode] Executing ${cmd} autonomously.`);
     }
+    if (background) {
+      const logDir = path3.join(os4.tmpdir(), "otto-cli-logs");
+      if (!fs2.existsSync(logDir)) fs2.mkdirSync(logDir, { recursive: true });
+      const logPath = path3.join(logDir, `bg-${Date.now()}.log`);
+      const out = fs2.openSync(logPath, "a");
+      const err = fs2.openSync(logPath, "a");
+      const child = (0, import_child_process.spawn)(commandStr, {
+        cwd: process.cwd(),
+        shell: true,
+        stdio: ["ignore", out, err],
+        detached: true
+      });
+      child.unref();
+      backgroundManager.addProcess(commandStr, child);
+      return Promise.resolve(`Background process started successfully with PID: ${child.pid}.
+Output is being logged to: ${logPath}
+Use the read_file tool to check this log file for startup errors or server listening ports.`);
+    }
     return new Promise((resolve, reject) => {
-      const child = (0, import_child_process.spawn)(cmd, args, { shell: process.platform === "win32", stdio: ["ignore", "pipe", "pipe"], cwd: process.cwd() });
-      let stdout = "";
-      let stderr = "";
-      child.stdout.on("data", (data) => stdout += data.toString());
-      child.stderr.on("data", (data) => stderr += data.toString());
-      child.on("close", (code) => {
-        if (code === 0) {
-          resolve(stdout);
+      (0, import_child_process.exec)(commandStr, { cwd: process.cwd() }, (error51, stdout, stderr) => {
+        if (error51) {
+          const out = stdout.toString().trim();
+          const err = stderr.toString().trim();
+          let msg = `Command failed with exit code ${error51.code || "unknown"}:`;
+          if (err) msg += `
+STDERR:
+${err}`;
+          if (out) msg += `
+STDOUT:
+${out}`;
+          if (!err && !out) msg += ` ${error51.message}`;
+          reject(new Error(msg));
         } else {
-          reject(new Error(`Command failed with code ${code}: ${stderr}`));
+          resolve(stdout.toString() || stderr.toString() || "Command executed successfully.");
         }
       });
-      child.on("error", (err) => {
-        reject(err);
+    });
+  }
+  async promptAction(cmd, fullCommand) {
+    if (!chatSession.isChatActive) {
+      return new Promise((resolve) => {
+        chatSession.pendingApprovals.push({
+          threadId: chatSession.threadId,
+          cmd,
+          commandStr: fullCommand,
+          resolve
+        });
+        sessionEvents.emit("pending_approval");
       });
-    });
-  }
-  async askApproval(command) {
-    ui.warning(`The agent wants to execute: ${command}`);
-    const answer = await (0, import_prompts2.select)({
-      message: "Allow execution?",
-      choices: [
-        { name: "Allow", value: true },
-        { name: "Deny", value: false }
-      ]
-    });
-    return answer;
-  }
-  async promptUnknownAction(cmd) {
-    ui.warning(`Unwhitelisted command intercepted: ${cmd}`);
-    return await (0, import_prompts2.select)({
+    }
+    sessionEvents.emit("prompt_start");
+    ui.warning(`The agent wants to execute: ${fullCommand}`);
+    const choice = await (0, import_prompts2.select)({
       message: "Choose an action:",
       choices: [
-        { name: "Allow for now", value: "now" },
-        { name: "Allow always (whitelist)", value: "always" },
-        { name: "Deny", value: "deny" }
+        { name: "Approve for now", value: "now" },
+        { name: `Approve always (whitelist '${cmd}')`, value: "always" },
+        { name: `Don't approve`, value: "deny" }
       ]
     });
+    sessionEvents.emit("prompt_end");
+    return choice;
   }
 };
 var executor = new Executor();
@@ -15987,18 +16110,25 @@ function diffForSingleFile(filePath, before, after) {
   return formatWorkspaceChanges(beforeMap, afterMap);
 }
 var executeTerminalCommand = (0, import_tools.tool)(
-  async ({ command }) => {
+  async ({ command, background }) => {
     try {
-      return await executor.executeCommand(command);
+      const beforeSnapshot = background ? null : captureWorkspaceSnapshot();
+      const res = await executor.executeCommand(command, background);
+      const afterSnapshot = background ? null : captureWorkspaceSnapshot();
+      const diffSummary = beforeSnapshot && afterSnapshot ? formatWorkspaceChanges(beforeSnapshot, afterSnapshot) : "";
+      return diffSummary ? `${res}
+
+${diffSummary}` : res;
     } catch (e) {
       return `Error executing command: ${e.message}`;
     }
   },
   {
     name: "execute_terminal_command",
-    description: "Executes a shell/terminal command natively on the user's OS from the current workspace directory. Use this for running build/test/compile commands only. Do not use this to create or edit files; use write_file instead.",
+    description: "Executes a shell/terminal command natively on the user's OS from the current workspace directory. Use this for running build/test/compile commands. If starting a long-running server or watcher, set background: true. Do not use this to create or edit files; use write_file instead.",
     schema: external_exports.object({
-      command: external_exports.string().describe("The exact shell command string to execute.")
+      command: external_exports.string().describe("The exact shell command string to execute."),
+      background: external_exports.boolean().optional().describe("If true, starts the process in the background and returns a task ID immediately, without waiting for completion. The process will be tracked and visible to the user under 'Manage Terminal Sessions' on the Home screen.")
     })
   }
 );
@@ -16068,8 +16198,8 @@ var searchCode = (0, import_tools.tool)(
     description: "Searches text/code inside the current workspace and returns file:line matches. Use this first to find the function, class, setting, or text to edit before reading files.",
     schema: external_exports.object({
       query: external_exports.string().describe("Plain text to search for, for example createSettingsView or function name."),
-      dirPath: external_exports.string().default(".").describe("Workspace-relative directory to search, default is workspace root."),
-      caseSensitive: external_exports.boolean().default(false).describe("Whether matching should be case-sensitive.")
+      dirPath: external_exports.string().optional().describe("Workspace-relative directory to search, default is workspace root."),
+      caseSensitive: external_exports.boolean().optional().describe("Whether matching should be case-sensitive.")
     })
   }
 );
@@ -16100,7 +16230,7 @@ ${body}${suffix}
     description: "Reads a numbered line range from a workspace file. Prefer this over read_file after search_code finds the relevant function or block.",
     schema: external_exports.object({
       filePath: external_exports.string().describe("Workspace-relative file path, for example src/index.ts."),
-      startLine: external_exports.number().int().min(1).default(1).describe("1-based first line to read."),
+      startLine: external_exports.number().int().min(1).optional().describe("1-based first line to read."),
       endLine: external_exports.number().int().min(1).optional().describe("1-based last line to read. The tool caps output to keep context small.")
     })
   }
@@ -16208,8 +16338,8 @@ var listDirectory = (0, import_tools.tool)(
     name: "list_files",
     description: "Lists files and folders inside the current workspace only. Use this to inspect project structure before editing.",
     schema: external_exports.object({
-      dirPath: external_exports.string().default(".").describe("Workspace-relative directory path, default is the current workspace root."),
-      depth: external_exports.number().int().min(0).max(3).default(1).describe("Optional recursion depth, capped at 3.")
+      dirPath: external_exports.string().optional().describe("Workspace-relative directory path, default is the current workspace root."),
+      depth: external_exports.number().int().min(0).max(3).optional().describe("Optional recursion depth, capped at 3.")
     })
   }
 );
@@ -16262,6 +16392,7 @@ var tools = [
 ];
 
 // src/llm/provider.ts
+var import_prebuilt = require("@langchain/langgraph/prebuilt");
 var ProviderEngine = class {
   config;
   primaryModel = null;
@@ -16316,6 +16447,8 @@ var ProviderEngine = class {
         this.primaryModel = new import_ollama.ChatOllama({
           baseUrl,
           model,
+          temperature: 0,
+          // Enforces strict JSON tool schemas across all local models
           maxRetries: 0
         }).bindTools(tools);
         ui.info(`Switched to Ollama - ${model}`);
@@ -16404,6 +16537,36 @@ var ProviderEngine = class {
         if (attempt <= 6) {
           ui.info(`Retrying stream after backoff (attempt ${attempt + 1}/6)...`);
           yield* this.stream(messages, attempt + 1);
+          return;
+        }
+        ui.error("Max retries exceeded due to TPM exhaustion.");
+      }
+      throw error51;
+    }
+  }
+  async *streamReactAgent(messages, attempt = 1) {
+    if (!this.primaryModel) {
+      throw new Error("No valid LLM provider initialized.");
+    }
+    try {
+      const agent = (0, import_prebuilt.createReactAgent)({ llm: this.primaryModel, tools });
+      const stream = await agent.stream({ messages }, { streamMode: "messages" });
+      for await (const [chunk, metadata] of stream) {
+        yield { chunk, metadata };
+      }
+      quotaManager.resetBackoff();
+    } catch (error51) {
+      if (this.isRateLimit(error51)) {
+        const retryAfter = error51?.response?.headers?.["retry-after"];
+        if (attempt <= 6 && this.tryFallback(attempt)) {
+          ui.info(`Retrying agent stream with fallback (attempt ${attempt + 1}/6)...`);
+          yield* this.streamReactAgent(messages, attempt + 1);
+          return;
+        }
+        await quotaManager.handleRateLimit(retryAfter);
+        if (attempt <= 6) {
+          ui.info(`Retrying agent stream after backoff (attempt ${attempt + 1}/6)...`);
+          yield* this.streamReactAgent(messages, attempt + 1);
           return;
         }
         ui.error("Max retries exceeded due to TPM exhaustion.");
@@ -16628,11 +16791,13 @@ A2. For small targeted edits, use replace_file_lines with the exact line range. 
 A3. Never use terminal redirection, heredocs, Set-Content, Out-File, or shell metacharacters to write code \u2014 use the write_file or replace_file_lines tools.
 A4. Use read_file only when a whole file is genuinely needed; prefer read_file_lines for performance.
 A5. Use list_files to inspect folder structure before making assumptions about project layout.
-A6. Use execute_terminal_command only for compiling, running tests, or reading command output. Always stay inside the current workspace.
-A7. Keep chat responses concise. Do not paste full source files into chat; the diff UI shows file changes.
-A8. After editing files, summarize what changed in one or two short sentences.
+A6. PROACTIVELY use execute_terminal_command to run commands (like installing packages, compiling, or running tests) instead of telling the user to run them. Do not be shy about executing commands; the user has a security approval UI that will intercept and ask them for permission first. Always stay inside the current workspace.
+A7. KEEP RESPONSES EXTREMELY CONCISE. NEVER dump full source files into the chat. When writing or modifying files, the UI automatically displays the changes using a rich diff view. Your text response should only include a 1-2 sentence summary of what changed.
+A8. When making edits, ONLY show the specific lines modified in your response if absolutely necessary to explain something, otherwise rely on the automatic UI diffs.
 A9. Never leave TODO comments or placeholder logic \u2014 always implement fully.
 A10. When adding a new feature to an existing file, read the surrounding code first to match style and patterns.
+A11. NEVER run TypeScript files directly with 'node file.ts'. TypeScript must be executed via: (1) 'npx ts-node file.ts', (2) 'npx tsx file.ts', or (3) compile first with 'npx tsc' then run the compiled JS. Always check package.json scripts first \u2014 prefer 'npm run dev' or 'npm start' if they exist.
+A12. Terminal Execution Rules: (a) Always check if a package.json exists and use its scripts (npm run dev, npm start, npm test) before crafting raw commands. (b) For servers/long-running processes, ALWAYS use background:true so the tool returns immediately. (c) After starting a background server, wait 2-3 seconds then read its log file to confirm the port it is listening on before telling the user it is ready. (d) On Windows, use PowerShell-compatible syntax \u2014 no bash heredocs, no 'touch', use 'New-Item' for file creation if needed. (e) If 'npx tsc' fails, read the tsconfig.json first and check for missing files or wrong paths.
 
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
 SECTION B \u2014 PLANNING MODE (CRITICAL \u2014 read carefully)
@@ -16643,10 +16808,10 @@ WHEN TO PLAN (you MUST produce a plan before doing ANY tool calls when):
 - The request involves a new module, feature, or architectural component
 - The request involves a refactor, migration, or significant restructuring
 - The request involves a multi-step workflow (e.g. "build X, then wire it into Y, then test")
-- The user prefixes their message with /plan
+- STRICT OVERRIDE: If the user prefixes their message with \`/plan\` or \`/goal\`, you MUST produce an implementation plan regardless of project size.
 
 WHEN NOT TO PLAN (act immediately, no plan needed):
-- Single-file bug fixes, typo corrections, or small additions (<30 lines)
+- The project is small or the request is minor (single-file bug fixes, typo corrections, small additions). Use your best judgment to skip planning for trivial tasks.
 - Answering questions or explaining code
 - Running a command or reading a file
 - Simple config changes
@@ -16666,12 +16831,9 @@ Output your plan using EXACTLY this format (do not deviate from the delimiters):
 **Steps:**
 1. First thing to do
 2. Second thing to do
-3. Third thing to do
 
 **Estimated scope:** ~N lines changed across M files
 <!-- PLAN_END -->
-
-*Awaiting your approval \u2014 reply **y** to proceed or **n** to cancel.*
 
 CRITICAL RULES AFTER OUTPUTTING A PLAN:
 - After outputting the plan block, STOP. Do NOT use any tools.
@@ -16718,6 +16880,11 @@ var ruleGuardrail = new RuleGuardrail();
 // src/cli/nav.ts
 var readline = __toESM(require("readline"), 1);
 var import_chalk2 = __toESM(require("chalk"), 1);
+var import_module = require("module");
+var import_meta = {};
+var require2 = (0, import_module.createRequire)(import_meta.url);
+var pkg = require2("../../package.json");
+var CLI_VERSION = pkg.version;
 function strip(s) {
   return s.replace(/\x1B\[[0-9;]*m/g, "");
 }
@@ -16865,9 +17032,9 @@ var PhoneOS = class {
     const BG_HL = import_chalk2.default.bgHex("#374151");
     const hLine = GOLD("\u2550".repeat(W));
     process.stdout.write(GOLD(" \u2554") + hLine + GOLD("\u2557\n"));
-    const leftStr = "  " + GOLD.bold("Orchestrated Task & Tool Operator (O.T.T.O)") + "   ";
-    const leftLen = 48;
-    const dot = hasKey ? GREEN("\u25CF") : RED("\u25CF");
+    const isOllama = prov === "ollama";
+    const isLocal = isOllama && !!providerConfig?.baseUrl;
+    const dot = hasKey || isLocal ? GREEN("\u25CF") : RED("\u25CF");
     const provPill = dot + " " + CYAN.bold(prov.toUpperCase());
     const provLen = 2 + prov.length;
     let barChalk = GREEN;
@@ -16895,7 +17062,15 @@ var PhoneOS = class {
     rightParts.push(ramPill, secPill);
     rightLens.push(ramLen, secLen);
     const rightStr = rightParts.join("  ") + "  ";
-    const rightTotLen = rightLens.reduce((a, b) => a + b, 0) + 3 * 2 + 2;
+    const rightTotLen = rightLens.reduce((a, b) => a + b, 0) + Math.max(0, rightParts.length - 1) * 2 + 2;
+    const titleFull = `Orchestrated Task & Tool Operator v${CLI_VERSION}`;
+    const titleShort = `O.T.T.O v${CLI_VERSION}`;
+    let leftStr = "  " + GOLD.bold(titleFull) + "   ";
+    let leftLen = 2 + titleFull.length + 3;
+    if (W < leftLen + rightTotLen) {
+      leftStr = "  " + GOLD.bold(titleShort) + "   ";
+      leftLen = 2 + titleShort.length + 3;
+    }
     const midSpace = Math.max(0, W - leftLen - rightTotLen);
     const content = leftStr + " ".repeat(midSpace) + rightStr;
     const spaces = Math.max(0, W - vlen(content));
@@ -16908,6 +17083,14 @@ var PhoneOS = class {
       console.log("  " + crumbs);
     }
     let hasBody = false;
+    if (chatSession.pendingApprovals && chatSession.pendingApprovals.length > 0) {
+      console.log("  " + RED.bold(`[!] Pending Approvals: ${chatSession.pendingApprovals.length} command(s) waiting for your permission!`));
+      for (const p of chatSession.pendingApprovals) {
+        console.log("      " + CYAN(p.cmd) + MUTED(` (Thread: ${p.threadId})`));
+      }
+      console.log("");
+      hasBody = true;
+    }
     if (view.subtitle) {
       console.log("  " + BOLD(WHITE(view.subtitle)));
       hasBody = true;
@@ -18041,10 +18224,15 @@ ${c.error("\u274C")} Unknown command: ${command}`);
 
 // src/index.ts
 var readline3 = __toESM(require("readline"), 1);
+var import_module2 = require("module");
 var import_messages4 = require("@langchain/core/messages");
 var import_stream = require("@langchain/core/utils/stream");
 var import_prompts5 = require("@inquirer/prompts");
 var import_chalk10 = __toESM(require("chalk"), 1);
+var import_meta2 = {};
+var require3 = (0, import_module2.createRequire)(import_meta2.url);
+var pkg2 = require3("../package.json");
+var CLI_VERSION2 = pkg2.version;
 async function main() {
   const args = process.argv.slice(2);
   const cliHandled = await parseAndExecuteCLI(args);
@@ -18064,7 +18252,9 @@ async function main() {
     let currentInput = "";
     let thinkingTimer = null;
     let streamRenderTimer = null;
-    let lastStreamRender = 0;
+    let isStreaming = false;
+    let isDetached = false;
+    let isPrompting = false;
     let lastStreamContentLength = 0;
     let pendingPlan = false;
     let planMenuIndex = 0;
@@ -18100,31 +18290,30 @@ async function main() {
         thinkingTimer = null;
       }
     };
-    const flushStreamRender = (isPending = false) => {
+    function flushStreamRender(force = false) {
+      if (isPrompting && !force) return;
       if (streamRenderTimer) {
         clearTimeout(streamRenderTimer);
         streamRenderTimer = null;
       }
-      lastStreamRender = Date.now();
-      render(false, isPending);
-    };
-    const scheduleStreamRender = (delay = 160) => {
-      const elapsed = Date.now() - lastStreamRender;
-      if (elapsed >= delay) {
-        flushStreamRender();
-        return;
-      }
-      if (!streamRenderTimer) {
-        streamRenderTimer = setTimeout(flushStreamRender, delay - elapsed);
-      }
-    };
+      render(force);
+    }
+    function scheduleStreamRender(delayMs = 160) {
+      if (isPrompting) return;
+      if (streamRenderTimer) clearTimeout(streamRenderTimer);
+      streamRenderTimer = setTimeout(() => {
+        streamRenderTimer = null;
+        render();
+      }, delayMs);
+    }
     const startThinkingAnimation = () => {
       if (thinkingTimer) return;
       thinkingTimer = setInterval(() => render(true), 350);
     };
-    const render = (isThinking = false, isPendingPlan = false) => {
-      if (isThinking) startThinkingAnimation();
-      else stopThinkingAnimation();
+    let diffsExpanded = false;
+    function render(force = false) {
+      if (isPrompting && !force) return;
+      const isThinking = !!thinkingTimer;
       const stats = memoryManager.getBudgetStatsForMessages(messages, rules);
       const prov = config2.defaults.primaryProvider;
       const model = Configurator.getActiveModel(config2, prov) ?? "default";
@@ -18134,8 +18323,8 @@ async function main() {
         ctxUsed: stats.filled,
         ramMB,
         showContextBar: config2.defaults.showContextBar !== false
-      }, model, isThinking, isPendingPlan || pendingPlan, planMenuIndex);
-    };
+      }, model, isThinking, pendingPlan, planMenuIndex, diffsExpanded);
+    }
     const formatToolResult = (toolName, result, diffSummary, args2) => {
       const sections = [`**${toolName}**`];
       const trimmedResult = result.trim();
@@ -18169,20 +18358,53 @@ ${trimmedResult.slice(0, 1200)}
       readline3.emitKeypressEvents(process.stdin);
       if (process.stdin.isTTY) process.stdin.setRawMode(true);
       process.stdin.resume();
+      const onStreamUpdate = (id) => {
+        if (id === chatSession.threadId && !isDetached) {
+          if (!chatSession.activeStreams.has(id)) {
+            isStreaming = false;
+          }
+          render();
+        }
+      };
+      sessionEvents.on("stream_update", onStreamUpdate);
+      sessionEvents.on("stream_update", (threadId) => {
+        if (chatSession.threadId === threadId && !isDetached) {
+          flushStreamRender();
+        }
+      });
+      sessionEvents.on("prompt_start", () => {
+        isPrompting = true;
+        if (streamRenderTimer) clearTimeout(streamRenderTimer);
+      });
+      sessionEvents.on("prompt_end", () => {
+        isPrompting = false;
+        render(true);
+      });
+      const cleanup = () => {
+        sessionEvents.removeListener("stream_update", onStreamUpdate);
+        process.stdout.write("\x1B[?1049l");
+        process.stdin.removeListener("keypress", onKeypress);
+      };
       const onKeypress = async (str, key) => {
         if (key.ctrl && key.name === "c") {
           stopThinkingAnimation();
           if (streamRenderTimer) clearTimeout(streamRenderTimer);
           process.stdout.write("\x1B[?1049l");
           process.exit(0);
+        } else if (key.ctrl && key.name === "e") {
+          diffsExpanded = !diffsExpanded;
+          render(true);
+          return;
         } else if (key.name === "escape") {
           stopThinkingAnimation();
           if (streamRenderTimer) {
             clearTimeout(streamRenderTimer);
             streamRenderTimer = null;
           }
-          process.stdout.write("\x1B[?1049l");
-          process.stdin.removeListener("keypress", onKeypress);
+          if (isStreaming) {
+            isDetached = true;
+          }
+          cleanup();
           resolve();
         } else if (key.name === "return") {
           if (pendingPlan) {
@@ -18190,87 +18412,90 @@ ${trimmedResult.slice(0, 1200)}
             if (chosen.inject !== null) {
               pendingPlan = false;
               planMenuIndex = 0;
-              process.stdin.removeListener("keypress", onKeypress);
+              isStreaming = true;
+              isDetached = false;
+              chatSession.activeStreams.add(chatSession.threadId);
               messages.push(new import_messages4.HumanMessage(chosen.inject));
               syncMessages();
               chatUI.scrollToBottom();
               render(true);
               try {
-                let isDone = false;
                 const preferredName = Configurator.getUsername(config2) || "user";
                 const nameHint = `
 
 User's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.`;
-                while (!isDone) {
-                  const msgsToSend = [new import_messages4.SystemMessage(rules + nameHint), ...messages];
-                  const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
-                  const aiMessage = new import_messages4.AIMessage("");
-                  messages.push(aiMessage);
-                  syncMessages();
-                  let finalMessage = null;
-                  const stream = await provider.stream(optimizedMsgs);
-                  for await (const chunk of stream) {
-                    if (!finalMessage) finalMessage = chunk;
-                    else finalMessage = (0, import_stream.concat)(finalMessage, chunk);
-                    if (chunk && chunk.content) {
-                      aiMessage.content = aiMessage.content + chunk.content;
+                const msgsToSend = [new import_messages4.SystemMessage(rules + nameHint), ...messages];
+                const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
+                let aiMessage = null;
+                const stream = provider.streamReactAgent(optimizedMsgs);
+                for await (const { chunk, metadata } of stream) {
+                  if (chunk._getType() === "ai") {
+                    if (!aiMessage) {
+                      aiMessage = chunk;
+                      messages.push(aiMessage);
                       syncMessages();
-                      scheduleStreamRender(160);
+                    } else {
+                      aiMessage = (0, import_stream.concat)(aiMessage, chunk);
+                      messages[messages.length - 1] = aiMessage;
+                      syncMessages();
                     }
-                  }
-                  config2 = provider.getConfig();
-                  phone.updateConfig(config2);
-                  messages[messages.length - 1] = finalMessage;
-                  lastStreamContentLength = 0;
-                  syncMessages();
-                  const responseText = String(finalMessage?.content ?? "");
-                  const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
-                  const hasToolCalls = finalMessage?.tool_calls && finalMessage.tool_calls.length > 0;
-                  if (hasPlanBlock && !hasToolCalls) {
-                    pendingPlan = true;
-                    planMenuIndex = 0;
-                    isDone = true;
-                    flushStreamRender(true);
-                  } else if (hasToolCalls) {
-                    pendingPlan = false;
-                    flushStreamRender();
-                    for (const call of finalMessage.tool_calls) {
-                      const tool2 = tools.find((t) => t.name === call.name);
-                      let toolResultStr = "";
-                      if (tool2) {
-                        try {
-                          const beforeSnapshot = call.name === "execute_terminal_command" ? captureWorkspaceSnapshot() : null;
-                          const res = await tool2.invoke(call.args);
-                          const afterSnapshot = beforeSnapshot ? captureWorkspaceSnapshot() : null;
-                          const diffSummary = beforeSnapshot && afterSnapshot ? formatWorkspaceChanges(beforeSnapshot, afterSnapshot) : "";
-                          toolResultStr = formatToolResult(call.name, String(res), diffSummary, call.args);
-                        } catch (e) {
-                          toolResultStr = formatToolResult(call.name, `Error: ${e.message}`, "", call.args);
-                        }
+                    const currentLength = aiMessage.content.length;
+                    const delta = currentLength - lastStreamContentLength;
+                    const fenceCount = (aiMessage.content.match(/```/g) ?? []).length;
+                    const isInsideCodeFence = fenceCount % 2 === 1;
+                    const shouldRender = delta >= (isInsideCodeFence ? 96 : 24) || !isInsideCodeFence && /[\s,.;:!?)\}\]\n]$/.test(String(chunk.content)) || currentLength < 24;
+                    if (shouldRender) {
+                      lastStreamContentLength = currentLength;
+                      if (!isDetached) {
+                        scheduleStreamRender(isInsideCodeFence ? 260 : 160);
                       } else {
-                        toolResultStr = formatToolResult(call.name, `Error: Tool ${call.name} not found.`, "", call.args);
+                        sessionEvents.emit("stream_update", chatSession.threadId);
                       }
-                      messages.push(new import_messages4.ToolMessage({ content: toolResultStr, tool_call_id: call.id, name: call.name }));
-                      syncMessages();
                     }
-                    render(true);
-                  } else {
-                    pendingPlan = false;
-                    isDone = true;
-                    flushStreamRender();
+                  } else if (chunk._getType() === "tool") {
+                    const toolMsg = chunk;
+                    const toolResultStr = formatToolResult(toolMsg.name, String(toolMsg.content), "", {});
+                    messages.push(new import_messages4.ToolMessage({ content: toolResultStr, tool_call_id: toolMsg.tool_call_id, name: toolMsg.name }));
+                    syncMessages();
+                    aiMessage = null;
+                    if (!isDetached) {
+                      render(true);
+                    } else {
+                      sessionEvents.emit("stream_update", chatSession.threadId);
+                    }
                   }
                 }
-                process.stdin.on("keypress", onKeypress);
+                config2 = provider.getConfig();
+                phone.updateConfig(config2);
+                lastStreamContentLength = 0;
+                syncMessages();
+                const responseText = String(messages[messages.length - 1]?.content ?? "");
+                const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
+                if (hasPlanBlock) {
+                  pendingPlan = true;
+                  planMenuIndex = 0;
+                  if (!isDetached) flushStreamRender(true);
+                } else {
+                  pendingPlan = false;
+                  if (!isDetached) flushStreamRender(true);
+                }
+                isStreaming = false;
+                chatSession.activeStreams.delete(chatSession.threadId);
+                sessionEvents.emit("stream_update", chatSession.threadId);
               } catch (error51) {
+                isStreaming = false;
+                chatSession.activeStreams.delete(chatSession.threadId);
                 messages.push(new import_messages4.SystemMessage(formatChatError(error51)));
                 syncMessages();
-                process.stdin.on("keypress", onKeypress);
+                sessionEvents.emit("stream_update", chatSession.threadId);
               }
-              render();
+              if (!isDetached) {
+                render(true);
+              }
             } else {
               pendingPlan = false;
               planMenuIndex = 0;
-              render();
+              render(true);
             }
             return;
           }
@@ -18289,124 +18514,128 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
               messages.splice(lastHumanIdx);
               syncMessages();
             }
-            render(false);
+            render(true);
             return;
           }
-          process.stdin.removeListener("keypress", onKeypress);
-          chatSession.ensureNamedFromPrompt(inputStr);
-          messages.push(new import_messages4.HumanMessage(inputStr));
+          if (chatSession.activeStreams.has(chatSession.threadId)) {
+            return;
+          }
+          let finalInputStr = inputStr;
+          if (inputStr === "/plan") {
+            finalInputStr = "Please create an implementation plan using the <!-- PLAN_START --> and <!-- PLAN_END --> tags for our discussion so I can approve it.";
+          }
+          isStreaming = true;
+          isDetached = false;
+          chatSession.activeStreams.add(chatSession.threadId);
+          chatSession.ensureNamedFromPrompt(finalInputStr);
+          messages.push(new import_messages4.HumanMessage(finalInputStr));
           syncMessages();
           chatUI.scrollToBottom();
           render(true);
           try {
-            let isDone = false;
             const preferredName = Configurator.getUsername(config2) || "user";
             const nameHint = `
 
 User's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.`;
-            while (!isDone) {
-              const msgsToSend = [new import_messages4.SystemMessage(rules + nameHint), ...messages];
-              const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
-              const aiMessage = new import_messages4.AIMessage("");
-              messages.push(aiMessage);
-              syncMessages();
-              let finalMessage = null;
-              const stream = await provider.stream(optimizedMsgs);
-              for await (const chunk of stream) {
-                if (!finalMessage) finalMessage = chunk;
-                else finalMessage = (0, import_stream.concat)(finalMessage, chunk);
-                if (chunk && chunk.content) {
-                  aiMessage.content = aiMessage.content + chunk.content;
+            const msgsToSend = [new import_messages4.SystemMessage(rules + nameHint), ...messages];
+            const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
+            let aiMessage = null;
+            const stream = provider.streamReactAgent(optimizedMsgs);
+            for await (const { chunk, metadata } of stream) {
+              if (chunk._getType() === "ai") {
+                if (!aiMessage) {
+                  aiMessage = chunk;
+                  messages.push(aiMessage);
                   syncMessages();
-                  const currentLength = aiMessage.content.length;
-                  const delta = currentLength - lastStreamContentLength;
-                  const fenceCount = (aiMessage.content.match(/```/g) ?? []).length;
-                  const isInsideCodeFence = fenceCount % 2 === 1;
-                  const shouldRender = delta >= (isInsideCodeFence ? 96 : 24) || !isInsideCodeFence && /[\s,.;:!?)\}\]\n]$/.test(String(chunk.content)) || currentLength < 24;
-                  if (shouldRender) {
-                    lastStreamContentLength = currentLength;
+                } else {
+                  aiMessage = (0, import_stream.concat)(aiMessage, chunk);
+                  messages[messages.length - 1] = aiMessage;
+                  syncMessages();
+                }
+                const currentLength = aiMessage.content.length;
+                const delta = currentLength - lastStreamContentLength;
+                const fenceCount = (aiMessage.content.match(/```/g) ?? []).length;
+                const isInsideCodeFence = fenceCount % 2 === 1;
+                const shouldRender = delta >= (isInsideCodeFence ? 96 : 24) || !isInsideCodeFence && /[\s,.;:!?)\}\]\n]$/.test(String(chunk.content)) || currentLength < 24;
+                if (shouldRender) {
+                  lastStreamContentLength = currentLength;
+                  if (!isDetached) {
                     scheduleStreamRender(isInsideCodeFence ? 260 : 160);
-                  }
-                }
-              }
-              config2 = provider.getConfig();
-              phone.updateConfig(config2);
-              messages[messages.length - 1] = finalMessage;
-              lastStreamContentLength = 0;
-              syncMessages();
-              const responseText = String(finalMessage?.content ?? "");
-              const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
-              const hasToolCalls = finalMessage?.tool_calls && finalMessage.tool_calls.length > 0;
-              if (hasPlanBlock && !hasToolCalls) {
-                pendingPlan = true;
-                planMenuIndex = 0;
-                isDone = true;
-                flushStreamRender(true);
-              } else if (hasToolCalls) {
-                pendingPlan = false;
-                flushStreamRender();
-                for (const call of finalMessage.tool_calls) {
-                  const tool2 = tools.find((t) => t.name === call.name);
-                  let toolResultStr = "";
-                  if (tool2) {
-                    try {
-                      const beforeSnapshot = call.name === "execute_terminal_command" ? captureWorkspaceSnapshot() : null;
-                      const res = await tool2.invoke(call.args);
-                      const afterSnapshot = beforeSnapshot ? captureWorkspaceSnapshot() : null;
-                      const diffSummary = beforeSnapshot && afterSnapshot ? formatWorkspaceChanges(beforeSnapshot, afterSnapshot) : "";
-                      toolResultStr = formatToolResult(call.name, String(res), diffSummary, call.args);
-                    } catch (e) {
-                      toolResultStr = formatToolResult(call.name, `Error: ${e.message}`, "", call.args);
-                    }
                   } else {
-                    toolResultStr = formatToolResult(call.name, `Error: Tool ${call.name} not found.`, "", call.args);
+                    sessionEvents.emit("stream_update", chatSession.threadId);
                   }
-                  messages.push(new import_messages4.ToolMessage({ content: toolResultStr, tool_call_id: call.id, name: call.name }));
-                  syncMessages();
                 }
-                render(true);
-              } else {
-                pendingPlan = false;
-                isDone = true;
-                flushStreamRender();
+              } else if (chunk._getType() === "tool") {
+                const toolMsg = chunk;
+                const toolResultStr = formatToolResult(toolMsg.name, String(toolMsg.content), "", {});
+                messages.push(new import_messages4.ToolMessage({ content: toolResultStr, tool_call_id: toolMsg.tool_call_id, name: toolMsg.name }));
+                syncMessages();
+                aiMessage = null;
+                if (!isDetached && !isPrompting) {
+                  render(true);
+                } else {
+                  sessionEvents.emit("stream_update", chatSession.threadId);
+                }
               }
             }
-            process.stdin.on("keypress", onKeypress);
+            config2 = provider.getConfig();
+            phone.updateConfig(config2);
+            lastStreamContentLength = 0;
+            syncMessages();
+            const responseText = String(messages[messages.length - 1]?.content ?? "");
+            const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
+            if (hasPlanBlock) {
+              pendingPlan = true;
+              planMenuIndex = 0;
+              if (!isDetached) flushStreamRender(true);
+            } else {
+              pendingPlan = false;
+              if (!isDetached) flushStreamRender(true);
+            }
+            isStreaming = false;
+            chatSession.activeStreams.delete(chatSession.threadId);
+            sessionEvents.emit("stream_update", chatSession.threadId);
           } catch (error51) {
+            isStreaming = false;
+            chatSession.activeStreams.delete(chatSession.threadId);
             messages.push(new import_messages4.SystemMessage(formatChatError(error51)));
             syncMessages();
-            process.stdin.on("keypress", onKeypress);
+            sessionEvents.emit("stream_update", chatSession.threadId);
           }
-          render();
+          if (!isDetached) {
+            render(true);
+          }
         } else if (key.name === "up") {
           if (pendingPlan) {
             planMenuIndex = (planMenuIndex - 1 + PLAN_MENU_OPTIONS.length) % PLAN_MENU_OPTIONS.length;
           } else {
             chatUI.scrollUp(3);
           }
-          render();
+          render(isStreaming);
         } else if (key.name === "down") {
           if (pendingPlan) {
             planMenuIndex = (planMenuIndex + 1) % PLAN_MENU_OPTIONS.length;
           } else {
             chatUI.scrollDown(3);
           }
-          render();
+          render(isStreaming);
         } else if (key.name === "pageup") {
           if (!pendingPlan) chatUI.scrollUp(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
-          render();
+          render(isStreaming);
         } else if (key.name === "pagedown") {
           if (!pendingPlan) chatUI.scrollDown(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
-          render();
+          render(isStreaming);
         } else if (key.name === "end") {
           if (!pendingPlan) chatUI.scrollToBottom();
-          render();
+          render(isStreaming);
         } else if (key.name === "backspace") {
+          if (isStreaming) return;
           if (!pendingPlan) {
             currentInput = currentInput.slice(0, -1);
             render();
           }
         } else if (str && !key.ctrl && !key.meta) {
+          if (isStreaming) return;
           if (!pendingPlan) {
             currentInput += str;
             render();
@@ -18414,7 +18643,7 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
         }
       };
       process.stdin.on("keypress", onKeypress);
-      render();
+      render(isStreaming);
     });
   };
   const createProfileView = () => {
@@ -18479,7 +18708,7 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
   };
   const createMaxThreadsView = () => {
     const maxT = Configurator.getMaxThreads(config2);
-    const cores = require("os").cpus().length;
+    const cores = require3("os").cpus().length;
     const cpuDefault = Math.min(20, Math.max(5, cores * 2));
     return {
       id: "max_threads",
@@ -18584,7 +18813,26 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
         }
       },
       {
-        label: "Change Security Mode",
+        label: "Edit Ollama Base URL",
+        description: "Set localhost or remote URL for Ollama",
+        action: async () => {
+          phone.active = false;
+          ui.clearScreen();
+          const currentUrl = config2.providers.ollama?.baseUrl || "http://localhost:11434";
+          const entered = await promptWithEscape(`Enter new Ollama Base URL (current: ${currentUrl}):`);
+          if (entered !== null && entered.trim()) {
+            config2 = Configurator.updateOllamaUrl(entered.trim()) || config2;
+            phone.updateConfig(config2);
+            ui.success(`Ollama URL updated to ${entered.trim()}`);
+            await new Promise((r) => setTimeout(r, 900));
+          }
+          phone.active = true;
+          phone.goBack();
+          phone.pushView(createSettingsView());
+        }
+      },
+      {
+        label: "Allowed Tools & Commands",
         description: "Set the execution guardrail policy",
         action: async () => {
           phone.pushView(createSecurityEditView());
@@ -19070,6 +19318,45 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
           phone.pushView(createProviderView());
         }
       },
+      {
+        label: `Gemini  ${config2.defaults.primaryProvider === "gemini" ? "[active]" : ""}  ${Configurator.getActiveApiKey(config2, "gemini") ? "" : "-- no key"}`,
+        description: Configurator.getActiveModel(config2, "gemini") ? `model: ${Configurator.getActiveModel(config2, "gemini")}` : "model: gemini-1.5-pro (default)",
+        action: async () => {
+          if (!Configurator.getActiveApiKey(config2, "gemini")) {
+            phone.active = false;
+            ui.clearScreen();
+            const key = await promptWithEscape("Enter API Key for Gemini:");
+            if (key === null) {
+              phone.active = true;
+              phone.goBack();
+              phone.pushView(createProviderView());
+              return;
+            }
+            config2 = Configurator.updateApiKey("gemini", key) || config2;
+            phone.active = true;
+          }
+          config2 = Configurator.updatePrimaryProvider("gemini") || config2;
+          provider.setConfig(config2);
+          phone.updateConfig(config2);
+          ui.success("Switched to Gemini.");
+          await new Promise((r) => setTimeout(r, 1e3));
+          phone.goBack();
+          phone.pushView(createProviderView());
+        }
+      },
+      {
+        label: `Ollama (Local)  ${config2.defaults.primaryProvider === "ollama" ? "[active]" : ""}`,
+        description: Configurator.getActiveModel(config2, "ollama") ? `model: ${Configurator.getActiveModel(config2, "ollama")}` : "model: llama3 (default)",
+        action: async () => {
+          config2 = Configurator.updatePrimaryProvider("ollama") || config2;
+          provider.setConfig(config2);
+          phone.updateConfig(config2);
+          ui.success("Switched to Ollama.");
+          await new Promise((r) => setTimeout(r, 1e3));
+          phone.goBack();
+          phone.pushView(createProviderView());
+        }
+      },
       { label: "Go Back", action: () => phone.goBack() }
     ]
   });
@@ -19157,54 +19444,59 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
             phone.pushView(createThreadsView());
           }
         },
-        ...threads.map((t) => ({
-          label: t.displayName + (t.id === chatSession.threadId ? " (active)" : ""),
-          description: t.id,
-          action: () => {
-            phone.pushView({
-              id: "thread_actions",
-              title: "Thread Actions",
-              subtitle: `${t.displayName}  [${t.id}]`,
-              options: [
-                {
-                  label: "Switch to Thread",
-                  action: async () => {
-                    phone.active = false;
-                    ui.clearScreen();
-                    chatSession.switchThread(t.id);
-                    ui.success(`Switched to ${t.displayName}`);
-                    await new Promise((r) => setTimeout(r, 600));
-                    phone.active = true;
-                    phone.goBack();
-                    phone.goBack();
-                    phone.pushView(createThreadsView());
-                  }
-                },
-                {
-                  label: import_chalk10.default.red("Delete Thread"),
-                  action: async () => {
-                    phone.active = false;
-                    ui.clearScreen();
-                    dbManager.deleteThread(t.id);
-                    chatSession.clearThreadMessages(t.id);
-                    if (chatSession.threadId === t.id) {
-                      chatSession.createFreshThread();
-                      ui.success(`Deleted ${t.displayName}. Started a fresh chat.`);
-                    } else {
-                      ui.success(`Deleted ${t.displayName}`);
+        ...threads.map((t) => {
+          const isRunning = chatSession.activeStreams.has(t.id);
+          const runningTag = isRunning ? import_chalk10.default.green(" \u{1F7E2} [running]") : "";
+          const activeTag = t.id === chatSession.threadId ? import_chalk10.default.hex("#6B7280")(" (active)") : "";
+          return {
+            label: t.displayName + activeTag + runningTag,
+            description: t.id,
+            action: () => {
+              phone.pushView({
+                id: "thread_actions",
+                title: "Thread Actions",
+                subtitle: `${t.displayName}  [${t.id}]`,
+                options: [
+                  {
+                    label: "Switch to Thread",
+                    action: async () => {
+                      phone.active = false;
+                      ui.clearScreen();
+                      chatSession.switchThread(t.id);
+                      ui.success(`Switched to ${t.displayName}`);
+                      await new Promise((r) => setTimeout(r, 600));
+                      phone.active = true;
+                      phone.goBack();
+                      phone.goBack();
+                      phone.pushView(createThreadsView());
                     }
-                    await new Promise((r) => setTimeout(r, 600));
-                    phone.active = true;
-                    phone.goBack();
-                    phone.goBack();
-                    phone.pushView(createThreadsView());
-                  }
-                },
-                { label: "Go Back", action: () => phone.goBack() }
-              ]
-            });
-          }
-        })),
+                  },
+                  {
+                    label: import_chalk10.default.red("Delete Thread"),
+                    action: async () => {
+                      phone.active = false;
+                      ui.clearScreen();
+                      dbManager.deleteThread(t.id);
+                      chatSession.clearThreadMessages(t.id);
+                      if (chatSession.threadId === t.id) {
+                        chatSession.createFreshThread();
+                        ui.success(`Deleted ${t.displayName}. Started a fresh chat.`);
+                      } else {
+                        ui.success(`Deleted ${t.displayName}`);
+                      }
+                      await new Promise((r) => setTimeout(r, 600));
+                      phone.active = true;
+                      phone.goBack();
+                      phone.goBack();
+                      phone.pushView(createThreadsView());
+                    }
+                  },
+                  { label: "Go Back", action: () => phone.goBack() }
+                ]
+              });
+            }
+          };
+        }),
         { label: "Go Back", action: () => phone.goBack() }
       ]
     };
@@ -19251,7 +19543,7 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
       const displayName = Configurator.getUsername(config2) || "user";
       const isDefaultName = !config2.profile?.username;
       if (isCompact) {
-        console.log(borderDim(" \u256D\u2500 O.T.T.O v1.1.12 " + "\u2500".repeat(Math.max(0, W - 17)) + "\u256E"));
+        console.log(borderDim(` \u256D\u2500 O.T.T.O v${CLI_VERSION2} ` + "\u2500".repeat(Math.max(0, W - 14 - CLI_VERSION2.length)) + "\u256E"));
         console.log(borderDim(" \u2502 ") + import_chalk10.default.whiteBright(`Welcome back, ${displayName}!`).padEnd(Math.max(0, W - 1)) + borderDim("\u2502"));
         if (isDefaultName) {
           console.log(borderDim(" \u2502 ") + import_chalk10.default.hex("#F59E0B")("\u26A0  Go to Settings \u203A Profile to set your username").padEnd(Math.max(0, W - 1)) + borderDim("\u2502"));
@@ -19279,7 +19571,7 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
         `    ${textDim("\u2190\u2192")} Switch     ${textDim("^C")} Quit`,
         ""
       ];
-      console.log(borderDim(" \u256D\u2500 O.T.T.O v1.0.0 " + "\u2500".repeat(Math.max(0, W - 17)) + "\u256E"));
+      console.log(borderDim(` \u256D\u2500 O.T.T.O v${CLI_VERSION2} ` + "\u2500".repeat(Math.max(0, W - 14 - CLI_VERSION2.length)) + "\u256E"));
       drawRow(`      Welcome back, ${displayName}!`, rightRows[0], import_chalk10.default.white, import_chalk10.default.white);
       if (isDefaultName) {
         drawRow(`      ${import_chalk10.default.hex("#F59E0B")("\u26A0")} ${import_chalk10.default.hex("#6B7280")("Go to Settings \u203A Profile to set your username")}`, rightRows[1], import_chalk10.default.white, import_chalk10.default.white);
@@ -19292,7 +19584,7 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
       drawRow(`   ${logoLines[3]}`, rightRows[5], borderDim, import_chalk10.default.white);
       drawRow(`   ${logoLines[4]}`, rightRows[6], borderDim, import_chalk10.default.white);
       drawRow(`   ${logoLines[5]}`, rightRows[7], borderDim, import_chalk10.default.white);
-      drawRow(`    ${model} \xB7 O.T.T.O Max`, rightRows[8], textDim, import_chalk10.default.white);
+      drawRow(`    ${model} \xB7(active)`, rightRows[8], textDim, import_chalk10.default.white);
       let pth = process.cwd();
       if (pth.length > leftWidth - 4) pth = "..." + pth.slice(-(leftWidth - 7));
       drawRow(`    ${pth}`, rightRows[9], textDim, import_chalk10.default.white);
@@ -19316,8 +19608,44 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
       },
       {
         label: "Manage Threads",
-        description: "View and switch between saved sessions",
+        description: `Manage your chat sessions (${dbManager.listThreads().length})`,
         action: () => phone.pushView(createThreadsView())
+      },
+      {
+        label: "Manage Terminal Sessions",
+        description: "View or kill running background processes",
+        action: () => {
+          const procs = backgroundManager.getProcesses();
+          phone.pushView({
+            id: "terminal_sessions",
+            title: "Manage Terminal Sessions",
+            options: procs.length === 0 ? [
+              { label: "No background processes running. (Go Back)", action: () => phone.goBack() }
+            ] : [
+              ...procs.map((p) => ({
+                label: `[PID ${p.pid}] ${p.command}`,
+                description: `Running for ${Math.round((Date.now() - p.startTime) / 1e3)}s`,
+                action: async () => {
+                  phone.active = false;
+                  ui.clearScreen();
+                  const confirmKill = await (0, import_prompts5.confirm)({ message: `Kill process ${p.pid} (${p.command})?`, default: false });
+                  if (confirmKill) {
+                    try {
+                      await backgroundManager.killProcess(p.pid);
+                      ui.success(`Killed process ${p.pid}`);
+                    } catch (e) {
+                      ui.error(`Failed to kill: ${e.message}`);
+                    }
+                    await new Promise((r) => setTimeout(r, 1e3));
+                  }
+                  phone.active = true;
+                  phone.goBack();
+                }
+              })),
+              { label: "Go Back", action: () => phone.goBack() }
+            ]
+          });
+        }
       },
       {
         label: "Command Palette",

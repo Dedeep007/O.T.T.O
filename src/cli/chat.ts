@@ -1,6 +1,7 @@
 import chalk from 'chalk';
 import { marked } from 'marked';
 import TerminalRenderer from 'marked-terminal';
+import fs from 'fs';
 
 export interface ChatMessage {
   role: 'user' | 'ai' | 'system' | 'tool';
@@ -421,7 +422,6 @@ export class ChatUI {
           : this.MUTED('Type your message... (esc to menu)');
     } else if (currentInput.endsWith('@')) {
       try {
-        const fs = require('fs');
         const entries = fs.readdirSync(process.cwd(), { withFileTypes: true })
           .filter((e: any) => !e.name.startsWith('.') && e.name !== 'node_modules')
           .map((e: any) => e.isDirectory() ? e.name + '/' : e.name);
