@@ -58,10 +58,44 @@ export class Executor {
         stdio: ['ignore', out, err],
         detached: true
       });
-      child.unref(); // allow the main process to exit even if this is running
       
       backgroundManager.addProcess(commandStr, child);
-      return Promise.resolve(`Background process started successfully with PID: ${child.pid}.\nOutput is being logged to: ${logPath}\nUse the read_file tool to check this log file for startup errors or server listening ports.`);
+
+      let spawnError: Error | null = null;
+      const onError = (err: Error) => {
+        spawnError = err;
+      };
+      child.on('error', onError);
+
+      // Wait 1.5 seconds to see if the process is still running or if it crashed on startup
+      await new Promise(resolve => setTimeout(resolve, 1500));
+
+      child.off('error', onError);
+
+      if (spawnError) {
+        throw spawnError;
+      }
+
+      if (child.exitCode !== null && child.exitCode !== undefined) {
+        let logs = '';
+        if (fs.existsSync(logPath)) {
+          logs = fs.readFileSync(logPath, 'utf8').trim();
+        }
+        throw new Error(`Background process terminated immediately with exit code ${child.exitCode}.\nLogs:\n${logs.slice(-2000)}`);
+      }
+
+      child.unref(); // allow the main process to exit even if this is running
+      
+      let initialLogs = '';
+      if (fs.existsSync(logPath)) {
+        initialLogs = fs.readFileSync(logPath, 'utf8').trim();
+      }
+      
+      const logMsg = initialLogs 
+        ? `\nInitial Output Logs:\n\`\`\`text\n${initialLogs.slice(0, 1000)}\n\`\`\``
+        : '\nNo initial output logs yet.';
+
+      return `Background process started successfully with PID: ${child.pid}.\nOutput is being logged to: ${logPath}${logMsg}\nUse the read_file tool to check this log file if you need more details.`;
     }
 
     return new Promise((resolve, reject) => {

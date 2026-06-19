@@ -15846,11 +15846,39 @@ var Executor = class {
         stdio: ["ignore", out, err],
         detached: true
       });
-      child.unref();
       backgroundManager.addProcess(commandStr, child);
-      return Promise.resolve(`Background process started successfully with PID: ${child.pid}.
-Output is being logged to: ${logPath}
-Use the read_file tool to check this log file for startup errors or server listening ports.`);
+      let spawnError = null;
+      const onError = (err2) => {
+        spawnError = err2;
+      };
+      child.on("error", onError);
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      child.off("error", onError);
+      if (spawnError) {
+        throw spawnError;
+      }
+      if (child.exitCode !== null && child.exitCode !== void 0) {
+        let logs = "";
+        if (fs2.existsSync(logPath)) {
+          logs = fs2.readFileSync(logPath, "utf8").trim();
+        }
+        throw new Error(`Background process terminated immediately with exit code ${child.exitCode}.
+Logs:
+${logs.slice(-2e3)}`);
+      }
+      child.unref();
+      let initialLogs = "";
+      if (fs2.existsSync(logPath)) {
+        initialLogs = fs2.readFileSync(logPath, "utf8").trim();
+      }
+      const logMsg = initialLogs ? `
+Initial Output Logs:
+\`\`\`text
+${initialLogs.slice(0, 1e3)}
+\`\`\`` : "\nNo initial output logs yet.";
+      return `Background process started successfully with PID: ${child.pid}.
+Output is being logged to: ${logPath}${logMsg}
+Use the read_file tool to check this log file if you need more details.`;
     }
     return new Promise((resolve, reject) => {
       (0, import_child_process.exec)(commandStr, { cwd: process.cwd() }, (error51, stdout, stderr) => {
