@@ -8,6 +8,7 @@ import { Configurator } from '../cli/configurator.js';
 import { quotaManager } from './quota.js';
 import { ui } from '../cli/ui.js';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import { ToolMessage } from '@langchain/core/messages';
 import { tools } from './tools.js';
 import { createReactAgent } from '@langchain/langgraph/prebuilt';
 
@@ -208,9 +209,25 @@ export class ProviderEngine {
 
     try {
       const agent = createReactAgent({ llm: this.primaryModel, tools });
-      const stream = await agent.stream({ messages }, { streamMode: 'messages' });
-      for await (const [chunk, metadata] of stream) {
-        yield { chunk, metadata };
+      const stream = await agent.streamEvents({ messages }, { version: 'v2' });
+      for await (const event of stream) {
+        if (event.event === "on_chat_model_stream" && event.data?.chunk) {
+          yield { chunk: event.data.chunk, metadata: event.metadata };
+        } else if (event.event === "on_tool_end" && event.data?.output !== undefined) {
+          const output = event.data.output;
+          let contentStr = "";
+          if (output && typeof output === 'object' && output._getType) {
+             yield { chunk: output, metadata: event.metadata };
+          } else {
+             contentStr = typeof output === 'string' ? output : JSON.stringify(output);
+             const toolMsg = new ToolMessage({
+               content: contentStr,
+               name: event.name,
+               tool_call_id: event.run_id
+             });
+             yield { chunk: toolMsg, metadata: event.metadata };
+          }
+        }
       }
       quotaManager.resetBackoff();
     } catch (error: any) {

@@ -88,12 +88,30 @@ function renderMarkdownWithOttoStyles(content, width, diffsExpanded) {
   const diffWidth = Math.max(48, Math.min(width, 96));
   const placeholders = [];
   const withPlaceholders = content.replace(
-    /```diff\n([\s\S]*?)```/g,
-    (_match, codeStr) => {
-      const rendered = renderDiffBlock(codeStr, diffWidth, diffsExpanded);
-      const key = `\0DIFF${placeholders.length}\0`;
-      placeholders.push(rendered);
-      return key;
+    /```([a-zA-Z0-9_.-]*)\n([\s\S]*?)(?:```|$)/g,
+    (_match, lang, codeStr) => {
+      if (lang === "diff") {
+        const rendered = renderDiffBlock(codeStr, diffWidth, diffsExpanded);
+        const key = `\0DIFF${placeholders.length}\0`;
+        placeholders.push(rendered);
+        return key;
+      } else {
+        const langStr = lang ? ` ${lang} ` : " code ";
+        let output = "\n";
+        const border = import_chalk9.default.hex("#475569");
+        const bg = import_chalk9.default.bgHex("#0F172A").hex("#94A3B8");
+        const langBg = import_chalk9.default.bgHex("#1E293B").hex("#38BDF8");
+        output += "  " + border("\u256D" + "\u2500".repeat(diffWidth)) + border("\u256E\n");
+        output += "  " + border("\u2502") + langBg(padVisible(langStr, diffWidth)) + border("\u2502\n");
+        output += "  " + border("\u251C" + "\u2500".repeat(diffWidth)) + border("\u2524\n");
+        codeStr.replace(/\n$/, "").split("\n").forEach((line) => {
+          output += "  " + border("\u2502") + bg(padVisible(` ${line}`, diffWidth)) + border("\u2502\n");
+        });
+        output += "  " + border("\u2570" + "\u2500".repeat(diffWidth)) + border("\u256F\n");
+        const key = `\0DIFF${placeholders.length}\0`;
+        placeholders.push(output + "\n");
+        return key;
+      }
     }
   );
   class CustomRenderer extends import_marked_terminal2.default {
@@ -1207,6 +1225,9 @@ var QuotaManager = class {
   }
 };
 var quotaManager = new QuotaManager();
+
+// src/llm/provider.ts
+var import_messages2 = require("@langchain/core/messages");
 
 // src/llm/tools.ts
 var import_tools = require("@langchain/core/tools");
@@ -16555,9 +16576,25 @@ var ProviderEngine = class {
     }
     try {
       const agent = (0, import_prebuilt.createReactAgent)({ llm: this.primaryModel, tools });
-      const stream = await agent.stream({ messages }, { streamMode: "messages" });
-      for await (const [chunk, metadata] of stream) {
-        yield { chunk, metadata };
+      const stream = await agent.streamEvents({ messages }, { version: "v2" });
+      for await (const event of stream) {
+        if (event.event === "on_chat_model_stream" && event.data?.chunk) {
+          yield { chunk: event.data.chunk, metadata: event.metadata };
+        } else if (event.event === "on_tool_end" && event.data?.output !== void 0) {
+          const output = event.data.output;
+          let contentStr = "";
+          if (output && typeof output === "object" && output._getType) {
+            yield { chunk: output, metadata: event.metadata };
+          } else {
+            contentStr = typeof output === "string" ? output : JSON.stringify(output);
+            const toolMsg = new import_messages2.ToolMessage({
+              content: contentStr,
+              name: event.name,
+              tool_call_id: event.run_id
+            });
+            yield { chunk: toolMsg, metadata: event.metadata };
+          }
+        }
       }
       quotaManager.resetBackoff();
     } catch (error51) {
@@ -16586,8 +16623,8 @@ var ProviderEngine = class {
 };
 
 // src/memory/budget.ts
-var import_messages2 = require("@langchain/core/messages");
 var import_messages3 = require("@langchain/core/messages");
+var import_messages4 = require("@langchain/core/messages");
 var MemoryManager = class {
   C_max = 32e3;
   // Qwen context limit estimate or could be parameterized
@@ -16647,25 +16684,25 @@ var MemoryManager = class {
       const content = message.content.toString();
       const truncatedContent = this.perMessageTruncate(content);
       if (truncatedContent === content) return message;
-      if (message instanceof import_messages2.HumanMessage) {
-        return new import_messages2.HumanMessage(truncatedContent);
+      if (message instanceof import_messages3.HumanMessage) {
+        return new import_messages3.HumanMessage(truncatedContent);
       }
-      if (message instanceof import_messages2.AIMessage) {
-        return new import_messages2.AIMessage(truncatedContent);
+      if (message instanceof import_messages3.AIMessage) {
+        return new import_messages3.AIMessage(truncatedContent);
       }
-      if (message instanceof import_messages2.ToolMessage) {
-        return new import_messages2.ToolMessage({
+      if (message instanceof import_messages3.ToolMessage) {
+        return new import_messages3.ToolMessage({
           content: truncatedContent,
           tool_call_id: message.tool_call_id,
           name: message.name
         });
       }
-      return new import_messages2.SystemMessage(truncatedContent);
+      return new import_messages3.SystemMessage(truncatedContent);
     });
     const baseBudget = this.getChatBudget();
     const summaryBudget = Math.min(this.SummaryBudget, Math.max(400, Math.floor(baseBudget * 0.15)));
     const workingBudget = Math.max(1200, baseBudget - summaryBudget);
-    const trimmed = await (0, import_messages3.trimMessages)(normalizedMessages, {
+    const trimmed = await (0, import_messages4.trimMessages)(normalizedMessages, {
       maxTokens: workingBudget,
       tokenCounter: (msgs) => msgs.reduce((acc, m) => acc + this.estimateTokens(m.content.toString()), 0),
       strategy: "last",
@@ -16675,7 +16712,7 @@ var MemoryManager = class {
     const dropped = normalizedMessages.slice(0, Math.max(0, normalizedMessages.length - trimmed.length));
     const summaryText = this.buildSummary(dropped);
     this.lastSummary = summaryText;
-    const finalMessages = summaryText ? [new import_messages2.SystemMessage(systemPrompt), new import_messages2.SystemMessage(summaryText), ...trimmed.filter((m) => m._getType() !== "system")] : [new import_messages2.SystemMessage(systemPrompt), ...trimmed.filter((m) => m._getType() !== "system")];
+    const finalMessages = summaryText ? [new import_messages3.SystemMessage(systemPrompt), new import_messages3.SystemMessage(summaryText), ...trimmed.filter((m) => m._getType() !== "system")] : [new import_messages3.SystemMessage(systemPrompt), ...trimmed.filter((m) => m._getType() !== "system")];
     this.lastContextSize = finalMessages.reduce((acc, m) => acc + this.estimateTokens(m.content.toString()), 0);
     return finalMessages;
   }
@@ -18230,7 +18267,7 @@ ${c.error("\u274C")} Unknown command: ${command}`);
 // src/index.ts
 var readline3 = __toESM(require("readline"), 1);
 var import_module2 = require("module");
-var import_messages4 = require("@langchain/core/messages");
+var import_messages5 = require("@langchain/core/messages");
 var import_stream = require("@langchain/core/utils/stream");
 var import_prompts5 = require("@inquirer/prompts");
 var import_chalk10 = __toESM(require("chalk"), 1);
@@ -18275,7 +18312,10 @@ async function main() {
         const messageType = m._getType();
         let content = m.content.toString();
         if (messageType === "ai" && m.tool_calls && m.tool_calls.length > 0) {
-          content += "\n\n> Calling tools...";
+          const dots = ".".repeat(Math.floor(Date.now() / 350) % 3 + 1);
+          content += `
+
+> Calling tools${dots}`;
         }
         if (messageType === "tool") {
           let args2 = {};
@@ -18310,6 +18350,17 @@ async function main() {
       if (thinkingTimer) {
         clearInterval(thinkingTimer);
         thinkingTimer = null;
+      }
+    };
+    let toolAnimationTimer = null;
+    const startToolAnimation = () => {
+      if (toolAnimationTimer) return;
+      toolAnimationTimer = setInterval(() => render(true), 350);
+    };
+    const stopToolAnimation = () => {
+      if (toolAnimationTimer) {
+        clearInterval(toolAnimationTimer);
+        toolAnimationTimer = null;
       }
     };
     function flushStreamRender(force = false) {
@@ -18377,6 +18428,7 @@ ${trimmedResult.slice(0, 1200)}
       return `Error: ${message}`;
     };
     return new Promise((resolve) => {
+      chatSession.isChatActive = true;
       readline3.emitKeypressEvents(process.stdin);
       if (process.stdin.isTTY) process.stdin.setRawMode(true);
       process.stdin.resume();
@@ -18409,6 +18461,7 @@ ${trimmedResult.slice(0, 1200)}
         render(true);
       });
       const cleanup = () => {
+        chatSession.isChatActive = false;
         sessionEvents.removeListener("stream_update", onStreamUpdate);
         process.stdout.write("\x1B[?1049l");
         process.stdin.removeListener("keypress", onKeypress);
@@ -18443,7 +18496,7 @@ ${trimmedResult.slice(0, 1200)}
               isStreaming = true;
               isDetached = false;
               chatSession.activeStreams.add(chatSession.threadId);
-              messages.push(new import_messages4.HumanMessage(chosen.inject));
+              messages.push(new import_messages5.HumanMessage(chosen.inject));
               syncMessages();
               chatUI.scrollToBottom();
               render(true);
@@ -18452,7 +18505,7 @@ ${trimmedResult.slice(0, 1200)}
                 const nameHint = `
 
 User's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.`;
-                const msgsToSend = [new import_messages4.SystemMessage(rules + nameHint), ...messages];
+                const msgsToSend = [new import_messages5.SystemMessage(rules + nameHint), ...messages];
                 const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
                 let aiMessage = null;
                 const stream = provider.streamReactAgent(optimizedMsgs);
@@ -18483,7 +18536,7 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
                   } else if (chunk._getType() === "tool") {
                     const toolMsg = chunk;
                     const toolResultStr = formatToolResult(toolMsg.name, String(toolMsg.content), "", {});
-                    messages.push(new import_messages4.ToolMessage({ content: toolResultStr, tool_call_id: toolMsg.tool_call_id, name: toolMsg.name }));
+                    messages.push(new import_messages5.ToolMessage({ content: toolResultStr, tool_call_id: toolMsg.tool_call_id, name: toolMsg.name }));
                     syncMessages();
                     aiMessage = null;
                     if (!isDetached) {
@@ -18513,7 +18566,7 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
               } catch (error51) {
                 isStreaming = false;
                 chatSession.activeStreams.delete(chatSession.threadId);
-                messages.push(new import_messages4.SystemMessage(formatChatError(error51)));
+                messages.push(new import_messages5.SystemMessage(formatChatError(error51)));
                 syncMessages();
                 sessionEvents.emit("stream_update", chatSession.threadId);
               }
@@ -18556,7 +18609,7 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
           isDetached = false;
           chatSession.activeStreams.add(chatSession.threadId);
           chatSession.ensureNamedFromPrompt(finalInputStr);
-          messages.push(new import_messages4.HumanMessage(finalInputStr));
+          messages.push(new import_messages5.HumanMessage(finalInputStr));
           syncMessages();
           chatUI.scrollToBottom();
           render(true);
@@ -18566,7 +18619,7 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
             const nameHint = `
 
 User's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.`;
-            const msgsToSend = [new import_messages4.SystemMessage(rules + nameHint), ...messages];
+            const msgsToSend = [new import_messages5.SystemMessage(rules + nameHint), ...messages];
             const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
             let aiMessage = null;
             const stream = provider.streamReactAgent(optimizedMsgs);
@@ -18581,6 +18634,9 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
                   aiMessage = (0, import_stream.concat)(aiMessage, chunk);
                   messages[messages.length - 1] = aiMessage;
                   syncMessages();
+                }
+                if (chunk.tool_calls && chunk.tool_calls.length > 0) {
+                  startToolAnimation();
                 }
                 const currentLength = aiMessage.content.length;
                 const delta = currentLength - lastStreamContentLength;
@@ -18598,7 +18654,7 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
               } else if (chunk._getType() === "tool") {
                 const toolMsg = chunk;
                 const toolResultStr = formatToolResult(toolMsg.name, String(toolMsg.content), "", {});
-                messages.push(new import_messages4.ToolMessage({ content: toolResultStr, tool_call_id: toolMsg.tool_call_id, name: toolMsg.name }));
+                messages.push(new import_messages5.ToolMessage({ content: toolResultStr, tool_call_id: toolMsg.tool_call_id, name: toolMsg.name }));
                 syncMessages();
                 aiMessage = null;
                 if (!isDetached && !isPrompting) {
@@ -18622,14 +18678,16 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
               pendingPlan = false;
               if (!isDetached) flushStreamRender(true);
             }
+            stopToolAnimation();
             isStreaming = false;
             chatSession.activeStreams.delete(chatSession.threadId);
             sessionEvents.emit("stream_update", chatSession.threadId);
           } catch (error51) {
             stopThinkingAnimation();
+            stopToolAnimation();
             isStreaming = false;
             chatSession.activeStreams.delete(chatSession.threadId);
-            messages.push(new import_messages4.SystemMessage(formatChatError(error51)));
+            messages.push(new import_messages5.SystemMessage(formatChatError(error51)));
             syncMessages();
             sessionEvents.emit("stream_update", chatSession.threadId);
           }

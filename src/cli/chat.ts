@@ -96,12 +96,33 @@ function renderMarkdownWithOttoStyles(content: string, width: number, diffsExpan
   // Pre-extract diff code fences so marked never touches the ANSI-colored rows
   const placeholders: string[] = [];
   const withPlaceholders = content.replace(
-    /```diff\n([\s\S]*?)```/g,
-    (_match, codeStr: string) => {
-      const rendered = renderDiffBlock(codeStr, diffWidth, diffsExpanded);
-      const key = `\u0000DIFF${placeholders.length}\u0000`;
-      placeholders.push(rendered);
-      return key;
+    /```([a-zA-Z0-9_.-]*)\n([\s\S]*?)(?:```|$)/g,
+    (_match, lang: string, codeStr: string) => {
+      if (lang === 'diff') {
+        const rendered = renderDiffBlock(codeStr, diffWidth, diffsExpanded);
+        const key = `\u0000DIFF${placeholders.length}\u0000`;
+        placeholders.push(rendered);
+        return key;
+      } else {
+        const langStr = lang ? ` ${lang} ` : ' code ';
+        let output = '\n';
+        const border = chalk.hex('#475569');
+        const bg = chalk.bgHex('#0F172A').hex('#94A3B8');
+        const langBg = chalk.bgHex('#1E293B').hex('#38BDF8');
+        
+        output += '  ' + border('╭' + '─'.repeat(diffWidth)) + border('╮\n');
+        output += '  ' + border('│') + langBg(padVisible(langStr, diffWidth)) + border('│\n');
+        output += '  ' + border('├' + '─'.repeat(diffWidth)) + border('┤\n');
+        
+        codeStr.replace(/\n$/, '').split('\n').forEach(line => {
+          output += '  ' + border('│') + bg(padVisible(` ${line}`, diffWidth)) + border('│\n');
+        });
+        output += '  ' + border('╰' + '─'.repeat(diffWidth)) + border('╯\n');
+        
+        const key = `\u0000DIFF${placeholders.length}\u0000`;
+        placeholders.push(output + '\n');
+        return key;
+      }
     }
   );
 

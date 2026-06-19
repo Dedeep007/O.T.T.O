@@ -80,7 +80,8 @@ async function main() {
         let content = m.content.toString();
         
         if (messageType === 'ai' && m.tool_calls && m.tool_calls.length > 0) {
-          content += '\n\n> Calling tools...';
+          const dots = '.'.repeat((Math.floor(Date.now() / 350) % 3) + 1);
+          content += `\n\n> Calling tools${dots}`;
         }
 
         if (messageType === 'tool') {
@@ -128,8 +129,20 @@ async function main() {
       }
     };
 
+    let toolAnimationTimer: NodeJS.Timeout | null = null;
+    const startToolAnimation = () => {
+      if (toolAnimationTimer) return;
+      toolAnimationTimer = setInterval(() => render(true), 350);
+    };
+    const stopToolAnimation = () => {
+      if (toolAnimationTimer) {
+        clearInterval(toolAnimationTimer);
+        toolAnimationTimer = null;
+      }
+    };
+
     function flushStreamRender(force = false) {
-      if (isPrompting && !force) return;
+      if (isPrompting) return;
       if (streamRenderTimer) {
         clearTimeout(streamRenderTimer);
         streamRenderTimer = null;
@@ -154,7 +167,7 @@ async function main() {
     let diffsExpanded = false;
 
     function render(force = false) {
-      if (isPrompting && !force) return;
+      if (isPrompting) return;
       const isThinking = !!thinkingTimer;
       const stats = memoryManager.getBudgetStatsForMessages(messages, rules);
       const prov = config.defaults.primaryProvider;
@@ -206,6 +219,7 @@ async function main() {
     };
 
     return new Promise<void>((resolve) => {
+      chatSession.isChatActive = true;
       readline.emitKeypressEvents(process.stdin);
       if (process.stdin.isTTY) process.stdin.setRawMode(true);
       process.stdin.resume(); // ensure stdin is flowing after phone.cleanup() may have paused it
@@ -243,6 +257,7 @@ async function main() {
       });
 
       const cleanup = () => {
+        chatSession.isChatActive = false;
         sessionEvents.removeListener('stream_update', onStreamUpdate);
         process.stdout.write('\x1B[?1049l');
         process.stdin.removeListener('keypress', onKeypress);
@@ -438,6 +453,10 @@ async function main() {
                   messages[messages.length - 1] = aiMessage;
                   syncMessages();
                 }
+
+                if (chunk.tool_calls && chunk.tool_calls.length > 0) {
+                  startToolAnimation();
+                }
                 
                 const currentLength = (aiMessage.content as string).length;
                 const delta = currentLength - lastStreamContentLength;
@@ -486,11 +505,13 @@ async function main() {
               if (!isDetached) flushStreamRender(true);
             }
 
+            stopToolAnimation();
             isStreaming = false;
             chatSession.activeStreams.delete(chatSession.threadId);
             sessionEvents.emit('stream_update', chatSession.threadId);
           } catch (error: any) {
             stopThinkingAnimation();
+            stopToolAnimation();
             isStreaming = false;
             chatSession.activeStreams.delete(chatSession.threadId);
             messages.push(new SystemMessage(formatChatError(error)));
