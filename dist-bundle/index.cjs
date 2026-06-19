@@ -20015,6 +20015,39 @@ ${reasoning}
       ]
     };
   };
+  const createTerminalSessionsView = () => {
+    const procs = backgroundManager.getProcesses();
+    return {
+      id: "terminal_sessions",
+      title: "Manage Terminal Sessions",
+      options: procs.length === 0 ? [
+        { label: "No background processes running. (Go Back)", action: () => phone.goBack() }
+      ] : [
+        ...procs.map((p) => ({
+          label: `[PID ${p.pid}] ${p.command}`,
+          description: `Running for ${Math.round((Date.now() - p.startTime) / 1e3)}s`,
+          action: async () => {
+            phone.active = false;
+            ui.clearScreen();
+            const confirmKill = await (0, import_prompts5.confirm)({ message: `Kill process ${p.pid} (${p.command})?`, default: false });
+            if (confirmKill) {
+              try {
+                await backgroundManager.killProcess(p.pid);
+                ui.success(`Killed process ${p.pid}`);
+              } catch (e) {
+                ui.error(`Failed to kill: ${e.message}`);
+              }
+              await new Promise((r) => setTimeout(r, 1e3));
+            }
+            phone.active = true;
+            phone.goBack();
+            phone.pushView(createTerminalSessionsView());
+          }
+        })),
+        { label: "Go Back", action: () => phone.goBack() }
+      ]
+    };
+  };
   const createAnalyticsView = () => ({
     id: "analytics",
     title: "Analytics Dashboard",
@@ -20128,38 +20161,7 @@ ${reasoning}
       {
         label: "Manage Terminal Sessions",
         description: "View or kill running background processes",
-        action: () => {
-          const procs = backgroundManager.getProcesses();
-          phone.pushView({
-            id: "terminal_sessions",
-            title: "Manage Terminal Sessions",
-            options: procs.length === 0 ? [
-              { label: "No background processes running. (Go Back)", action: () => phone.goBack() }
-            ] : [
-              ...procs.map((p) => ({
-                label: `[PID ${p.pid}] ${p.command}`,
-                description: `Running for ${Math.round((Date.now() - p.startTime) / 1e3)}s`,
-                action: async () => {
-                  phone.active = false;
-                  ui.clearScreen();
-                  const confirmKill = await (0, import_prompts5.confirm)({ message: `Kill process ${p.pid} (${p.command})?`, default: false });
-                  if (confirmKill) {
-                    try {
-                      await backgroundManager.killProcess(p.pid);
-                      ui.success(`Killed process ${p.pid}`);
-                    } catch (e) {
-                      ui.error(`Failed to kill: ${e.message}`);
-                    }
-                    await new Promise((r) => setTimeout(r, 1e3));
-                  }
-                  phone.active = true;
-                  phone.goBack();
-                }
-              })),
-              { label: "Go Back", action: () => phone.goBack() }
-            ]
-          });
-        }
+        action: () => phone.pushView(createTerminalSessionsView())
       },
       {
         label: "Command Palette",
