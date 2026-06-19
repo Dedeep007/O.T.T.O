@@ -185,7 +185,7 @@ export class PhoneOS {
     
     const BAR = 6; // Compact bar for header
     const fill = Math.round(ratio * BAR);
-    const ctxBar = barChalk('█'.repeat(fill)) + DIM('░'.repeat(BAR - fill));
+    const ctxBar = barChalk('▰'.repeat(fill)) + DIM('▱'.repeat(BAR - fill));
     const pctStr = `${pct}%`;
     const ctxUsageStr = `${stats.filled}/${stats.max}`;
     const ctxPill = MUTED('ctx ') + ctxBar + ' ' + MUTED(ctxUsageStr) + ' ' + MUTED(pctStr);

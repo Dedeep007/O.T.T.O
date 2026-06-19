@@ -414,6 +414,7 @@ async function main() {
           syncMessages();
           chatUI.scrollToBottom(); // always show new message being sent
           render(true);
+          startThinkingAnimation();
 
           try {
             const preferredName = Configurator.getUsername(config) || 'user';
@@ -426,6 +427,7 @@ async function main() {
             const stream = provider.streamReactAgent(optimizedMsgs);
             
             for await (const { chunk, metadata } of stream) {
+              stopThinkingAnimation();
               if (chunk._getType() === 'ai') {
                 if (!aiMessage) {
                   aiMessage = chunk;
@@ -488,6 +490,7 @@ async function main() {
             chatSession.activeStreams.delete(chatSession.threadId);
             sessionEvents.emit('stream_update', chatSession.threadId);
           } catch (error: any) {
+            stopThinkingAnimation();
             isStreaming = false;
             chatSession.activeStreams.delete(chatSession.threadId);
             messages.push(new SystemMessage(formatChatError(error)));
@@ -1446,7 +1449,7 @@ async function main() {
       const isDefaultName = !config.profile?.username;
 
       if (isCompact) {
-        console.log(borderDim(` ╭─ O.T.T.O v${CLI_VERSION} ` + '─'.repeat(Math.max(0, W - 14 - CLI_VERSION.length)) + '╮'));
+        console.log(borderDim(` ╭─ O.T.T.O v${CLI_VERSION} ` + '─'.repeat(Math.max(0, W - 12 - CLI_VERSION.length)) + '╮'));
         console.log(borderDim(' │ ') + chalk.whiteBright(`Welcome back, ${displayName}!`).padEnd(Math.max(0, W - 1)) + borderDim('│'));
         if (isDefaultName) {
           console.log(borderDim(' │ ') + chalk.hex('#F59E0B')('⚠  Go to Settings › Profile to set your username').padEnd(Math.max(0, W - 1)) + borderDim('│'));
@@ -1478,7 +1481,7 @@ async function main() {
         ''
       ];
 
-      console.log(borderDim(` ╭─ O.T.T.O v${CLI_VERSION} ` + '─'.repeat(Math.max(0, W - 14 - CLI_VERSION.length)) + '╮'));
+      console.log(borderDim(` ╭─ O.T.T.O v${CLI_VERSION} ` + '─'.repeat(Math.max(0, W - 12 - CLI_VERSION.length)) + '╮'));
 
       drawRow(`      Welcome back, ${displayName}!`, rightRows[0], chalk.white, chalk.white);
       if (isDefaultName) {

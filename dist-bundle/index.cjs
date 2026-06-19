@@ -17042,7 +17042,7 @@ var PhoneOS = class {
     if (ratio > 0.85) barChalk = RED;
     const BAR = 6;
     const fill = Math.round(ratio * BAR);
-    const ctxBar = barChalk("\u2588".repeat(fill)) + DIM("\u2591".repeat(BAR - fill));
+    const ctxBar = barChalk("\u25B0".repeat(fill)) + DIM("\u25B1".repeat(BAR - fill));
     const pctStr = `${pct}%`;
     const ctxUsageStr = `${stats.filled}/${stats.max}`;
     const ctxPill = MUTED("ctx ") + ctxBar + " " + MUTED(ctxUsageStr) + " " + MUTED(pctStr);
@@ -18555,6 +18555,7 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
           syncMessages();
           chatUI.scrollToBottom();
           render(true);
+          startThinkingAnimation();
           try {
             const preferredName = Configurator.getUsername(config2) || "user";
             const nameHint = `
@@ -18565,6 +18566,7 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
             let aiMessage = null;
             const stream = provider.streamReactAgent(optimizedMsgs);
             for await (const { chunk, metadata } of stream) {
+              stopThinkingAnimation();
               if (chunk._getType() === "ai") {
                 if (!aiMessage) {
                   aiMessage = chunk;
@@ -18619,6 +18621,7 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
             chatSession.activeStreams.delete(chatSession.threadId);
             sessionEvents.emit("stream_update", chatSession.threadId);
           } catch (error51) {
+            stopThinkingAnimation();
             isStreaming = false;
             chatSession.activeStreams.delete(chatSession.threadId);
             messages.push(new import_messages4.SystemMessage(formatChatError(error51)));
@@ -19566,7 +19569,7 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
       const displayName = Configurator.getUsername(config2) || "user";
       const isDefaultName = !config2.profile?.username;
       if (isCompact) {
-        console.log(borderDim(` \u256D\u2500 O.T.T.O v${CLI_VERSION2} ` + "\u2500".repeat(Math.max(0, W - 14 - CLI_VERSION2.length)) + "\u256E"));
+        console.log(borderDim(` \u256D\u2500 O.T.T.O v${CLI_VERSION2} ` + "\u2500".repeat(Math.max(0, W - 12 - CLI_VERSION2.length)) + "\u256E"));
         console.log(borderDim(" \u2502 ") + import_chalk10.default.whiteBright(`Welcome back, ${displayName}!`).padEnd(Math.max(0, W - 1)) + borderDim("\u2502"));
         if (isDefaultName) {
           console.log(borderDim(" \u2502 ") + import_chalk10.default.hex("#F59E0B")("\u26A0  Go to Settings \u203A Profile to set your username").padEnd(Math.max(0, W - 1)) + borderDim("\u2502"));
@@ -19594,7 +19597,7 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
         `    ${textDim("\u2190\u2192")} Switch     ${textDim("^C")} Quit`,
         ""
       ];
-      console.log(borderDim(` \u256D\u2500 O.T.T.O v${CLI_VERSION2} ` + "\u2500".repeat(Math.max(0, W - 14 - CLI_VERSION2.length)) + "\u256E"));
+      console.log(borderDim(` \u256D\u2500 O.T.T.O v${CLI_VERSION2} ` + "\u2500".repeat(Math.max(0, W - 12 - CLI_VERSION2.length)) + "\u256E"));
       drawRow(`      Welcome back, ${displayName}!`, rightRows[0], import_chalk10.default.white, import_chalk10.default.white);
       if (isDefaultName) {
         drawRow(`      ${import_chalk10.default.hex("#F59E0B")("\u26A0")} ${import_chalk10.default.hex("#6B7280")("Go to Settings \u203A Profile to set your username")}`, rightRows[1], import_chalk10.default.white, import_chalk10.default.white);
