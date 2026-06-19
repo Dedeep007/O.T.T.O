@@ -33,7 +33,8 @@ export class ProviderEngine {
           apiKey,
           model,
           temperature: 0,
-          maxRetries: 0
+          maxRetries: 0,
+          streaming: true
         }).bindTools(tools) as any;
         ui.info(`Switched to Groq - ${model}`);
       } else if (providerName === 'openai' && Configurator.getActiveApiKey(this.config, 'openai')) {
@@ -42,7 +43,8 @@ export class ProviderEngine {
         this.primaryModel = new ChatOpenAI({
           openAIApiKey: apiKey,
           modelName: model,
-          maxRetries: 0
+          maxRetries: 0,
+          streaming: true
         }).bindTools(tools) as any;
         ui.info(`Switched to OpenAI - ${model}`);
       } else if (providerName === 'anthropic' && Configurator.getActiveApiKey(this.config, 'anthropic')) {
@@ -51,7 +53,8 @@ export class ProviderEngine {
         this.primaryModel = new ChatAnthropic({
           anthropicApiKey: apiKey,
           model,
-          maxRetries: 0
+          maxRetries: 0,
+          streaming: true
         }).bindTools(tools) as any;
         ui.info(`Switched to Anthropic - ${model}`);
       } else if (providerName === 'gemini' && Configurator.getActiveApiKey(this.config, 'gemini')) {
@@ -60,7 +63,8 @@ export class ProviderEngine {
         this.primaryModel = new ChatGoogleGenerativeAI({
           apiKey,
           model: model,
-          maxRetries: 0
+          maxRetries: 0,
+          streaming: true
         }).bindTools(tools) as any;
         ui.info(`Switched to Gemini - ${model}`);
       } else if (providerName === 'ollama') {
@@ -72,7 +76,8 @@ export class ProviderEngine {
           baseUrl,
           model,
           temperature: 0, // Enforces strict JSON tool schemas across all local models
-          maxRetries: 0
+          maxRetries: 0,
+          streaming: true
         }).bindTools(tools) as any;
         
         ui.info(`Switched to Ollama - ${model}`);
