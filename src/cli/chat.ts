@@ -239,7 +239,18 @@ export class ChatUI {
         rawContent = rawContent.replace(/<think>[\s\S]*?(?:<\/think>|$)/, '').trim();
 
         push('  ' + this.MUTED('|-- ') + chalk.hex('#A78BFA')('Reasoning Process'));
-        thinkStr.split('\n').forEach(line => {
+        
+        const thinkLines = thinkStr.split('\n');
+        const total = thinkLines.length;
+        let toRender = thinkLines;
+        let isContracted = false;
+
+        if (!diffsExpanded && total > 12) {
+          toRender = thinkLines.slice(0, 8);
+          isContracted = true;
+        }
+
+        toRender.forEach(line => {
           const formattedLine = line.trim()
             .replace(/^(#{1,6})\s+(.*)$/g, (_m, _p1, p2) => chalk.white.bold(p2))
             .replace(/^(\d+\.)\s+(.*)$/g, (_m, p1, p2) => chalk.white.bold(p1) + ' ' + p2)
@@ -251,6 +262,10 @@ export class ChatUI {
           const wrapped = wrapText(formattedLine, this.W - 5, 0);
           wrapped.forEach(wl => push('  ' + this.MUTED('| ') + this.MUTED(wl)));
         });
+
+        if (isContracted) {
+          push('  ' + this.MUTED('| ') + chalk.hex('#FBBF24')(`... (${total - 8} hidden lines of reasoning) [Press Ctrl+E to Expand] ...`));
+        }
 
         if (msg.content.includes('<think>') && !msg.content.includes('</think>')) {
           push('  ' + this.MUTED('| ') + chalk.hex('#A78BFA')('...'));
