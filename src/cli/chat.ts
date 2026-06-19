@@ -91,6 +91,7 @@ function renderDiffBlock(codeStr: string, diffWidth: number, isExpanded: boolean
 }
 
 function renderMarkdownWithOttoStyles(content: string, width: number, diffsExpanded: boolean): string {
+  content = content.replace(/\r/g, '');
   const diffWidth = Math.max(48, Math.min(width, 96));
 
   // Pre-extract diff code fences so marked never touches the ANSI-colored rows
@@ -238,41 +239,36 @@ export class ChatUI {
         const thinkStr = thinkMatch[1].trim();
         rawContent = rawContent.replace(/<think>[\s\S]*?(?:<\/think>|$)/, '').trim();
 
-        push('  ' + this.MUTED('|-- ') + chalk.hex('#A78BFA')('Reasoning Process'));
-        
         const thinkLines = thinkStr.split('\n');
         const total = thinkLines.length;
-        let toRender = thinkLines;
-        let isContracted = false;
 
-        if (!diffsExpanded && total > 12) {
-          toRender = thinkLines.slice(0, 8);
-          isContracted = true;
-        }
+        if (!diffsExpanded) {
+          push('  ' + chalk.hex('#A78BFA')(`🧠  Reasoning Process (${total} lines) [Press Ctrl+E to Expand]`));
+          push('');
+        } else {
+          push('  ' + this.MUTED('|-- ') + chalk.hex('#A78BFA')('Reasoning Process'));
+          
+          thinkLines.forEach(line => {
+            const formattedLine = line.trim()
+              .replace(/^(#{1,6})\s+(.*)$/g, (_m, _p1, p2) => chalk.white.bold(p2))
+              .replace(/^(\d+\.)\s+(.*)$/g, (_m, p1, p2) => chalk.white.bold(p1) + ' ' + p2)
+              .replace(/^([*-])\s+(.*)$/g, (_m, p1, p2) => chalk.white.bold(p1) + ' ' + p2)
+              .replace(/\*\*(.*?)\*\*/g, (_m, p1) => chalk.white.bold(p1))
+              .replace(/\*(.*?)\*/g, (_m, p1) => chalk.white.italic(p1))
+              .replace(/`(.*?)`/g, (_m, p1) => chalk.hex('#F5C400')(p1));
 
-        toRender.forEach(line => {
-          const formattedLine = line.trim()
-            .replace(/^(#{1,6})\s+(.*)$/g, (_m, _p1, p2) => chalk.white.bold(p2))
-            .replace(/^(\d+\.)\s+(.*)$/g, (_m, p1, p2) => chalk.white.bold(p1) + ' ' + p2)
-            .replace(/^([*-])\s+(.*)$/g, (_m, p1, p2) => chalk.white.bold(p1) + ' ' + p2)
-            .replace(/\*\*(.*?)\*\*/g, (_m, p1) => chalk.white.bold(p1))
-            .replace(/\*(.*?)\*/g, (_m, p1) => chalk.white.italic(p1))
-            .replace(/`(.*?)`/g, (_m, p1) => chalk.hex('#F5C400')(p1));
+            const wrapped = wrapText(formattedLine, this.W - 5, 0);
+            wrapped.forEach(wl => push('  ' + this.MUTED('| ') + this.MUTED(wl)));
+          });
 
-          const wrapped = wrapText(formattedLine, this.W - 5, 0);
-          wrapped.forEach(wl => push('  ' + this.MUTED('| ') + this.MUTED(wl)));
-        });
-
-        if (isContracted) {
-          push('  ' + this.MUTED('| ') + chalk.hex('#FBBF24')(`... (${total - 8} hidden lines of reasoning) [Press Ctrl+E to Expand] ...`));
+          push('  ' + this.MUTED('`--'));
+          push('');
         }
 
         if (msg.content.includes('<think>') && !msg.content.includes('</think>')) {
-          push('  ' + this.MUTED('| ') + chalk.hex('#A78BFA')('...'));
+          push('  ' + chalk.hex('#A78BFA')('  🧠  Thinking...'));
+          push('');
         }
-
-        push('  ' + this.MUTED('`--'));
-        push('');
       }
 
       if (rawContent.trim()) {

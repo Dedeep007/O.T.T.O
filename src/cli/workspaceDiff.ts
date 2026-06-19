@@ -119,7 +119,7 @@ function createModifiedDiff(relPath: string, beforeContent: string, afterContent
 }
 
 function createNewFileDiff(relPath: string, content: string): string {
-  const lines = content.split('\n').slice(0, 30);
+  const lines = content.split('\n').slice(0, 500);
   return [
     `--- /dev/null`,
     `+++ ${relPath}`,
@@ -129,7 +129,7 @@ function createNewFileDiff(relPath: string, content: string): string {
 }
 
 function createDeletedFileDiff(relPath: string, content: string): string {
-  const lines = content.split('\n').slice(0, 30);
+  const lines = content.split('\n').slice(0, 500);
   return [
     `--- ${relPath}`,
     `+++ /dev/null`,
