@@ -328,5 +328,14 @@ export class PhoneOS {
     if (endIdx < view.options.length) printIndicator('▼');
 
     process.stdout.write(GOLD(' ╚') + hBoxLine + GOLD('╝\n'));
+
+    // Print warning notification below the Menu Box if approvals are pending
+    if (chatSession.pendingApprovals && chatSession.pendingApprovals.length > 0) {
+      const uniqueThreads = Array.from(new Set(chatSession.pendingApprovals.map(p => p.threadId)));
+      const threadList = uniqueThreads.map(id => chalk.hex('#22D3EE').bold(id)).join(', ');
+      process.stdout.write('\n');
+      process.stdout.write('  ' + chalk.hex('#EF4444').bold('⚠️  PENDING APPROVAL: ') + chalk.white(`Agent needs command approval in thread(s): ${threadList}`) + '\n');
+      process.stdout.write('     Please choose "Enter Chat" or select the corresponding thread to approve.\n');
+    }
   }
 }

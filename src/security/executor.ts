@@ -127,19 +127,21 @@ export class Executor {
         sessionEvents.emit('pending_approval');
       });
     }
-
-    sessionEvents.emit('prompt_start');
-    ui.warning(`The agent wants to execute: ${fullCommand}`);
-    const choice = await select({
-      message: 'Choose an action:',
-      choices: [
-        { name: 'Approve for now', value: 'now' },
-        { name: `Approve always (whitelist '${cmd}')`, value: 'always' },
-        { name: `Don't approve`, value: 'deny' }
-      ]
-    }) as 'now' | 'always' | 'deny';
-    sessionEvents.emit('prompt_end');
-    return choice;
+    try {
+      sessionEvents.emit('prompt_start');
+      ui.warning(`The agent wants to execute: ${fullCommand}`);
+      const choice = await select({
+        message: 'Choose an action:',
+        choices: [
+          { name: 'Approve for now', value: 'now' },
+          { name: `Approve always (whitelist '${cmd}')`, value: 'always' },
+          { name: `Don't approve`, value: 'deny' }
+        ]
+      }) as 'now' | 'always' | 'deny';
+      return choice;
+    } finally {
+      sessionEvents.emit('prompt_end');
+    }
   }
 }
 

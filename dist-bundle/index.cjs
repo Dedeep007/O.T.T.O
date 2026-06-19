@@ -15948,18 +15948,21 @@ ${out}`;
         sessionEvents.emit("pending_approval");
       });
     }
-    sessionEvents.emit("prompt_start");
-    ui.warning(`The agent wants to execute: ${fullCommand}`);
-    const choice = await (0, import_prompts2.select)({
-      message: "Choose an action:",
-      choices: [
-        { name: "Approve for now", value: "now" },
-        { name: `Approve always (whitelist '${cmd}')`, value: "always" },
-        { name: `Don't approve`, value: "deny" }
-      ]
-    });
-    sessionEvents.emit("prompt_end");
-    return choice;
+    try {
+      sessionEvents.emit("prompt_start");
+      ui.warning(`The agent wants to execute: ${fullCommand}`);
+      const choice = await (0, import_prompts2.select)({
+        message: "Choose an action:",
+        choices: [
+          { name: "Approve for now", value: "now" },
+          { name: `Approve always (whitelist '${cmd}')`, value: "always" },
+          { name: `Don't approve`, value: "deny" }
+        ]
+      });
+      return choice;
+    } finally {
+      sessionEvents.emit("prompt_end");
+    }
   }
 };
 var executor = new Executor();
@@ -17369,6 +17372,13 @@ var PhoneOS = class {
     });
     if (endIdx < view.options.length) printIndicator("\u25BC");
     process.stdout.write(GOLD(" \u255A") + hBoxLine + GOLD("\u255D\n"));
+    if (chatSession.pendingApprovals && chatSession.pendingApprovals.length > 0) {
+      const uniqueThreads = Array.from(new Set(chatSession.pendingApprovals.map((p) => p.threadId)));
+      const threadList = uniqueThreads.map((id) => import_chalk2.default.hex("#22D3EE").bold(id)).join(", ");
+      process.stdout.write("\n");
+      process.stdout.write("  " + import_chalk2.default.hex("#EF4444").bold("\u26A0\uFE0F  PENDING APPROVAL: ") + import_chalk2.default.white(`Agent needs command approval in thread(s): ${threadList}`) + "\n");
+      process.stdout.write('     Please choose "Enter Chat" or select the corresponding thread to approve.\n');
+    }
   }
 };
 
@@ -18597,7 +18607,6 @@ async function main() {
     let currentInput = "";
     let thinkingTimer = null;
     let isStreaming = chatSession.activeStreams.has(chatSession.threadId);
-    let isDetached = false;
     let isPrompting = false;
     let lastStreamContentLength = 0;
     let pendingPlan = false;
@@ -18762,7 +18771,6 @@ ${outputContent}
                 { name: `Don't approve`, value: "deny" }
               ]
             });
-            onPromptEnd();
             if (choice === "always") {
               const currentConfig = await Configurator.init();
               if (!currentConfig.security.allowedCommands.includes(item.cmd)) {
@@ -18779,11 +18787,13 @@ ${outputContent}
             item.resolve(choice);
           } catch (err) {
             item.resolve("deny");
+          } finally {
+            onPromptEnd();
           }
         }
       };
       const onStreamUpdate = (id) => {
-        if (id === chatSession.threadId && !isDetached) {
+        if (id === chatSession.threadId && chatSession.isChatActive) {
           if (!chatSession.activeStreams.has(id)) {
             isStreaming = false;
           }
@@ -18792,12 +18802,10 @@ ${outputContent}
       };
       function onPromptStart() {
         isPrompting = true;
-        process.stdout.write("\x1B[?1049l");
         process.stdin.removeListener("keypress", onKeypress);
       }
       function onPromptEnd() {
         isPrompting = false;
-        process.stdout.write("\x1B[?1049h");
         process.stdin.on("keypress", onKeypress);
         render(true);
       }
@@ -18814,7 +18822,6 @@ ${outputContent}
       };
       const runAgentLoop = async (inputText) => {
         isStreaming = true;
-        isDetached = false;
         chatSession.activeStreams.add(chatSession.threadId);
         chatSession.ensureNamedFromPrompt(inputText);
         messages.push(new import_messages4.HumanMessage(inputText));
@@ -18860,7 +18867,7 @@ ${reasoning2}`;
                   startToolAnimation();
                 }
                 syncMessages();
-                if (!isDetached) {
+                if (chatSession.isChatActive) {
                   throttleRender();
                 } else {
                   sessionEvents.emit("stream_update", chatSession.threadId);
@@ -18910,7 +18917,7 @@ ${reasoning}
             messages[messages.length - 1] = finalMessage;
             lastStreamContentLength = 0;
             syncMessages();
-            if (!isDetached) {
+            if (chatSession.isChatActive) {
               render(true);
             }
             const responseText = String(finalMessage?.content ?? "");
@@ -18926,12 +18933,12 @@ ${reasoning}
                 pendingPlan = true;
                 planMenuIndex = 0;
                 isDone = true;
-                if (!isDetached) render(true);
+                if (chatSession.isChatActive) render(true);
               }
             } else if (hasToolCalls) {
               pendingPlan = false;
               startToolAnimation();
-              if (!isDetached) render(true);
+              if (chatSession.isChatActive) render(true);
               for (const call of finalMessage.tool_calls) {
                 const tool2 = tools.find((t) => t.name === call.name);
                 let toolResultStr = "";
@@ -18951,7 +18958,7 @@ ${reasoning}
                 messages.push(new import_messages4.ToolMessage({ content: toolResultStr, tool_call_id: call.id, name: call.name }));
                 syncMessages();
               }
-              if (!isDetached) {
+              if (chatSession.isChatActive) {
                 render(true);
               } else {
                 sessionEvents.emit("stream_update", chatSession.threadId);
@@ -18959,7 +18966,7 @@ ${reasoning}
             } else {
               pendingPlan = false;
               isDone = true;
-              if (!isDetached) render(true);
+              if (chatSession.isChatActive) render(true);
             }
           }
           stopToolAnimation();
@@ -18975,7 +18982,7 @@ ${reasoning}
           syncMessages();
           sessionEvents.emit("stream_update", chatSession.threadId);
         }
-        if (!isDetached) {
+        if (chatSession.isChatActive) {
           render(true);
         }
       };
@@ -18990,9 +18997,6 @@ ${reasoning}
           return;
         } else if (key.name === "escape") {
           stopThinkingAnimation();
-          if (isStreaming) {
-            isDetached = true;
-          }
           cleanup();
           resolve();
         } else if (key.name === "return") {
@@ -19073,6 +19077,7 @@ ${reasoning}
         }
       };
       process.stdin.on("keypress", onKeypress);
+      render(isStreaming);
       processPendingApprovals().then(() => {
         render(isStreaming);
       });

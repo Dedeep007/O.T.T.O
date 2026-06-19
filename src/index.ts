@@ -196,7 +196,6 @@ async function main() {
     let currentInput = '';
     let thinkingTimer: NodeJS.Timeout | null = null;
     let isStreaming = chatSession.activeStreams.has(chatSession.threadId);
-    let isDetached = false;
     let isPrompting = false;
     let lastStreamContentLength = 0;
     
@@ -392,7 +391,6 @@ async function main() {
                 { name: `Don't approve`, value: 'deny' }
               ]
             }) as 'now' | 'always' | 'deny';
-            onPromptEnd();
             
             if (choice === 'always') {
               const currentConfig = await Configurator.init();
@@ -411,12 +409,14 @@ async function main() {
             item.resolve(choice);
           } catch (err) {
             item.resolve('deny');
+          } finally {
+            onPromptEnd();
           }
         }
       };
 
       const onStreamUpdate = (id: string) => {
-        if (id === chatSession.threadId && !isDetached) {
+        if (id === chatSession.threadId && chatSession.isChatActive) {
           if (!chatSession.activeStreams.has(id)) {
             isStreaming = false;
           }
@@ -426,13 +426,11 @@ async function main() {
 
       function onPromptStart() {
         isPrompting = true;
-        process.stdout.write('\x1B[?1049l');
         process.stdin.removeListener('keypress', onKeypress);
       }
 
       function onPromptEnd() {
         isPrompting = false;
-        process.stdout.write('\x1B[?1049h');
         process.stdin.on('keypress', onKeypress);
         render(true);
       }
@@ -452,7 +450,6 @@ async function main() {
 
       const runAgentLoop = async (inputText: string) => {
         isStreaming = true;
-        isDetached = false;
         chatSession.activeStreams.add(chatSession.threadId);
         chatSession.ensureNamedFromPrompt(inputText);
         messages.push(new HumanMessage(inputText));
@@ -503,7 +500,7 @@ async function main() {
                   startToolAnimation();
                 }
                 syncMessages();
-                if (!isDetached) {
+                if (chatSession.isChatActive) {
                   throttleRender();
                 } else {
                   sessionEvents.emit('stream_update', chatSession.threadId);
@@ -555,7 +552,7 @@ async function main() {
             messages[messages.length - 1] = finalMessage;
             lastStreamContentLength = 0;
             syncMessages();
-            if (!isDetached) {
+            if (chatSession.isChatActive) {
               render(true);
             }
 
@@ -573,12 +570,12 @@ async function main() {
                 pendingPlan = true;
                 planMenuIndex = 0;
                 isDone = true;
-                if (!isDetached) render(true);
+                if (chatSession.isChatActive) render(true);
               }
             } else if (hasToolCalls) {
               pendingPlan = false;
               startToolAnimation();
-              if (!isDetached) render(true);
+              if (chatSession.isChatActive) render(true);
               
               for (const call of finalMessage.tool_calls) {
                 const tool = tools.find(t => t.name === call.name);
@@ -599,7 +596,7 @@ async function main() {
                 messages.push(new ToolMessage({ content: toolResultStr, tool_call_id: call.id, name: call.name }));
                 syncMessages();
               }
-              if (!isDetached) {
+              if (chatSession.isChatActive) {
                 render(true);
               } else {
                 sessionEvents.emit('stream_update', chatSession.threadId);
@@ -607,7 +604,7 @@ async function main() {
             } else {
               pendingPlan = false;
               isDone = true;
-              if (!isDetached) render(true);
+              if (chatSession.isChatActive) render(true);
             }
           }
           
@@ -625,7 +622,7 @@ async function main() {
           sessionEvents.emit('stream_update', chatSession.threadId);
         }
 
-        if (!isDetached) {
+        if (chatSession.isChatActive) {
           render(true);
         }
       };
@@ -642,9 +639,6 @@ async function main() {
           return;
         } else if (key.name === 'escape') {
           stopThinkingAnimation();
-          if (isStreaming) {
-            isDetached = true;
-          }
           cleanup();
           resolve();
         } else if (key.name === 'return') {
@@ -727,6 +721,7 @@ async function main() {
       };
 
       process.stdin.on('keypress', onKeypress);
+      render(isStreaming);
       processPendingApprovals().then(() => {
         render(isStreaming);
       });
