@@ -550,7 +550,8 @@ var Configurator = {
       providers,
       defaults: {
         primaryProvider,
-        showContextBar: true
+        showContextBar: true,
+        maxCtx: 64e3
       },
       security: {
         mode: securityMode,
@@ -839,6 +840,15 @@ var Configurator = {
     const config2 = Configurator.loadConfig();
     if (config2) {
       config2.defaults.maxThreads = Math.max(1, Math.round(n));
+      Configurator.saveConfig(config2);
+      return config2;
+    }
+    return null;
+  },
+  updateMaxCtx: (n) => {
+    const config2 = Configurator.loadConfig();
+    if (config2) {
+      config2.defaults.maxCtx = Math.max(1e3, Math.round(n));
       Configurator.saveConfig(config2);
       return config2;
     }
@@ -16440,6 +16450,127 @@ var tools = [
 ];
 
 // src/llm/provider.ts
+function parseFallbackToolCalls(content) {
+  const trimmed = content.trim();
+  if (!trimmed) return null;
+  const foundCalls = [];
+  const addIfValid = (obj) => {
+    if (obj && typeof obj === "object") {
+      if (obj.name && (obj.arguments || obj.args)) {
+        foundCalls.push({
+          name: obj.name,
+          args: obj.arguments || obj.args,
+          id: "fallback_" + Math.random().toString(36).substring(2, 9)
+        });
+        return true;
+      }
+    }
+    return false;
+  };
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) {
+      parsed.forEach(addIfValid);
+    } else {
+      addIfValid(parsed);
+    }
+  } catch {
+  }
+  if (foundCalls.length > 0) return foundCalls;
+  const jsonBlockRegex = /```json\s*([\s\S]*?)\s*```/g;
+  let match;
+  while ((match = jsonBlockRegex.exec(trimmed)) !== null) {
+    try {
+      const parsed = JSON.parse(match[1].trim());
+      if (Array.isArray(parsed)) {
+        parsed.forEach(addIfValid);
+      } else {
+        addIfValid(parsed);
+      }
+    } catch {
+    }
+  }
+  if (foundCalls.length > 0) return foundCalls;
+  let inString = false;
+  let escapeNext = false;
+  let depth = 0;
+  let startIdx = -1;
+  for (let i = 0; i < trimmed.length; i++) {
+    const char = trimmed[i];
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+    if (char === "\\") {
+      if (inString) escapeNext = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (!inString) {
+      if (char === "{") {
+        if (depth === 0) startIdx = i;
+        depth++;
+      } else if (char === "}") {
+        depth--;
+        if (depth === 0 && startIdx !== -1) {
+          const potentialJson = trimmed.substring(startIdx, i + 1);
+          try {
+            const parsed = JSON.parse(potentialJson);
+            addIfValid(parsed);
+          } catch {
+          }
+        }
+      }
+    }
+  }
+  if (foundCalls.length > 0) return foundCalls;
+  const blockRegex = /```(bash|sh|shell|powershell|cmd|ps1|javascript|typescript|js|ts|json|html|css)?\s*([\s\S]*?)\s*```/g;
+  let blockMatch;
+  let lastIdx = 0;
+  while ((blockMatch = blockRegex.exec(trimmed)) !== null) {
+    const lang = (blockMatch[1] || "").toLowerCase();
+    const code = blockMatch[2].trim();
+    const preText = trimmed.substring(lastIdx, blockMatch.index).trim();
+    lastIdx = blockRegex.lastIndex;
+    if (!code) continue;
+    const isCmdLang = ["bash", "sh", "shell", "powershell", "cmd", "ps1"].includes(lang);
+    const firstLine = code.split("\n")[0]?.trim() ?? "";
+    const isCmdPattern = /^(npm|git|node|tsc|npx|pip|python|docker|cargo|yarn|pnpm|deno|ollama)\b/i.test(firstLine);
+    if (isCmdLang || isCmdPattern && !code.includes("\n")) {
+      foundCalls.push({
+        name: "execute_terminal_command",
+        args: { command: code },
+        id: "fallback_text_cmd_" + Math.random().toString(36).substring(2, 9)
+      });
+      continue;
+    }
+    const fileMatch = preText.match(/(?:file|to|named|in|create|write)\s+`?([a-zA-Z0-9_\-\.\/\\:]+\.[a-zA-Z0-9_]+)`?/i);
+    if (fileMatch) {
+      foundCalls.push({
+        name: "write_file",
+        args: { filePath: fileMatch[1], content: code },
+        id: "fallback_text_file_" + Math.random().toString(36).substring(2, 9)
+      });
+    }
+  }
+  if (foundCalls.length === 0) {
+    const lines = trimmed.split("\n");
+    for (const line of lines) {
+      const cleanLine = line.trim();
+      if (/^(npm|git|node|tsc|npx)\s+[a-zA-Z0-9_\-\.\/\\\s"'\(\)]+$/i.test(cleanLine) && cleanLine.length < 100) {
+        foundCalls.push({
+          name: "execute_terminal_command",
+          args: { command: cleanLine },
+          id: "fallback_text_line_" + Math.random().toString(36).substring(2, 9)
+        });
+      }
+    }
+  }
+  return foundCalls.length > 0 ? foundCalls : null;
+}
 var ProviderEngine = class {
   config;
   primaryModel = null;
@@ -16498,14 +16629,40 @@ var ProviderEngine = class {
         const entry = this.config.providers.ollama;
         const model = entry?.activeModel ?? entry?.model ?? "llama3";
         const baseUrl = entry?.baseUrl ?? "http://localhost:11434";
-        this.primaryModel = new import_ollama.ChatOllama({
+        const rawModel = new import_ollama.ChatOllama({
           baseUrl,
           model,
           temperature: 0,
-          // Enforces strict JSON tool schemas across all local models
           maxRetries: 0,
           streaming: true
         }).bindTools(tools);
+        const originalInvoke = rawModel.invoke.bind(rawModel);
+        rawModel.invoke = async (inputMessages, options) => {
+          const response = await originalInvoke(inputMessages, options);
+          if (response && response.content && (!response.tool_calls || response.tool_calls.length === 0)) {
+            const fallbackCalls = parseFallbackToolCalls(response.content.toString());
+            if (fallbackCalls && fallbackCalls.length > 0) {
+              response.tool_calls = fallbackCalls;
+              const rawTrimmed = response.content.toString().trim();
+              try {
+                JSON.parse(rawTrimmed);
+                response.content = "";
+              } catch {
+                const blockRegex = /^```json\s*([\s\S]*?)\s*```$/i;
+                const match = rawTrimmed.match(blockRegex);
+                if (match) {
+                  try {
+                    JSON.parse(match[1].trim());
+                    response.content = "";
+                  } catch {
+                  }
+                }
+              }
+            }
+          }
+          return response;
+        };
+        this.primaryModel = rawModel;
         ui.info(`Switched to Ollama - ${model}`);
       } else {
         ui.warning(`Provider ${providerName} is not fully configured or supported yet.`);
@@ -16609,8 +16766,16 @@ var ProviderEngine = class {
 var import_messages2 = require("@langchain/core/messages");
 var import_messages3 = require("@langchain/core/messages");
 var MemoryManager = class {
-  C_max = 64e3;
-  // Expanded context limit for advanced models
+  get C_max() {
+    try {
+      const config2 = Configurator.loadConfig();
+      if (config2 && typeof config2.defaults.maxCtx === "number") {
+        return config2.defaults.maxCtx;
+      }
+    } catch {
+    }
+    return 64e3;
+  }
   B_sys = 3e3;
   // System prompt budget
   B_out = 4e3;
@@ -16809,7 +16974,7 @@ These are the core rules the agent must follow.
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
 SECTION A \u2014 CODING RULES (always apply)
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-A1. LOOK BEFORE YOU LEAP: Before modifying or proposing changes to any existing code, you MUST use search_code to locate the target functions/classes, and then read_file_lines to inspect the exact lines. Never guess or write code blindly.
+A1. LOOK BEFORE YOU LEAP (INTELLIGENT TARGETED SEARCH): Before modifying or proposing changes to any existing code, you MUST first use search_code to locate the target functions, classes, settings, or symbols. Identify correct placement of code targetedly without viewing all files. Then use read_file_lines to inspect the exact lines. Never guess, write code blindly, or view entire large files unnecessarily.
 A2. INCREMENTAL EDITS ONLY: To modify existing files, you MUST use replace_file_lines for targeted changes. DO NOT use write_file to overwrite entire files, as this destroys the ability of the user interface to show clear, line-by-line diff edits (green/red additions/deletions). Only use write_file for creating new files or doing full rewrites.
 A3. NO SHELL REDIRECTIONS FOR CODE: Never use terminal redirection, heredocs, Set-Content, Out-File, or shell metacharacters to create or modify code files. Always use write_file or replace_file_lines tools.
 A4. READ PRECISELY: Use read_file only when a whole file is genuinely needed (e.g., small files or for full architectural reference); prefer read_file_lines for larger files to optimize memory and speed.
@@ -16873,7 +17038,7 @@ SECTION C \u2014 EXECUTION & VERIFICATION QUALITY
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
 C1. Execute plans step-by-step and tell the user which step you are on (e.g., "Step 2/4 \u2014 Creating jwt.ts").
 C2. After making any edits, ALWAYS run a build, lint, or compiler test (e.g., \`npm run build\`, \`npx tsc\`, or equivalent verification command) to ensure the code compiles without errors.
-C3. If a step fails, report the error clearly and suggest a fix before continuing.
+C3. AUTONOMOUS ERROR CORRECTION: If a terminal command, compiler check, or build fails (e.g., compile errors, lint violations, test failure), inspect the stderr output, locate the bug, and immediately propose/apply a fix. Attempt to resolve the issue autonomously without asking the user.
 C4. Never silently skip a planned step \u2014 if you skip one, explain why.`;
   }
   async requestRuleChange(newRulesContent) {
@@ -18259,6 +18424,127 @@ var import_meta2 = {};
 var require3 = (0, import_module2.createRequire)(import_meta2.url);
 var pkg2 = require3("../package.json");
 var CLI_VERSION2 = pkg2.version;
+function parseFallbackToolCalls2(content) {
+  const trimmed = content.trim();
+  if (!trimmed) return null;
+  const foundCalls = [];
+  const addIfValid = (obj) => {
+    if (obj && typeof obj === "object") {
+      if (obj.name && (obj.arguments || obj.args)) {
+        foundCalls.push({
+          name: obj.name,
+          args: obj.arguments || obj.args,
+          id: "fallback_" + Math.random().toString(36).substring(2, 9)
+        });
+        return true;
+      }
+    }
+    return false;
+  };
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) {
+      parsed.forEach(addIfValid);
+    } else {
+      addIfValid(parsed);
+    }
+  } catch {
+  }
+  if (foundCalls.length > 0) return foundCalls;
+  const jsonBlockRegex = /```json\s*([\s\S]*?)\s*```/g;
+  let match;
+  while ((match = jsonBlockRegex.exec(trimmed)) !== null) {
+    try {
+      const parsed = JSON.parse(match[1].trim());
+      if (Array.isArray(parsed)) {
+        parsed.forEach(addIfValid);
+      } else {
+        addIfValid(parsed);
+      }
+    } catch {
+    }
+  }
+  if (foundCalls.length > 0) return foundCalls;
+  let inString = false;
+  let escapeNext = false;
+  let depth = 0;
+  let startIdx = -1;
+  for (let i = 0; i < trimmed.length; i++) {
+    const char = trimmed[i];
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+    if (char === "\\") {
+      if (inString) escapeNext = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (!inString) {
+      if (char === "{") {
+        if (depth === 0) startIdx = i;
+        depth++;
+      } else if (char === "}") {
+        depth--;
+        if (depth === 0 && startIdx !== -1) {
+          const potentialJson = trimmed.substring(startIdx, i + 1);
+          try {
+            const parsed = JSON.parse(potentialJson);
+            addIfValid(parsed);
+          } catch {
+          }
+        }
+      }
+    }
+  }
+  if (foundCalls.length > 0) return foundCalls;
+  const blockRegex = /```(bash|sh|shell|powershell|cmd|ps1|javascript|typescript|js|ts|json|html|css)?\s*([\s\S]*?)\s*```/g;
+  let blockMatch;
+  let lastIdx = 0;
+  while ((blockMatch = blockRegex.exec(trimmed)) !== null) {
+    const lang = (blockMatch[1] || "").toLowerCase();
+    const code = blockMatch[2].trim();
+    const preText = trimmed.substring(lastIdx, blockMatch.index).trim();
+    lastIdx = blockRegex.lastIndex;
+    if (!code) continue;
+    const isCmdLang = ["bash", "sh", "shell", "powershell", "cmd", "ps1"].includes(lang);
+    const firstLine = code.split("\n")[0]?.trim() ?? "";
+    const isCmdPattern = /^(npm|git|node|tsc|npx|pip|python|docker|cargo|yarn|pnpm|deno|ollama)\b/i.test(firstLine);
+    if (isCmdLang || isCmdPattern && !code.includes("\n")) {
+      foundCalls.push({
+        name: "execute_terminal_command",
+        args: { command: code },
+        id: "fallback_text_cmd_" + Math.random().toString(36).substring(2, 9)
+      });
+      continue;
+    }
+    const fileMatch = preText.match(/(?:file|to|named|in|create|write)\s+`?([a-zA-Z0-9_\-\.\/\\:]+\.[a-zA-Z0-9_]+)`?/i);
+    if (fileMatch) {
+      foundCalls.push({
+        name: "write_file",
+        args: { filePath: fileMatch[1], content: code },
+        id: "fallback_text_file_" + Math.random().toString(36).substring(2, 9)
+      });
+    }
+  }
+  if (foundCalls.length === 0) {
+    const lines = trimmed.split("\n");
+    for (const line of lines) {
+      const cleanLine = line.trim();
+      if (/^(npm|git|node|tsc|npx)\s+[a-zA-Z0-9_\-\.\/\\\s"'\(\)]+$/i.test(cleanLine) && cleanLine.length < 100) {
+        foundCalls.push({
+          name: "execute_terminal_command",
+          args: { command: cleanLine },
+          id: "fallback_text_line_" + Math.random().toString(36).substring(2, 9)
+        });
+      }
+    }
+  }
+  return foundCalls.length > 0 ? foundCalls : null;
+}
 async function main() {
   const args = process.argv.slice(2);
   const cliHandled = await parseAndExecuteCLI(args);
@@ -18553,6 +18839,32 @@ ${reasoning}
             if (finalMessage) {
               finalMessage.content = finalContent;
             }
+            let hasToolCalls = finalMessage?.tool_calls && finalMessage.tool_calls.length > 0;
+            if (!hasToolCalls && finalMessage?.content) {
+              const fallbackCalls = parseFallbackToolCalls2(finalMessage.content.toString());
+              if (fallbackCalls && fallbackCalls.length > 0) {
+                finalMessage.tool_calls = fallbackCalls;
+                aiMessage.tool_calls = fallbackCalls;
+                hasToolCalls = true;
+                const rawTrimmed = finalMessage.content.toString().trim();
+                try {
+                  JSON.parse(rawTrimmed);
+                  finalMessage.content = "";
+                  aiMessage.content = "";
+                } catch {
+                  const blockRegex = /^```json\s*([\s\S]*?)\s*```$/i;
+                  const match = rawTrimmed.match(blockRegex);
+                  if (match) {
+                    try {
+                      JSON.parse(match[1].trim());
+                      finalMessage.content = "";
+                      aiMessage.content = "";
+                    } catch {
+                    }
+                  }
+                }
+              }
+            }
             config2 = provider.getConfig();
             phone.updateConfig(config2);
             messages[messages.length - 1] = finalMessage;
@@ -18563,7 +18875,6 @@ ${reasoning}
             }
             const responseText = String(finalMessage?.content ?? "");
             const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
-            const hasToolCalls = finalMessage?.tool_calls && finalMessage.tool_calls.length > 0;
             if (hasPlanBlock && !hasToolCalls) {
               if (config2.security.mode === "full") {
                 pendingPlan = false;
@@ -18860,6 +19171,55 @@ ${reasoning}
       ]
     };
   };
+  const createMaxCtxView = () => {
+    const cur = config2.defaults.maxCtx ?? 64e3;
+    return {
+      id: "max_ctx",
+      title: "Max Context Size",
+      subtitle: "Configure maximum memory tokens",
+      renderBody: () => {
+        const currentCap = config2.defaults.maxCtx ?? 64e3;
+        console.log(import_chalk10.default.white.bold("  Current Context Limit"));
+        console.log("  " + import_chalk10.default.hex("#56CFE1")(String(currentCap)) + " tokens");
+        console.log("");
+        console.log(import_chalk10.default.hex("#6B7280")("  Default: 64,000 tokens."));
+        console.log(import_chalk10.default.hex("#6B7280")("  This controls the threshold where context pruning occurs."));
+        console.log("");
+      },
+      options: [
+        {
+          label: `Change limit  (currently ${cur})`,
+          action: async () => {
+            phone.active = false;
+            ui.clearScreen();
+            const entered = await promptWithEscape(`New context token cap (current: ${cur}):`);
+            const n = parseInt(entered ?? "", 10);
+            if (!isNaN(n) && n >= 1e3) {
+              config2 = Configurator.updateMaxCtx(n) || config2;
+              phone.updateConfig(config2);
+              ui.success(`Max context size set to ${n} tokens.`);
+              await new Promise((r) => setTimeout(r, 900));
+            }
+            phone.active = true;
+            phone.goBack();
+            phone.pushView(createMaxCtxView());
+          }
+        },
+        {
+          label: "Reset to Default  (64,000)",
+          action: async () => {
+            config2 = Configurator.updateMaxCtx(64e3) || config2;
+            phone.updateConfig(config2);
+            ui.success("Max context size reset to 64,000 tokens.");
+            await new Promise((r) => setTimeout(r, 900));
+            phone.goBack();
+            phone.pushView(createMaxCtxView());
+          }
+        },
+        { label: "Go Back", action: () => phone.goBack() }
+      ]
+    };
+  };
   const createSettingsView = () => ({
     id: "settings",
     title: "Settings & Security",
@@ -18877,6 +19237,13 @@ ${reasoning}
         description: "Limit stored sessions to reduce memory pressure",
         action: async () => {
           phone.pushView(createMaxThreadsView());
+        }
+      },
+      {
+        label: `Max Context Size  [${config2.defaults.maxCtx ?? 64e3}]`,
+        description: "Set maximum token limit for context window",
+        action: async () => {
+          phone.pushView(createMaxCtxView());
         }
       },
       {

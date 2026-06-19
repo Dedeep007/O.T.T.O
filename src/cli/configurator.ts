@@ -18,6 +18,7 @@ export interface OttoConfig {
     tertiaryProvider?: 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini';
     showContextBar: boolean;
     maxThreads?: number;  // cap on stored sessions; undefined = use cpuHealthyDefault
+    maxCtx?: number;      // user adjustable context cap
   };
   security: {
     mode: 'ask' | 'approve' | 'full';
@@ -158,7 +159,8 @@ export const Configurator = {
       providers,
       defaults: {
         primaryProvider,
-        showContextBar: true
+        showContextBar: true,
+        maxCtx: 64000
       },
       security: {
         mode: securityMode,
@@ -473,6 +475,16 @@ export const Configurator = {
     const config = Configurator.loadConfig();
     if (config) {
       config.defaults.maxThreads = Math.max(1, Math.round(n));
+      Configurator.saveConfig(config);
+      return config;
+    }
+    return null;
+  },
+
+  updateMaxCtx: (n: number) => {
+    const config = Configurator.loadConfig();
+    if (config) {
+      config.defaults.maxCtx = Math.max(1000, Math.round(n));
       Configurator.saveConfig(config);
       return config;
     }

@@ -12,6 +12,146 @@ import { tools } from './tools.js';
 
 type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini';
 
+function parseFallbackToolCalls(content: string): any[] | null {
+  const trimmed = content.trim();
+  if (!trimmed) return null;
+
+  const foundCalls: any[] = [];
+
+  const addIfValid = (obj: any) => {
+    if (obj && typeof obj === 'object') {
+      if (obj.name && (obj.arguments || obj.args)) {
+        foundCalls.push({
+          name: obj.name,
+          args: obj.arguments || obj.args,
+          id: 'fallback_' + Math.random().toString(36).substring(2, 9)
+        });
+        return true;
+      }
+    }
+    return false;
+  };
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) {
+      parsed.forEach(addIfValid);
+    } else {
+      addIfValid(parsed);
+    }
+  } catch {}
+
+  if (foundCalls.length > 0) return foundCalls;
+
+  const jsonBlockRegex = /```json\s*([\s\S]*?)\s*```/g;
+  let match;
+  while ((match = jsonBlockRegex.exec(trimmed)) !== null) {
+    try {
+      const parsed = JSON.parse(match[1].trim());
+      if (Array.isArray(parsed)) {
+        parsed.forEach(addIfValid);
+      } else {
+        addIfValid(parsed);
+      }
+    } catch {}
+  }
+
+  if (foundCalls.length > 0) return foundCalls;
+
+  let inString = false;
+  let escapeNext = false;
+  let depth = 0;
+  let startIdx = -1;
+
+  for (let i = 0; i < trimmed.length; i++) {
+    const char = trimmed[i];
+
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+
+    if (char === '\\') {
+      if (inString) escapeNext = true;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (!inString) {
+      if (char === '{') {
+        if (depth === 0) startIdx = i;
+        depth++;
+      } else if (char === '}') {
+        depth--;
+        if (depth === 0 && startIdx !== -1) {
+          const potentialJson = trimmed.substring(startIdx, i + 1);
+          try {
+            const parsed = JSON.parse(potentialJson);
+            addIfValid(parsed);
+          } catch {}
+        }
+      }
+    }
+  }
+
+  if (foundCalls.length > 0) return foundCalls;
+
+  const blockRegex = /```(bash|sh|shell|powershell|cmd|ps1|javascript|typescript|js|ts|json|html|css)?\s*([\s\S]*?)\s*```/g;
+  let blockMatch;
+  let lastIdx = 0;
+
+  while ((blockMatch = blockRegex.exec(trimmed)) !== null) {
+    const lang = (blockMatch[1] || '').toLowerCase();
+    const code = blockMatch[2].trim();
+    const preText = trimmed.substring(lastIdx, blockMatch.index).trim();
+    lastIdx = blockRegex.lastIndex;
+
+    if (!code) continue;
+
+    const isCmdLang = ['bash', 'sh', 'shell', 'powershell', 'cmd', 'ps1'].includes(lang);
+    const firstLine = code.split('\n')[0]?.trim() ?? '';
+    const isCmdPattern = /^(npm|git|node|tsc|npx|pip|python|docker|cargo|yarn|pnpm|deno|ollama)\b/i.test(firstLine);
+
+    if (isCmdLang || (isCmdPattern && !code.includes('\n'))) {
+      foundCalls.push({
+        name: 'execute_terminal_command',
+        args: { command: code },
+        id: 'fallback_text_cmd_' + Math.random().toString(36).substring(2, 9)
+      });
+      continue;
+    }
+
+    const fileMatch = preText.match(/(?:file|to|named|in|create|write)\s+`?([a-zA-Z0-9_\-\.\/\\:]+\.[a-zA-Z0-9_]+)`?/i);
+    if (fileMatch) {
+      foundCalls.push({
+        name: 'write_file',
+        args: { filePath: fileMatch[1], content: code },
+        id: 'fallback_text_file_' + Math.random().toString(36).substring(2, 9)
+      });
+    }
+  }
+
+  if (foundCalls.length === 0) {
+    const lines = trimmed.split('\n');
+    for (const line of lines) {
+      const cleanLine = line.trim();
+      if (/^(npm|git|node|tsc|npx)\s+[a-zA-Z0-9_\-\.\/\\\s"'\(\)]+$/i.test(cleanLine) && cleanLine.length < 100) {
+        foundCalls.push({
+          name: 'execute_terminal_command',
+          args: { command: cleanLine },
+          id: 'fallback_text_line_' + Math.random().toString(36).substring(2, 9)
+        });
+      }
+    }
+  }
+
+  return foundCalls.length > 0 ? foundCalls : null;
+}
+
 export class ProviderEngine {
   private config: OttoConfig;
   private primaryModel: BaseChatModel | null = null;
@@ -74,14 +214,41 @@ export class ProviderEngine {
         const model = entry?.activeModel ?? entry?.model ?? 'llama3';
         const baseUrl = entry?.baseUrl ?? 'http://localhost:11434';
         
-        this.primaryModel = new ChatOllama({
+        const rawModel = new ChatOllama({
           baseUrl,
           model,
-          temperature: 0, // Enforces strict JSON tool schemas across all local models
+          temperature: 0,
           maxRetries: 0,
           streaming: true
         }).bindTools(tools) as any;
-        
+
+        const originalInvoke = rawModel.invoke.bind(rawModel);
+        rawModel.invoke = async (inputMessages: any, options: any) => {
+          const response = await originalInvoke(inputMessages, options);
+          if (response && response.content && (!response.tool_calls || response.tool_calls.length === 0)) {
+            const fallbackCalls = parseFallbackToolCalls(response.content.toString());
+            if (fallbackCalls && fallbackCalls.length > 0) {
+              response.tool_calls = fallbackCalls;
+              const rawTrimmed = response.content.toString().trim();
+              try {
+                JSON.parse(rawTrimmed);
+                response.content = '';
+              } catch {
+                const blockRegex = /^```json\s*([\s\S]*?)\s*```$/i;
+                const match = rawTrimmed.match(blockRegex);
+                if (match) {
+                  try {
+                    JSON.parse(match[1].trim());
+                    response.content = '';
+                  } catch {}
+                }
+              }
+            }
+          }
+          return response;
+        };
+
+        this.primaryModel = rawModel;
         ui.info(`Switched to Ollama - ${model}`);
       } else {
         ui.warning(`Provider ${providerName} is not fully configured or supported yet.`);

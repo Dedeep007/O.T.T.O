@@ -1,9 +1,18 @@
 import { BaseMessage, HumanMessage, SystemMessage, AIMessage, ToolMessage } from '@langchain/core/messages';
 import { trimMessages } from '@langchain/core/messages';
 import { ui } from '../cli/ui.js';
+import { Configurator } from '../cli/configurator.js';
 
 export class MemoryManager {
-  private C_max: number = 64000; // Expanded context limit for advanced models
+  get C_max(): number {
+    try {
+      const config = Configurator.loadConfig();
+      if (config && typeof config.defaults.maxCtx === 'number') {
+        return config.defaults.maxCtx;
+      }
+    } catch {}
+    return 64000;
+  }
   private B_sys: number = 3000;  // System prompt budget
   private B_out: number = 4000;  // Expected output buffer
   private Max_Msg_Tokens: number = 20000; // Increased truncation threshold for large files/logs

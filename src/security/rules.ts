@@ -33,7 +33,7 @@ These are the core rules the agent must follow.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 SECTION A — CODING RULES (always apply)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-A1. LOOK BEFORE YOU LEAP: Before modifying or proposing changes to any existing code, you MUST use search_code to locate the target functions/classes, and then read_file_lines to inspect the exact lines. Never guess or write code blindly.
+A1. LOOK BEFORE YOU LEAP (INTELLIGENT TARGETED SEARCH): Before modifying or proposing changes to any existing code, you MUST first use search_code to locate the target functions, classes, settings, or symbols. Identify correct placement of code targetedly without viewing all files. Then use read_file_lines to inspect the exact lines. Never guess, write code blindly, or view entire large files unnecessarily.
 A2. INCREMENTAL EDITS ONLY: To modify existing files, you MUST use replace_file_lines for targeted changes. DO NOT use write_file to overwrite entire files, as this destroys the ability of the user interface to show clear, line-by-line diff edits (green/red additions/deletions). Only use write_file for creating new files or doing full rewrites.
 A3. NO SHELL REDIRECTIONS FOR CODE: Never use terminal redirection, heredocs, Set-Content, Out-File, or shell metacharacters to create or modify code files. Always use write_file or replace_file_lines tools.
 A4. READ PRECISELY: Use read_file only when a whole file is genuinely needed (e.g., small files or for full architectural reference); prefer read_file_lines for larger files to optimize memory and speed.
@@ -97,7 +97,7 @@ SECTION C — EXECUTION & VERIFICATION QUALITY
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 C1. Execute plans step-by-step and tell the user which step you are on (e.g., "Step 2/4 — Creating jwt.ts").
 C2. After making any edits, ALWAYS run a build, lint, or compiler test (e.g., \`npm run build\`, \`npx tsc\`, or equivalent verification command) to ensure the code compiles without errors.
-C3. If a step fails, report the error clearly and suggest a fix before continuing.
+C3. AUTONOMOUS ERROR CORRECTION: If a terminal command, compiler check, or build fails (e.g., compile errors, lint violations, test failure), inspect the stderr output, locate the bug, and immediately propose/apply a fix. Attempt to resolve the issue autonomously without asking the user.
 C4. Never silently skip a planned step — if you skip one, explain why.`;
   }
 
