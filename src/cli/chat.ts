@@ -22,6 +22,13 @@ function stripAnsi(str: string): string {
 function getCharWidth(char: string): number {
   const codePoint = char.codePointAt(0);
   if (!codePoint) return 0;
+  // Explicit overrides for characters commonly mismeasured in CLI terminals
+  if (codePoint === 0x25B6) { // ▶ (black right-pointing triangle)
+    return 2;
+  }
+  if (codePoint === 0x270F) { // ✏ (pencil)
+    return 1;
+  }
   if (
     (codePoint >= 0x1F300 && codePoint <= 0x1F9FF) ||
     (codePoint >= 0x1F600 && codePoint <= 0x1F64F) ||
@@ -411,17 +418,21 @@ export class ChatUI {
         { label: '\u274c  Cancel \u2014 do not proceed',       color: chalk.hex('#F87171') },
       ];
 
-      push('  ' + border('\u2500'.repeat(menuWidth + 2)));
+      const totalInnerWidth = menuWidth + 2;
+      push('  ' + border('\u2500'.repeat(totalInnerWidth + 2)));
       menuItems.forEach((item, idx) => {
         const isSelected = idx === planMenuIndex;
-        const cursor  = isSelected ? chalk.hex('#F5C400').bold(' \u25b6 ') : '   ';
-        const paddedLabel = ansiPadEnd(item.label, menuWidth - 1);
+        const cursor  = isSelected
+          ? chalk.hex('#F5C400').bold(' \u25b6 ')
+          : ' '.repeat(getStringWidth(' \u25b6 '));
+        const cursorWidth = getStringWidth(cursor);
+        const paddedLabel = ansiPadEnd(item.label, totalInnerWidth - cursorWidth);
         const label   = isSelected
           ? chalk.bgHex('#1a1200')(item.color.bold(paddedLabel))
           : chalk.hex('#6B7280')(paddedLabel);
         push('  ' + border('\u2502') + cursor + label + border('\u2502'));
       });
-      push('  ' + border('\u2500'.repeat(menuWidth + 2)));
+      push('  ' + border('\u2500'.repeat(totalInnerWidth + 2)));
       push('');
     }
 

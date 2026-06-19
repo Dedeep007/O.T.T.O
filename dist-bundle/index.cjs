@@ -40,6 +40,12 @@ function stripAnsi(str) {
 function getCharWidth(char) {
   const codePoint = char.codePointAt(0);
   if (!codePoint) return 0;
+  if (codePoint === 9654) {
+    return 2;
+  }
+  if (codePoint === 9999) {
+    return 1;
+  }
   if (codePoint >= 127744 && codePoint <= 129535 || codePoint >= 128512 && codePoint <= 128591 || codePoint >= 128640 && codePoint <= 128767 || codePoint >= 9728 && codePoint <= 10175 || codePoint >= 19968 && codePoint <= 40959 || codePoint >= 44032 && codePoint <= 55203 || codePoint >= 65280 && codePoint <= 65519) {
     return 2;
   }
@@ -325,15 +331,17 @@ var init_chat = __esm({
             { label: "\u270F\uFE0F   Edit \u2014 request changes first", color: import_chalk9.default.hex("#FBBF24") },
             { label: "\u274C  Cancel \u2014 do not proceed", color: import_chalk9.default.hex("#F87171") }
           ];
-          push("  " + border("\u2500".repeat(menuWidth + 2)));
+          const totalInnerWidth = menuWidth + 2;
+          push("  " + border("\u2500".repeat(totalInnerWidth + 2)));
           menuItems.forEach((item, idx) => {
             const isSelected = idx === planMenuIndex;
-            const cursor = isSelected ? import_chalk9.default.hex("#F5C400").bold(" \u25B6 ") : "   ";
-            const paddedLabel = ansiPadEnd(item.label, menuWidth - 1);
+            const cursor = isSelected ? import_chalk9.default.hex("#F5C400").bold(" \u25B6 ") : " ".repeat(getStringWidth(" \u25B6 "));
+            const cursorWidth = getStringWidth(cursor);
+            const paddedLabel = ansiPadEnd(item.label, totalInnerWidth - cursorWidth);
             const label = isSelected ? import_chalk9.default.bgHex("#1a1200")(item.color.bold(paddedLabel)) : import_chalk9.default.hex("#6B7280")(paddedLabel);
             push("  " + border("\u2502") + cursor + label + border("\u2502"));
           });
-          push("  " + border("\u2500".repeat(menuWidth + 2)));
+          push("  " + border("\u2500".repeat(totalInnerWidth + 2)));
           push("");
         }
         push(this.DIM("-".repeat(this.W)));
