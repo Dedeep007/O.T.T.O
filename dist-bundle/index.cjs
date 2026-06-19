@@ -16467,6 +16467,7 @@ var ProviderEngine = class {
         this.primaryModel = new import_openai.ChatOpenAI({
           openAIApiKey: apiKey,
           modelName: model,
+          temperature: 0,
           maxRetries: 0,
           streaming: true
         }).bindTools(tools);
@@ -16477,6 +16478,7 @@ var ProviderEngine = class {
         this.primaryModel = new import_anthropic.ChatAnthropic({
           anthropicApiKey: apiKey,
           model,
+          temperature: 0,
           maxRetries: 0,
           streaming: true
         }).bindTools(tools);
@@ -16487,6 +16489,7 @@ var ProviderEngine = class {
         this.primaryModel = new import_google_genai.ChatGoogleGenerativeAI({
           apiKey,
           model,
+          temperature: 0,
           maxRetries: 0,
           streaming: true
         }).bindTools(tools);
@@ -16606,15 +16609,15 @@ var ProviderEngine = class {
 var import_messages2 = require("@langchain/core/messages");
 var import_messages3 = require("@langchain/core/messages");
 var MemoryManager = class {
-  C_max = 32e3;
-  // Qwen context limit estimate or could be parameterized
-  B_sys = 2e3;
+  C_max = 64e3;
+  // Expanded context limit for advanced models
+  B_sys = 3e3;
   // System prompt budget
-  B_out = 2e3;
+  B_out = 4e3;
   // Expected output buffer
-  Max_Msg_Tokens = 4e3;
-  // Truncation threshold for single huge payloads
-  SummaryBudget = 1200;
+  Max_Msg_Tokens = 2e4;
+  // Increased truncation threshold for large files/logs
+  SummaryBudget = 4e3;
   lastContextSize = 0;
   totalCompressedTokens = 0;
   lastSummary = "";
@@ -16820,6 +16823,8 @@ A10. RUN TERMINAL PROCESSES SAFELY:
     - For servers, watches, or background processes, ALWAYS set background: true in execute_terminal_command so it runs in the background.
     - After starting a background process, wait 2-3 seconds and read logs or check status to verify it started successfully.
     - Always use Windows-compatible PowerShell commands. No bash 'touch' or bash specific utilities.
+A11. PARALLEL TOOL INVOCATION: To minimize roundtrip latency, proactively invoke multiple tool calls in a single turn if you need to read multiple files, search different directories, or perform independent operations. Do not wait for one tool result before calling other unrelated tools.
+A12. ZERO RESISTANCE CODING: Solve problems directly. Do not ask for user confirmation or clarification for implementation details unless there is severe ambiguity. Proactively run build verification, compiler runs, and test suites to verify correctness autonomously.
 
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
 SECTION B \u2014 PLANNING MODE (CRITICAL \u2014 read carefully)

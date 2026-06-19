@@ -1,13 +1,13 @@
-﻿import { BaseMessage, HumanMessage, SystemMessage, AIMessage, ToolMessage } from '@langchain/core/messages';
+import { BaseMessage, HumanMessage, SystemMessage, AIMessage, ToolMessage } from '@langchain/core/messages';
 import { trimMessages } from '@langchain/core/messages';
 import { ui } from '../cli/ui.js';
 
 export class MemoryManager {
-  private C_max: number = 32000; // Qwen context limit estimate or could be parameterized
-  private B_sys: number = 2000;  // System prompt budget
-  private B_out: number = 2000;  // Expected output buffer
-  private Max_Msg_Tokens: number = 4000; // Truncation threshold for single huge payloads
-  private SummaryBudget: number = 1200;
+  private C_max: number = 64000; // Expanded context limit for advanced models
+  private B_sys: number = 3000;  // System prompt budget
+  private B_out: number = 4000;  // Expected output buffer
+  private Max_Msg_Tokens: number = 20000; // Increased truncation threshold for large files/logs
+  private SummaryBudget: number = 4000;
 
   private lastContextSize: number = 0;
   private totalCompressedTokens: number = 0;

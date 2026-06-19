@@ -42,6 +42,7 @@ export class ProviderEngine {
         this.primaryModel = new ChatOpenAI({
           openAIApiKey: apiKey,
           modelName: model,
+          temperature: 0,
           maxRetries: 0,
           streaming: true
         }).bindTools(tools) as any;
@@ -52,6 +53,7 @@ export class ProviderEngine {
         this.primaryModel = new ChatAnthropic({
           anthropicApiKey: apiKey,
           model,
+          temperature: 0,
           maxRetries: 0,
           streaming: true
         }).bindTools(tools) as any;
@@ -62,6 +64,7 @@ export class ProviderEngine {
         this.primaryModel = new ChatGoogleGenerativeAI({
           apiKey,
           model: model,
+          temperature: 0,
           maxRetries: 0,
           streaming: true
         }).bindTools(tools) as any;
