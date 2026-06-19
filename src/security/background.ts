@@ -7,18 +7,20 @@ export interface BackgroundProcessInfo {
   command: string;
   startTime: number;
   process: ChildProcess;
+  threadId: string;
 }
 
 class BackgroundManager {
   private processes = new Map<number, BackgroundProcessInfo>();
 
-  public addProcess(command: string, child: ChildProcess) {
+  public addProcess(command: string, child: ChildProcess, threadId: string) {
     if (child.pid) {
       this.processes.set(child.pid, {
         pid: child.pid,
         command,
         startTime: Date.now(),
-        process: child
+        process: child,
+        threadId
       });
 
       child.on('exit', () => {
@@ -55,6 +57,17 @@ class BackgroundManager {
         }
       });
     });
+  }
+
+  public async killAllForThread(threadId: string): Promise<void> {
+    const threadProcs = Array.from(this.processes.values()).filter(p => p.threadId === threadId);
+    for (const p of threadProcs) {
+      try {
+        await this.killProcess(p.pid);
+      } catch (e) {
+        // ignore errors on teardown
+      }
+    }
   }
 }
 

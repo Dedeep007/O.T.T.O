@@ -11,11 +11,12 @@ export interface OttoConfig {
     anthropic?:{ apiKey: string; apiKeys?: string[]; activeApiKey?: string; model?: string; models?: string[]; activeModel?: string; effort: string };
     ollama?:   { baseUrl: string; model?: string; models?: string[]; activeModel?: string; num_ctx: number };
     gemini?:   { apiKey: string; apiKeys?: string[]; activeApiKey?: string; model?: string; models?: string[]; activeModel?: string };
+    mistral?:  { apiKey: string; apiKeys?: string[]; activeApiKey?: string; model?: string; models?: string[]; activeModel?: string };
   };
   defaults: {
-    primaryProvider: 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini';
-    secondaryProvider?: 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini';
-    tertiaryProvider?: 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini';
+    primaryProvider: 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral';
+    secondaryProvider?: 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral';
+    tertiaryProvider?: 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral';
     showContextBar: boolean;
     maxThreads?: number;  // cap on stored sessions; undefined = use cpuHealthyDefault
     maxCtx?: number;      // user adjustable context cap
@@ -32,10 +33,20 @@ export interface OttoConfig {
   profile?: {
     username?: string;
   };
+  modelLimits?: {
+    [modelName: string]: {
+      rpm?: number;
+      rpd?: number;
+      tpm?: number;
+      tpd?: number;
+      itpm?: number;
+      otpm?: number;
+    };
+  };
 }
 
 const rcPath = path.join(os.homedir(), '.ottorc');
-type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini';
+type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral';
 
 function normalizeModels(models?: string[]): string[] {
   return Array.from(new Set((models ?? []).map(m => m.trim()).filter(Boolean)));
@@ -60,7 +71,7 @@ function getPrimaryApiKey(entry: any): string | undefined {
 export const Configurator = {
   normalizeConfig: (config: OttoConfig): OttoConfig => {
     const next: OttoConfig = JSON.parse(JSON.stringify(config));
-    (['groq', 'openai', 'anthropic', 'ollama', 'gemini'] as ProviderName[]).forEach((provider) => {
+    (['groq', 'openai', 'anthropic', 'ollama', 'gemini', 'mistral'] as ProviderName[]).forEach((provider) => {
       const entry = getProviderEntry(next, provider);
       if (!entry) return;
       entry.models = normalizeModels(entry.models);
@@ -117,9 +128,10 @@ export const Configurator = {
         { name: 'OpenAI', value: 'openai' },
         { name: 'Anthropic', value: 'anthropic' },
         { name: 'Gemini', value: 'gemini' },
-        { name: 'Ollama (Local)', value: 'ollama' }
+        { name: 'Ollama (Local)', value: 'ollama' },
+        { name: 'Mistral AI', value: 'mistral' }
       ]
-    }) as 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini';
+    }) as ProviderName;
 
     const providers: OttoConfig['providers'] = {};
     
@@ -144,6 +156,10 @@ export const Configurator = {
       const apiKey = await input({ message: 'Enter your Anthropic API Key:' });
       const model = await input({ message: 'Enter Anthropic Model (e.g. claude-3-5-sonnet-20241022):', default: 'claude-3-5-sonnet-20241022' });
       providers.anthropic = { apiKey, model, effort: 'high' };
+    } else if (primaryProvider === 'mistral') {
+      const apiKey = await input({ message: 'Enter your Mistral API Key:' });
+      const model = await input({ message: 'Enter Mistral Model (e.g. mistral-large-latest):', default: 'mistral-large-latest' });
+      providers.mistral = { apiKey, model };
     }
 
     const securityMode = await select({
@@ -215,7 +231,7 @@ export const Configurator = {
     return null;
   },
 
-  updateApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini', apiKey: string) => {
+  updateApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini' | 'mistral', apiKey: string) => {
     const config = Configurator.loadConfig();
     if (config) {
       if (!config.providers[provider]) {
@@ -232,7 +248,7 @@ export const Configurator = {
     return null;
   },
 
-  addApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini', apiKey: string) => {
+  addApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini' | 'mistral', apiKey: string) => {
     const config = Configurator.loadConfig();
     if (config) {
       if (!config.providers[provider]) {
@@ -251,7 +267,7 @@ export const Configurator = {
     return null;
   },
 
-  removeApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini', apiKey: string) => {
+  removeApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini' | 'mistral', apiKey: string) => {
     const config = Configurator.loadConfig();
     if (config && config.providers[provider]) {
       const entry = config.providers[provider] as any;
@@ -267,7 +283,7 @@ export const Configurator = {
     return null;
   },
 
-  setActiveApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini', apiKey: string) => {
+  setActiveApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini' | 'mistral', apiKey: string) => {
     const config = Configurator.loadConfig();
     if (config) {
       if (!config.providers[provider]) {
@@ -284,7 +300,7 @@ export const Configurator = {
     return null;
   },
 
-  rotateApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini'): OttoConfig | null => {
+  rotateApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini' | 'mistral'): OttoConfig | null => {
     const config = Configurator.loadConfig();
     if (config && config.providers[provider]) {
       const entry = config.providers[provider] as any;
@@ -302,6 +318,7 @@ export const Configurator = {
   },
 
   rotateModelVariant: (provider: ProviderName): OttoConfig | null => {
+    if (provider === 'ollama') return null;
     const config = Configurator.loadConfig();
     if (config && config.providers[provider]) {
       const entry = config.providers[provider] as any;
@@ -394,6 +411,9 @@ export const Configurator = {
         entry.activeModel = next;
         entry.model = next;
       }
+      if (config.modelLimits && config.modelLimits[model]) {
+        delete config.modelLimits[model];
+      }
       Configurator.saveConfig(config);
       return config;
     }
@@ -409,6 +429,10 @@ export const Configurator = {
       if (entry.activeModel === oldModel || entry.model === oldModel) {
         entry.activeModel = newModel;
         entry.model = newModel;
+      }
+      if (config.modelLimits && config.modelLimits[oldModel]) {
+        config.modelLimits[newModel] = config.modelLimits[oldModel];
+        delete config.modelLimits[oldModel];
       }
       Configurator.saveConfig(config);
       return config;
@@ -485,6 +509,25 @@ export const Configurator = {
     const config = Configurator.loadConfig();
     if (config) {
       config.defaults.maxCtx = Math.max(1000, Math.round(n));
+      Configurator.saveConfig(config);
+      return config;
+    }
+    return null;
+  },
+
+  updateModelLimit: (model: string, key: 'rpm' | 'rpd' | 'tpm' | 'tpd' | 'itpm' | 'otpm', value: number | undefined) => {
+    const config = Configurator.loadConfig();
+    if (config) {
+      if (!config.modelLimits) config.modelLimits = {};
+      if (!config.modelLimits[model]) config.modelLimits[model] = {};
+      if (value === undefined || isNaN(value)) {
+        delete (config.modelLimits[model] as any)[key];
+      } else {
+        (config.modelLimits[model] as any)[key] = value;
+      }
+      if (Object.keys(config.modelLimits[model]).length === 0) {
+        delete config.modelLimits[model];
+      }
       Configurator.saveConfig(config);
       return config;
     }

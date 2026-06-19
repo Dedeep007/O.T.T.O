@@ -11,6 +11,7 @@ import { osController } from './hardware/os.js';
 import { browserAutomation } from './hardware/browser.js';
 import { serialBridge } from './hardware/serial.js';
 import { dbManager } from './db/checkpoint.js';
+import { threadLocalStorage } from './cli/threadContext.js';
 import { PhoneOS, PhoneView } from './cli/nav.js';
 import { createTaskBoardView } from './cli/views/taskBoard.js';
 import { createFileTreeView } from './cli/views/fileTree.js';
@@ -32,6 +33,8 @@ import { tools } from './llm/tools.js';
 import { confirm, select } from '@inquirer/prompts';
 import chalk from 'chalk';
 import os from 'os';
+
+type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral';
 function parseFallbackToolCalls(content: string): any[] | null {
   const trimmed = content.trim();
   if (!trimmed) return null;
@@ -268,10 +271,10 @@ async function main() {
     let animationTimer: NodeJS.Timeout | null = null;
     const updateAnimationTimer = () => {
       const state = chatSession.agentStates.get(chatSession.threadId) || 'idle';
-      if (state !== 'idle') {
+      if (state !== 'idle' && !isPrompting) {
         if (!animationTimer) {
           animationTimer = setInterval(() => {
-            if (chatSession.isChatActive) {
+            if (chatSession.isChatActive && !isPrompting) {
               render(true);
             }
           }, 350);
@@ -428,11 +431,16 @@ async function main() {
       function onPromptStart() {
         isPrompting = true;
         process.stdin.removeListener('keypress', onKeypress);
+        if (animationTimer) {
+          clearInterval(animationTimer);
+          animationTimer = null;
+        }
       }
 
       function onPromptEnd() {
         isPrompting = false;
         process.stdin.on('keypress', onKeypress);
+        updateAnimationTimer();
         render(true);
       }
 
@@ -454,29 +462,50 @@ async function main() {
       };
 
       const runAgentLoop = async (inputText: string) => {
-        chatSession.activeStreams.add(chatSession.threadId);
-        chatSession.ensureNamedFromPrompt(inputText);
-        messages.push(new HumanMessage(inputText));
-        syncMessages();
-        chatUI.scrollToBottom();
-        chatSession.agentStates.set(chatSession.threadId, 'thinking');
-        if (chatSession.isChatActive) {
-          render(true);
-        } else {
-          sessionEvents.emit('stream_update', chatSession.threadId);
-        }
+        const currentThreadId = chatSession.threadId;
+        await threadLocalStorage.run(currentThreadId, async () => {
+          chatSession.activeStreams.add(currentThreadId);
+          chatSession.ensureNamedFromPrompt(inputText);
+          messages.push(new HumanMessage(inputText));
+          syncMessages();
+          chatUI.scrollToBottom();
+          chatSession.agentStates.set(currentThreadId, 'thinking');
+          if (chatSession.isChatActive && chatSession.threadId === currentThreadId) {
+            render(true);
+          } else {
+            sessionEvents.emit('stream_update', currentThreadId);
+          }
 
-        try {
-          let isDone = false;
-          const preferredName = Configurator.getUsername(config) || 'user';
-          
-          while (!isDone) {
-            const bgProcs = backgroundManager.getProcesses();
-            const bgInfo = bgProcs.length > 0
-              ? `\n\nActive background terminal processes running under O.T.T.O:\n${bgProcs.map(p => `- PID ${p.pid}: "${p.command}" (running for ${Math.round((Date.now() - p.startTime) / 1000)}s)`).join('\n')}`
-              : `\n\nNo active background terminal processes running under O.T.T.O.`;
+          try {
+            let isDone = false;
+            const preferredName = Configurator.getUsername(config) || 'user';
             
-            const nameHint = `\n\nUser's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.${bgInfo}`;
+            while (!isDone) {
+              const threadExists = dbManager.listThreads().some(th => th.id === currentThreadId);
+              if (!threadExists) {
+                isDone = true;
+                break;
+              }
+              const bgProcs = backgroundManager.getProcesses().filter(p => p.threadId === currentThreadId);
+              const bgInfo = bgProcs.length > 0
+                ? `\n\nActive background terminal processes running under O.T.T.O:\n${bgProcs.map(p => `- PID ${p.pid}: "${p.command}" (running for ${Math.round((Date.now() - p.startTime) / 1000)}s)`).join('\n')}`
+                : `\n\nNo active background terminal processes running under O.T.T.O.`;
+              
+              const activeProvider = config.defaults.primaryProvider;
+              const activeModel = Configurator.getActiveModel(config, activeProvider) || 'default';
+              const limits = config.modelLimits?.[activeModel];
+              let limitsInfo = '';
+              if (limits) {
+                const activeLimits = Object.entries(limits)
+                  .filter(([_, v]) => typeof v === 'number' && v > 0)
+                  .map(([k, v]) => `${k.toUpperCase()}: ${v}`)
+                  .join(', ');
+                if (activeLimits) {
+                  limitsInfo = `\n\nCRITICAL CONSTRAINT: The current model (${activeModel}) has rate limits configured: ${activeLimits}. To prevent pauses/delays, please manage your tokens intelligently. For example, minimize reasoning length, omit verbose explanations, or reduce context size where possible.`;
+                }
+              }
+
+              const nameHint = `\n\nUser's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.${bgInfo}${limitsInfo}`;
             
             const msgsToSend = [new SystemMessage(rules + nameHint), ...messages];
             const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
@@ -497,15 +526,20 @@ async function main() {
             const stream = await provider.stream(optimizedMsgs);
             
             for await (const chunk of stream) {
+              const threadExists = dbManager.listThreads().some(th => th.id === currentThreadId);
+              if (!threadExists) {
+                isDone = true;
+                break;
+              }
               if (!finalMessage) finalMessage = chunk;
               else finalMessage = concat(finalMessage, chunk);
               
               if (chunk) {
                 const reasoning = finalMessage.additional_kwargs?.reasoning_content;
                 if (reasoning || finalMessage.content) {
-                  if (chatSession.agentStates.get(chatSession.threadId) === 'thinking') {
-                    chatSession.agentStates.set(chatSession.threadId, 'idle');
-                    sessionEvents.emit('stream_update', chatSession.threadId);
+                  if (chatSession.agentStates.get(currentThreadId) === 'thinking') {
+                    chatSession.agentStates.set(currentThreadId, 'idle');
+                    sessionEvents.emit('stream_update', currentThreadId);
                   }
                 }
                 
@@ -521,14 +555,14 @@ async function main() {
 
                 if (finalMessage && finalMessage.tool_calls && finalMessage.tool_calls.length > 0) {
                   aiMessage.tool_calls = finalMessage.tool_calls;
-                  chatSession.agentStates.set(chatSession.threadId, 'tools');
-                  sessionEvents.emit('stream_update', chatSession.threadId);
+                  chatSession.agentStates.set(currentThreadId, 'tools');
+                  sessionEvents.emit('stream_update', currentThreadId);
                 }
                 syncMessages();
-                if (chatSession.isChatActive) {
+                if (chatSession.isChatActive && chatSession.threadId === currentThreadId) {
                   throttleRender();
                 } else {
-                  sessionEvents.emit('stream_update', chatSession.threadId);
+                  sessionEvents.emit('stream_update', currentThreadId);
                 }
               }
             }
@@ -638,21 +672,22 @@ async function main() {
             }
           }
           
-          chatSession.agentStates.set(chatSession.threadId, 'idle');
-          chatSession.activeStreams.delete(chatSession.threadId);
-          sessionEvents.emit('stream_update', chatSession.threadId);
+          chatSession.agentStates.set(currentThreadId, 'idle');
+          chatSession.activeStreams.delete(currentThreadId);
+          sessionEvents.emit('stream_update', currentThreadId);
         } catch (error: any) {
-          chatSession.agentStates.set(chatSession.threadId, 'idle');
-          chatSession.activeStreams.delete(chatSession.threadId);
+          chatSession.agentStates.set(currentThreadId, 'idle');
+          chatSession.activeStreams.delete(currentThreadId);
           messages.push(new SystemMessage(formatChatError(error)));
           syncMessages();
-          sessionEvents.emit('stream_update', chatSession.threadId);
+          sessionEvents.emit('stream_update', currentThreadId);
         }
 
-        if (chatSession.isChatActive) {
+        if (chatSession.isChatActive && chatSession.threadId === currentThreadId) {
           render(true);
         }
-      };
+      });
+    };
 
       const onKeypress = async (str: string, key: any) => {
         if (key.ctrl && key.name === 'c') {
@@ -662,6 +697,11 @@ async function main() {
         } else if (key.ctrl && key.name === 'e') {
           diffsExpanded = !diffsExpanded;
           render(true);
+          return;
+        } else if (key.ctrl && key.name === 'k') {
+          cleanup();
+          phone.startListening();
+          phone.pushView(createCommandPaletteView(phone, actions));
           return;
         } else if (key.name === 'escape') {
           cleanup();
@@ -809,6 +849,90 @@ async function main() {
           }
         },
         { label: 'Go Back', action: () => phone.goBack() }
+      ]
+    };
+  };
+
+  const createModelVariantLimitsView = (
+    providerName: ProviderName,
+    model: string,
+    providerLabel: string,
+    defaultModel: string,
+    examples: string
+  ): PhoneView => {
+    const limits = config.modelLimits?.[model] || {};
+    return {
+      id: `model_limit_settings_${model}`,
+      title: `${model} Settings`,
+      subtitle: `Configure limits for ${model}`,
+      renderBody: () => {
+        console.log(chalk.white.bold('  Current Limits (empty means unlimited)'));
+        console.log(`    RPM (Requests / min):  \x1b[36m${limits.rpm ?? 'unlimited'}\x1b[0m`);
+        console.log(`    RPD (Requests / day):  \x1b[36m${limits.rpd ?? 'unlimited'}\x1b[0m`);
+        console.log(`    TPM (Tokens / min):    \x1b[36m${limits.tpm ?? 'unlimited'}\x1b[0m`);
+        console.log(`    TPD (Tokens / day):    \x1b[36m${limits.tpd ?? 'unlimited'}\x1b[0m`);
+        console.log(`    ITPM (Input tk / min): \x1b[36m${limits.itpm ?? 'unlimited'}\x1b[0m`);
+        console.log(`    OTPM (Output tk / min):\x1b[36m${limits.otpm ?? 'unlimited'}\x1b[0m`);
+        console.log('');
+      },
+      options: [
+        {
+          label: 'Rename Model Variant',
+          description: 'Rename this model name',
+          action: async () => {
+            phone.active = false;
+            ui.clearScreen();
+            const nextName = await promptWithEscape(`Rename ${model} to:`, model);
+            if (nextName && nextName.trim() && nextName.trim() !== model) {
+              config = Configurator.renameModelVariant(providerName, model, nextName.trim()) || config;
+              provider.setConfig(config);
+              phone.updateConfig(config);
+              ui.success(`Renamed ${model} to ${nextName.trim()}`);
+              await new Promise(r => setTimeout(r, 800));
+            }
+            phone.active = true;
+            phone.goBack();
+            phone.goBack();
+            phone.pushView(createModelVariantLimitsView(providerName, nextName && nextName.trim() ? nextName.trim() : model, providerLabel, defaultModel, examples));
+          }
+        },
+        ...([
+          { name: 'rpm', label: 'RPM (Requests per minute)' },
+          { name: 'rpd', label: 'RPD (Requests per day)' },
+          { name: 'tpm', label: 'TPM (Tokens per minute)' },
+          { name: 'tpd', label: 'TPD (Tokens per day)' },
+          { name: 'itpm', label: 'ITPM (Input tokens per minute)' },
+          { name: 'otpm', label: 'OTPM (Output tokens per minute)' }
+        ] as const).map(limitOpt => ({
+          label: `Edit ${limitOpt.label}  [${limits[limitOpt.name] ?? 'none'}]`,
+          action: async () => {
+            phone.active = false;
+            ui.clearScreen();
+            const entered = await promptWithEscape(
+              `Enter ${limitOpt.label} for ${model} (leave empty to disable):`,
+              limits[limitOpt.name] !== undefined ? String(limits[limitOpt.name]) : ''
+            );
+            if (entered !== null) {
+              const val = entered.trim() ? parseInt(entered.trim(), 10) : undefined;
+              config = Configurator.updateModelLimit(model, limitOpt.name, val) || config;
+              provider.setConfig(config);
+              phone.updateConfig(config);
+              ui.success(`Updated ${limitOpt.name} limit.`);
+              await new Promise(r => setTimeout(r, 800));
+            }
+            phone.active = true;
+            phone.goBack();
+            phone.pushView(createModelVariantLimitsView(providerName, model, providerLabel, defaultModel, examples));
+          }
+        })),
+        {
+          label: 'Go Back',
+          action: () => {
+            phone.goBack();
+            phone.goBack();
+            phone.pushView(createProviderModelView(providerName, providerLabel, defaultModel, examples));
+          }
+        }
       ]
     };
   };
@@ -1007,7 +1131,7 @@ async function main() {
 
 
   const createProviderModelView = (
-    providerName: 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini',
+    providerName: 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral',
     providerLabel: string,
     defaultModel: string,
     examples: string
@@ -1103,30 +1227,15 @@ async function main() {
           })
         },
         {
-          label: 'Edit Model Variant',
-          description: 'Rename a saved model without losing the active selection',
+          label: 'Edit Model Variant Settings',
+          description: 'Configure name and rate limits (RPM, RPD, TPM, TPD, etc.)',
           action: () => phone.pushView({
-            id: `${providerName}_model_edit_variant`,
-            title: `Edit ${providerLabel} Model`,
+            id: `${providerName}_model_edit_variants_list`,
+            title: `Edit ${providerLabel} Settings`,
             options: [
               ...currentModels.map(model => ({
                 label: model,
-                action: async () => {
-                  phone.active = false;
-                  ui.clearScreen();
-                  const nextName = await promptWithEscape(`Rename ${model} to:`, model);
-                  if (nextName && nextName.trim() && nextName.trim() !== model) {
-                    config = Configurator.renameModelVariant(providerName, model, nextName.trim()) || config;
-                    provider.setConfig(config);
-                    phone.updateConfig(config);
-                    ui.success(`Renamed ${model} to ${nextName.trim()}`);
-                    await new Promise(r => setTimeout(r, 800));
-                  }
-                  phone.active = true;
-                  phone.goBack();
-                  phone.goBack();
-                  phone.pushView(createProviderModelView(providerName, providerLabel, defaultModel, examples));
-                }
+                action: () => phone.pushView(createModelVariantLimitsView(providerName, model, providerLabel, defaultModel, examples))
               })),
               { label: 'Go Back', action: () => phone.goBack() }
             ]
@@ -1167,6 +1276,11 @@ async function main() {
         description: 'e.g. llama3, mistral, phi3',
         action: async () => phone.pushView(createProviderModelView('ollama', 'Ollama', 'llama3', 'e.g. llama3, mistral, phi3'))
       },
+      {
+        label: `Mistral  ${Configurator.getActiveModel(config, 'mistral') ? '-> ' + Configurator.getActiveModel(config, 'mistral') : '(default: mistral-large-latest)'}`,
+        description: 'e.g. mistral-large-latest, open-mixtral-8x22b, codestral-latest',
+        action: async () => phone.pushView(createProviderModelView('mistral', 'Mistral', 'mistral-large-latest', 'e.g. mistral-large-latest, open-mixtral-8x22b, codestral-latest'))
+      },
     ]
   });
 
@@ -1177,7 +1291,7 @@ async function main() {
   };
 
   const createProviderApiKeyView = (
-    providerName: 'groq' | 'openai' | 'anthropic' | 'gemini',
+    providerName: 'groq' | 'openai' | 'anthropic' | 'gemini' | 'mistral',
     providerLabel: string
   ): PhoneView => {
     const apiKeys = Configurator.getApiKeys(config, providerName);
@@ -1299,6 +1413,11 @@ async function main() {
         label: `Gemini  ${Configurator.getApiKeys(config, 'gemini').length} key(s)`,
         description: Configurator.getActiveApiKey(config, 'gemini') ? `active: ${maskApiKey(Configurator.getActiveApiKey(config, 'gemini')!)}` : 'no key',
         action: async () => phone.pushView(createProviderApiKeyView('gemini', 'Gemini'))
+      },
+      {
+        label: `Mistral  ${Configurator.getApiKeys(config, 'mistral').length} key(s)`,
+        description: Configurator.getActiveApiKey(config, 'mistral') ? `active: ${maskApiKey(Configurator.getActiveApiKey(config, 'mistral')!)}` : 'no key',
+        action: async () => phone.pushView(createProviderApiKeyView('mistral', 'Mistral'))
       },
       { label: 'Go Back', action: () => phone.goBack() }
     ]
@@ -1514,6 +1633,31 @@ async function main() {
           provider.setConfig(config);
           phone.updateConfig(config);
           ui.success('Switched to Ollama.');
+          await new Promise(r => setTimeout(r, 1000));
+          phone.goBack(); phone.pushView(createProviderView());
+        }
+      },
+      {
+        label: `Mistral AI  ${config.defaults.primaryProvider === 'mistral' ? '[active]' : ''}  ${Configurator.getActiveApiKey(config, 'mistral') ? '' : '-- no key'}`,
+        description: Configurator.getActiveModel(config, 'mistral') ? `model: ${Configurator.getActiveModel(config, 'mistral')}` : 'model: mistral-large-latest (default)',
+        action: async () => {
+          if (!Configurator.getActiveApiKey(config, 'mistral')) {
+            phone.active = false;
+            ui.clearScreen();
+            const key = await promptWithEscape('Enter API Key for Mistral:');
+            if (key === null) {
+              phone.active = true;
+              phone.goBack();
+              phone.pushView(createProviderView());
+              return;
+            }
+            config = Configurator.updateApiKey('mistral', key) || config;
+            phone.active = true;
+          }
+          config = Configurator.updatePrimaryProvider('mistral') || config;
+          provider.setConfig(config);
+          phone.updateConfig(config);
+          ui.success('Switched to Mistral.');
           await new Promise(r => setTimeout(r, 1000));
           phone.goBack(); phone.pushView(createProviderView());
         }
@@ -1838,14 +1982,7 @@ async function main() {
       {
         label: 'Command Palette',
         description: 'Fuzzy search actions and files (Ctrl+K style)',
-        action: () => phone.pushView(createCommandPaletteView(
-           phone,
-           () => phone.pushView(createSettingsView()),
-           () => phone.pushView(createTaskBoardView(phone)),
-           () => phone.pushView(createGitPanelView(phone)),
-           () => phone.pushView(createFileTreeView(phone)),
-           () => phone.pushView(createAnalyticsView())
-        ))
+        action: () => phone.pushView(createCommandPaletteView(phone, actions))
       },
       {
         label: 'Task Board (Kanban)',
@@ -1880,6 +2017,65 @@ async function main() {
         }
       }
     ]
+  });
+
+  const actions: any[] = [
+    { label: 'Actions: Settings', action: () => phone.pushView(createSettingsView()) },
+    { label: 'Actions: Task Master (Kanban)', action: () => phone.pushView(createTaskBoardView(phone)) },
+    { label: 'Actions: Git Panel', action: () => phone.pushView(createGitPanelView(phone)) },
+    { label: 'Navigate: File Tree', action: () => phone.pushView(createFileTreeView(phone)) },
+    { label: 'Navigate: Analytics', action: () => phone.pushView(createAnalyticsView()) },
+    { label: 'Settings: Profile (Username)', action: () => phone.pushView(createProfileView()) },
+    { label: 'Settings: Max Threads Limit', action: () => phone.pushView(createMaxThreadsView()) },
+    { label: 'Settings: Max Context Size', action: () => phone.pushView(createMaxCtxView()) },
+    { label: 'Settings: API Keys Configuration', action: () => phone.pushView(createApiEditView()) },
+    { label: 'Settings: Edit Models', action: () => phone.pushView(createModelEditView()) },
+    { label: 'Settings: Allowed Tools & Commands', action: () => phone.pushView(createSecurityEditView()) },
+    {
+      label: 'Settings: Toggle Context Bar',
+      action: async () => {
+        const current = config.defaults.showContextBar !== false;
+        config = Configurator.updateContextBar(!current) || config;
+        phone.updateConfig(config);
+        ui.success(`Context Bar turned ${!current ? 'ON' : 'OFF'}`);
+        await new Promise(r => setTimeout(r, 800));
+        phone.render();
+      }
+    },
+    {
+      label: 'Settings: Edit Ollama Base URL',
+      action: async () => {
+        phone.active = false;
+        ui.clearScreen();
+        const currentUrl = config.providers.ollama?.baseUrl || 'http://localhost:11434';
+        const entered = await promptWithEscape(`Enter new Ollama Base URL (current: ${currentUrl}):`);
+        if (entered !== null && entered.trim()) {
+          config = Configurator.updateOllamaUrl(entered.trim()) || config;
+          phone.updateConfig(config);
+          ui.success(`Ollama URL updated to ${entered.trim()}`);
+          await new Promise(r => setTimeout(r, 900));
+        }
+        phone.active = true;
+        phone.render();
+      }
+    },
+    { label: 'API Keys: Groq Keys', action: () => phone.pushView(createProviderApiKeyView('groq', 'Groq')) },
+    { label: 'API Keys: OpenAI Keys', action: () => phone.pushView(createProviderApiKeyView('openai', 'OpenAI')) },
+    { label: 'API Keys: Anthropic Keys', action: () => phone.pushView(createProviderApiKeyView('anthropic', 'Anthropic')) },
+    { label: 'API Keys: Gemini Keys', action: () => phone.pushView(createProviderApiKeyView('gemini', 'Gemini')) },
+    { label: 'API Keys: Mistral Keys', action: () => phone.pushView(createProviderApiKeyView('mistral', 'Mistral')) },
+    { label: 'Models: Groq Model Variants', action: () => phone.pushView(createProviderModelView('groq', 'Groq', 'qwen-qwq-32b', 'e.g. qwen-qwq-32b')) },
+    { label: 'Models: OpenAI Model Variants', action: () => phone.pushView(createProviderModelView('openai', 'OpenAI', 'gpt-4o', 'e.g. gpt-4o')) },
+    { label: 'Models: Anthropic Model Variants', action: () => phone.pushView(createProviderModelView('anthropic', 'Anthropic', 'claude-3-5-sonnet-20241022', 'e.g. claude-3-5-sonnet-20241022')) },
+    { label: 'Models: Gemini Model Variants', action: () => phone.pushView(createProviderModelView('gemini', 'Gemini', 'gemini-1.5-pro', 'e.g. gemini-1.5-pro')) },
+    { label: 'Models: Ollama Model Variants', action: () => phone.pushView(createProviderModelView('ollama', 'Ollama', 'llama3', 'e.g. llama3')) },
+    { label: 'Models: Mistral Model Variants', action: () => phone.pushView(createProviderModelView('mistral', 'Mistral', 'mistral-large-latest', 'e.g. mistral-large-latest')) }
+  ];
+
+  phone.registerCtrlKHandler(() => {
+    const currentView = phone.history[phone.history.length - 1];
+    if (currentView?.id === 'command_palette') return;
+    phone.pushView(createCommandPaletteView(phone, actions));
   });
 
   // Launch OS

@@ -5,20 +5,8 @@ import { promptWithEscape } from '../prompt.js';
 
 export function createCommandPaletteView(
   phone: PhoneOS,
-  openSettings: () => void,
-  openTasks: () => void,
-  openGit: () => void,
-  openFiles: () => void,
-  openAnalytics: () => void
+  actions: { label: string; action: () => void }[]
 ): PhoneView {
-
-  const allActions = [
-    { label: 'Actions: Settings', action: openSettings },
-    { label: 'Actions: Task Master (Kanban)', action: openTasks },
-    { label: 'Actions: Git Panel', action: openGit },
-    { label: 'Navigate: File Tree', action: openFiles },
-    { label: 'Navigate: Analytics', action: openAnalytics }
-  ];
 
   return {
     id: 'command_palette',
@@ -36,7 +24,7 @@ export function createCommandPaletteView(
             phone.render();
             return;
           }
-          const filtered = allActions.filter(a => a.label.toLowerCase().includes(q.toLowerCase()));
+          const filtered = actions.filter(a => a.label.toLowerCase().includes(q.toLowerCase()));
           phone.active = true;
           phone.pushView({
             id: 'cmd_results',
@@ -48,7 +36,7 @@ export function createCommandPaletteView(
           });
         }
       },
-      ...allActions,
+      ...actions,
       { label: 'Go Back', action: () => phone.goBack() }
     ]
   };

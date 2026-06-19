@@ -42,11 +42,13 @@ export function createTaskBoardView(phone: PhoneOS): PhoneView {
       const formatCol = (title: string, color: any, items: Task[]) => {
         let str = color.bold(` ╭─ ${title.padEnd(W - 4, ' ')} ╮\n`);
         if (items.length === 0) {
-          str += color(` │ ${chalk.dim('Empty').padEnd(W - 4, ' ')} │\n`);
+          const paddedEmpty = 'Empty'.padEnd(W - 4, ' ');
+          str += color(` │ `) + chalk.dim(paddedEmpty) + color(` │\n`);
         }
         items.forEach(t => {
           let truncTitle = t.title.length > W - 6 ? t.title.substring(0, W - 9) + '...' : t.title;
-          str += color(` │ ${chalk.white('● ' + truncTitle).padEnd(W - 4, ' ')} │\n`);
+          const paddedText = ('● ' + truncTitle).padEnd(W - 4, ' ');
+          str += color(` │ `) + chalk.white(paddedText) + color(` │\n`);
         });
         str += color(` ╰${'─'.repeat(W - 2)}╯`);
         return str.split('\n');
@@ -58,9 +60,9 @@ export function createTaskBoardView(phone: PhoneOS): PhoneView {
 
       const lines = Math.max(c1.length, c2.length, c3.length);
       for (let i = 0; i < lines; i++) {
-        const l1 = c1[i] || ' '.repeat(W);
-        const l2 = c2[i] || ' '.repeat(W);
-        const l3 = c3[i] || ' '.repeat(W);
+        const l1 = c1[i] || ' '.repeat(W + 1);
+        const l2 = c2[i] || ' '.repeat(W + 1);
+        const l3 = c3[i] || ' '.repeat(W + 1);
         console.log(`  ${l1}  ${l2}  ${l3}`);
       }
     },

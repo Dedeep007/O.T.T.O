@@ -8,9 +8,18 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 import { chatSession, sessionEvents } from '../cli/session.js';
+import { getExecutingThreadId } from '../cli/threadContext.js';
 
 export class Executor {
+  private lastCommands = new Map<string, { cmdStr: string; attempts: number }>();
+
   async executeCommand(commandStr: string, background: boolean = false): Promise<string> {
+    const executingThreadId = getExecutingThreadId() || chatSession.threadId || 'default';
+    const cmdRecord = this.lastCommands.get(executingThreadId);
+    if (cmdRecord && cmdRecord.cmdStr === commandStr && cmdRecord.attempts >= 3) {
+      throw new Error(`Command "${commandStr}" has failed consecutively 3 times. O.T.T.O has blocked further retries to prevent an infinite loop. Please analyze the previous errors/logs and try a different command, arguments, or correct the code issues manually first.`);
+    }
+
     const config = await Configurator.init();
     
     // Tokenized Whitelist Engine
@@ -18,20 +27,16 @@ export class Executor {
     const cmd = String(parsed[0]);
     const args = parsed.slice(1).map(String);
 
-    // Remove strict metacharacter blocking since we use exec now and 
-    // want to allow standard shell usage. The prompt/whitelist still protects cmd.
-
     const isWhitelisted = config.security.allowedCommands.includes(cmd);
 
     if (config.security.mode === 'ask' || (config.security.mode === 'approve' && !isWhitelisted)) {
-      const choice = await this.promptAction(cmd, commandStr);
+      const choice = await this.promptAction(cmd, commandStr, executingThreadId);
       if (choice === 'deny') throw new Error('Execution denied by user.');
       
       if (choice === 'always') {
         if (!isWhitelisted) {
           config.security.allowedCommands.push(cmd);
         }
-        // If they whitelist it, they implicitly want to rely on the whitelist
         if (config.security.mode === 'ask') {
           config.security.mode = 'approve';
           ui.info("Security mode updated to 'Approve' (whitelisted commands run silently).");
@@ -39,87 +44,97 @@ export class Executor {
         Configurator.saveConfig(config);
       }
     } else if (config.security.mode === 'full') {
-      // Full access bypassing prompts. 
-      // Operational frames under full access are forced into Docker containers typically.
-      // For this implementation, we simulate it or execute natively.
       ui.warning(`[Full Access Mode] Executing ${cmd} autonomously.`);
     }
 
-    if (background) {
-      const logDir = path.join(os.tmpdir(), 'otto-cli-logs');
-      if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
-      const logPath = path.join(logDir, `bg-${Date.now()}.log`);
-      const out = fs.openSync(logPath, 'a');
-      const err = fs.openSync(logPath, 'a');
+    const runCore = async (): Promise<string> => {
+      if (background) {
+        const logDir = path.join(os.tmpdir(), 'otto-cli-logs');
+        if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+        const logPath = path.join(logDir, `bg-${Date.now()}.log`);
+        const out = fs.openSync(logPath, 'a');
+        const err = fs.openSync(logPath, 'a');
 
-      const child = spawn(commandStr, {
-        cwd: process.cwd(),
-        shell: true,
-        stdio: ['ignore', out, err],
-        detached: true
-      });
-      
-      backgroundManager.addProcess(commandStr, child);
+        const child = spawn(commandStr, {
+          cwd: process.cwd(),
+          shell: true,
+          stdio: ['ignore', out, err],
+          detached: true
+        });
+        
+        backgroundManager.addProcess(commandStr, child, executingThreadId);
 
-      let spawnError: Error | null = null;
-      const onError = (err: Error) => {
-        spawnError = err;
-      };
-      child.on('error', onError);
+        let spawnError: Error | null = null;
+        const onError = (err: Error) => {
+          spawnError = err;
+        };
+        child.on('error', onError);
 
-      // Wait 1.5 seconds to see if the process is still running or if it crashed on startup
-      await new Promise(resolve => setTimeout(resolve, 1500));
+        // Wait 1.5 seconds to see if the process is still running or if it crashed on startup
+        await new Promise(resolve => setTimeout(resolve, 1500));
 
-      child.off('error', onError);
+        child.off('error', onError);
 
-      if (spawnError) {
-        throw spawnError;
-      }
+        if (spawnError) {
+          throw spawnError;
+        }
 
-      if (child.exitCode !== null && child.exitCode !== undefined) {
-        let logs = '';
+        if (child.exitCode !== null && child.exitCode !== undefined) {
+          let logs = '';
+          if (fs.existsSync(logPath)) {
+            logs = fs.readFileSync(logPath, 'utf8').trim();
+          }
+          throw new Error(`Background process terminated immediately with exit code ${child.exitCode}.\nLogs:\n${logs.slice(-2000)}`);
+        }
+
+        child.unref(); // allow the main process to exit even if this is running
+        
+        let initialLogs = '';
         if (fs.existsSync(logPath)) {
-          logs = fs.readFileSync(logPath, 'utf8').trim();
+          initialLogs = fs.readFileSync(logPath, 'utf8').trim();
         }
-        throw new Error(`Background process terminated immediately with exit code ${child.exitCode}.\nLogs:\n${logs.slice(-2000)}`);
+        
+        const logMsg = initialLogs 
+          ? `\nInitial Output Logs:\n\`\`\`text\n${initialLogs.slice(0, 1000)}\n\`\`\``
+          : '\nNo initial output logs yet.';
+
+        return `Background process started successfully with PID: ${child.pid}.\nOutput is being logged to: ${logPath}${logMsg}\nUse the read_file tool to check this log file if you need more details.`;
       }
 
-      child.unref(); // allow the main process to exit even if this is running
-      
-      let initialLogs = '';
-      if (fs.existsSync(logPath)) {
-        initialLogs = fs.readFileSync(logPath, 'utf8').trim();
-      }
-      
-      const logMsg = initialLogs 
-        ? `\nInitial Output Logs:\n\`\`\`text\n${initialLogs.slice(0, 1000)}\n\`\`\``
-        : '\nNo initial output logs yet.';
-
-      return `Background process started successfully with PID: ${child.pid}.\nOutput is being logged to: ${logPath}${logMsg}\nUse the read_file tool to check this log file if you need more details.`;
-    }
-
-    return new Promise((resolve, reject) => {
-      exec(commandStr, { cwd: process.cwd() }, (error, stdout, stderr) => {
-        if (error) {
-          const out = stdout.toString().trim();
-          const err = stderr.toString().trim();
-          let msg = `Command failed with exit code ${error.code || 'unknown'}:`;
-          if (err) msg += `\nSTDERR:\n${err}`;
-          if (out) msg += `\nSTDOUT:\n${out}`;
-          if (!err && !out) msg += ` ${error.message}`;
-          reject(new Error(msg));
-        } else {
-          resolve(stdout.toString() || stderr.toString() || 'Command executed successfully.');
-        }
+      return new Promise<string>((resolve, reject) => {
+        exec(commandStr, { cwd: process.cwd() }, (error, stdout, stderr) => {
+          if (error) {
+            const out = stdout.toString().trim();
+            const err = stderr.toString().trim();
+            let msg = `Command failed with exit code ${error.code || 'unknown'}:`;
+            if (err) msg += `\nSTDERR:\n${err}`;
+            if (out) msg += `\nSTDOUT:\n${out}`;
+            if (!err && !out) msg += ` ${error.message}`;
+            reject(new Error(msg));
+          } else {
+            resolve(stdout.toString() || stderr.toString() || 'Command executed successfully.');
+          }
+        });
       });
-    });
+    };
+
+    try {
+      const result = await runCore();
+      this.lastCommands.set(executingThreadId, { cmdStr: commandStr, attempts: 0 });
+      return result;
+    } catch (err: any) {
+      const currentAttempts = (cmdRecord && cmdRecord.cmdStr === commandStr) ? cmdRecord.attempts + 1 : 1;
+      this.lastCommands.set(executingThreadId, { cmdStr: commandStr, attempts: currentAttempts });
+      throw err;
+    }
   }
 
-  private async promptAction(cmd: string, fullCommand: string): Promise<'now' | 'always' | 'deny'> {
-    if (!chatSession.isChatActive) {
+  private async promptAction(cmd: string, fullCommand: string, executingThreadId: string): Promise<'now' | 'always' | 'deny'> {
+    // Only prompt inline if the chat is active and the executing thread is the one currently viewed
+    if (!chatSession.isChatActive || executingThreadId !== chatSession.threadId) {
       return new Promise((resolve) => {
         chatSession.pendingApprovals.push({
-          threadId: chatSession.threadId,
+          threadId: executingThreadId,
           cmd,
           commandStr: fullCommand,
           resolve

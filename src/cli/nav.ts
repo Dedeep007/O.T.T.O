@@ -31,7 +31,7 @@ function vlen(s: string)  { return strip(s).length; }
 
 
 export class PhoneOS {
-  private history: PhoneView[]    = [];
+  public history: PhoneView[]    = [];
   private forward:  PhoneView[]   = [];
   private cursor:   number        = 0;
   public active:    boolean       = false;
@@ -39,6 +39,7 @@ export class PhoneOS {
   private firstRender: boolean    = true;
   private lastRenderLines: number = 0;
   private listening: boolean      = false;
+  private ctrlKHandler?: () => void;
 
   constructor(c: OttoConfig) {
     this.config = c;
@@ -51,9 +52,19 @@ export class PhoneOS {
   }
   updateConfig(c: OttoConfig) { this.config = c; }
 
+  registerCtrlKHandler(handler: () => void) {
+    this.ctrlKHandler = handler;
+  }
+
   private onKey = async (_: string, key: any) => {
     if (!this.active) return;
     if (key.ctrl && key.name === 'c') { this.cleanup(); process.exit(0); }
+    if (key.ctrl && key.name === 'k') {
+      if (this.ctrlKHandler) {
+        this.ctrlKHandler();
+      }
+      return;
+    }
     const view = this.history[this.history.length - 1];
 
     if      (key.name === 'up')    { this.cursor = this.cursor > 0 ? this.cursor - 1 : view.options.length - 1; this.render(); }

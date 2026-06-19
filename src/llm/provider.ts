@@ -3,14 +3,16 @@ import { ChatOpenAI } from '@langchain/openai';
 import { ChatAnthropic } from '@langchain/anthropic';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { ChatOllama } from '@langchain/ollama';
+import { ChatMistralAI } from '@langchain/mistralai';
 import { OttoConfig } from '../cli/configurator.js';
 import { Configurator } from '../cli/configurator.js';
 import { quotaManager } from './quota.js';
 import { ui } from '../cli/ui.js';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { tools } from './tools.js';
+import { concat } from '@langchain/core/utils/stream';
 
-type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini';
+type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral';
 
 function parseFallbackToolCalls(content: string): any[] | null {
   const trimmed = content.trim();
@@ -209,6 +211,16 @@ export class ProviderEngine {
           streaming: true
         }).bindTools(tools) as any;
         ui.info(`Switched to Gemini - ${model}`);
+      } else if (providerName === 'mistral' && Configurator.getActiveApiKey(this.config, 'mistral')) {
+        const model = Configurator.getActiveModel(this.config, 'mistral') ?? 'mistral-large-latest';
+        const apiKey = Configurator.getActiveApiKey(this.config, 'mistral')!;
+        this.primaryModel = new ChatMistralAI({
+          apiKey,
+          model,
+          temperature: 0,
+          maxRetries: 0
+        }).bindTools(tools) as any;
+        ui.info(`Switched to Mistral AI - ${model}`);
       } else if (providerName === 'ollama') {
         const entry = this.config.providers.ollama;
         const model = entry?.activeModel ?? entry?.model ?? 'llama3';
@@ -270,10 +282,17 @@ export class ProviderEngine {
   }
 
   private isRateLimit(error: any): boolean {
+    const msg = (error?.message || '').toLowerCase();
     return error?.status === 429 ||
       error?.response?.status === 429 ||
       error?.error?.code === 'rate_limit_exceeded' ||
-      error?.code === 'rate_limit_exceeded';
+      error?.code === 'rate_limit_exceeded' ||
+      msg.includes('rate limit') ||
+      msg.includes('rate_limit') ||
+      msg.includes('too many requests') ||
+      msg.includes('tpm') ||
+      msg.includes('rpm') ||
+      msg.includes('quota');
   }
 
   private tryFallback(attempt: number): boolean {
@@ -311,9 +330,28 @@ export class ProviderEngine {
       throw new Error('No valid LLM provider initialized.');
     }
 
+    const activeProvider = this.config.defaults.primaryProvider as ProviderName;
+    const activeModel = Configurator.getActiveModel(this.config, activeProvider) || 'default';
+    const limits = this.config.modelLimits?.[activeModel];
+    if (limits) {
+      await quotaManager.enforceLimits(activeModel, limits);
+    }
+
     try {
       const response = await this.primaryModel.invoke(messages);
       quotaManager.resetBackoff();
+
+      // Record token usage
+      const usage = (response?.usage_metadata || response?.response_metadata?.tokenUsage || {}) as any;
+      let inputTokens = usage.input_tokens || usage.prompt_tokens;
+      let outputTokens = usage.output_tokens || usage.completion_tokens;
+      if (typeof inputTokens !== 'number' || typeof outputTokens !== 'number') {
+        const text = response?.content?.toString() || '';
+        outputTokens = Math.ceil(text.length / 4);
+        inputTokens = Math.ceil(messages.reduce((acc, m) => acc + (m.content?.toString() || '').length, 0) / 4);
+      }
+      quotaManager.recordUsage(activeModel, inputTokens, outputTokens);
+
       return response;
     } catch (error: any) {
       if (this.isRateLimit(error)) {
@@ -341,12 +379,33 @@ export class ProviderEngine {
       throw new Error('No valid LLM provider initialized.');
     }
 
+    const activeProvider = this.config.defaults.primaryProvider as ProviderName;
+    const activeModel = Configurator.getActiveModel(this.config, activeProvider) || 'default';
+    const limits = this.config.modelLimits?.[activeModel];
+    if (limits) {
+      await quotaManager.enforceLimits(activeModel, limits);
+    }
+
+    let finalMessage: any = null;
     try {
       const stream = await this.primaryModel.stream(messages);
       for await (const chunk of stream) {
+        if (!finalMessage) finalMessage = chunk;
+        else finalMessage = concat(finalMessage, chunk);
         yield chunk;
       }
       quotaManager.resetBackoff();
+
+      // Record token usage
+      const usage = (finalMessage?.usage_metadata || finalMessage?.response_metadata?.tokenUsage || {}) as any;
+      let inputTokens = usage.input_tokens || usage.prompt_tokens;
+      let outputTokens = usage.output_tokens || usage.completion_tokens;
+      if (typeof inputTokens !== 'number' || typeof outputTokens !== 'number') {
+        const text = finalMessage?.content?.toString() || '';
+        outputTokens = Math.ceil(text.length / 4);
+        inputTokens = Math.ceil(messages.reduce((acc, m) => acc + (m.content?.toString() || '').length, 0) / 4);
+      }
+      quotaManager.recordUsage(activeModel, inputTokens, outputTokens);
     } catch (error: any) {
       if (this.isRateLimit(error)) {
         const retryAfter = error?.response?.headers?.['retry-after'];
@@ -369,7 +428,6 @@ export class ProviderEngine {
       throw error;
     }
   }
-
 
   public getModel(): BaseChatModel {
     if (!this.primaryModel) throw new Error('Model not initialized');
