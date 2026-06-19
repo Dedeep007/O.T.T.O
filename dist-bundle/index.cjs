@@ -19251,7 +19251,7 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
       const displayName = Configurator.getUsername(config2) || "user";
       const isDefaultName = !config2.profile?.username;
       if (isCompact) {
-        console.log(borderDim(" \u256D\u2500 O.T.T.O v1.0.0 " + "\u2500".repeat(Math.max(0, W - 17)) + "\u256E"));
+        console.log(borderDim(" \u256D\u2500 O.T.T.O v1.1.11 " + "\u2500".repeat(Math.max(0, W - 17)) + "\u256E"));
         console.log(borderDim(" \u2502 ") + import_chalk10.default.whiteBright(`Welcome back, ${displayName}!`).padEnd(Math.max(0, W - 1)) + borderDim("\u2502"));
         if (isDefaultName) {
           console.log(borderDim(" \u2502 ") + import_chalk10.default.hex("#F59E0B")("\u26A0  Go to Settings \u203A Profile to set your username").padEnd(Math.max(0, W - 1)) + borderDim("\u2502"));

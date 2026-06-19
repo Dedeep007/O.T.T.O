@@ -7,6 +7,7 @@ import { backgroundManager } from './background.js';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
+import { chatSession, sessionEvents } from '../cli/session.js';
 
 export class Executor {
   async executeCommand(commandStr: string, background: boolean = false): Promise<string> {
@@ -81,8 +82,21 @@ export class Executor {
   }
 
   private async promptAction(cmd: string, fullCommand: string): Promise<'now' | 'always' | 'deny'> {
+    if (!chatSession.isChatActive) {
+      return new Promise((resolve) => {
+        chatSession.pendingApprovals.push({
+          threadId: chatSession.threadId,
+          cmd,
+          commandStr: fullCommand,
+          resolve
+        });
+        sessionEvents.emit('pending_approval');
+      });
+    }
+
+    sessionEvents.emit('prompt_start');
     ui.warning(`The agent wants to execute: ${fullCommand}`);
-    return await select({
+    const choice = await select({
       message: 'Choose an action:',
       choices: [
         { name: 'Approve for now', value: 'now' },
@@ -90,6 +104,8 @@ export class Executor {
         { name: `Don't approve`, value: 'deny' }
       ]
     }) as 'now' | 'always' | 'deny';
+    sessionEvents.emit('prompt_end');
+    return choice;
   }
 }
 

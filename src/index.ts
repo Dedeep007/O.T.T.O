@@ -51,7 +51,9 @@ async function main() {
     let currentInput = '';
     let thinkingTimer: NodeJS.Timeout | null = null;
     let streamRenderTimer: NodeJS.Timeout | null = null;
-    let lastStreamRender = 0;
+    let isStreaming = false;
+    let isDetached = false;
+    let isPrompting = false;
     let lastStreamContentLength = 0;
     
     // pendingPlan: true when the AI last response contained a plan block and
@@ -102,25 +104,23 @@ async function main() {
       }
     };
 
-    const flushStreamRender = (isPending = false) => {
+    function flushStreamRender(force = false) {
+      if (isPrompting && !force) return;
       if (streamRenderTimer) {
         clearTimeout(streamRenderTimer);
         streamRenderTimer = null;
       }
-      lastStreamRender = Date.now();
-      render(false, isPending);
-    };
+      render(force);
+    }
 
-    const scheduleStreamRender = (delay = 160) => {
-      const elapsed = Date.now() - lastStreamRender;
-      if (elapsed >= delay) {
-        flushStreamRender();
-        return;
-      }
-      if (!streamRenderTimer) {
-        streamRenderTimer = setTimeout(flushStreamRender, delay - elapsed);
-      }
-    };
+    function scheduleStreamRender(delayMs = 160) {
+      if (isPrompting) return;
+      if (streamRenderTimer) clearTimeout(streamRenderTimer);
+      streamRenderTimer = setTimeout(() => {
+        streamRenderTimer = null;
+        render();
+      }, delayMs);
+    }
 
     const startThinkingAnimation = () => {
       if (thinkingTimer) return;
@@ -129,9 +129,9 @@ async function main() {
 
     let diffsExpanded = false;
 
-    const render = (isThinking = false, isPendingPlan = false) => {
-      if (isThinking) startThinkingAnimation();
-      else stopThinkingAnimation();
+    function render(force = false) {
+      if (isPrompting && !force) return;
+      const isThinking = !!thinkingTimer;
       const stats = memoryManager.getBudgetStatsForMessages(messages, rules);
       const prov = config.defaults.primaryProvider;
       const model = Configurator.getActiveModel(config, prov as any) ?? 'default';
@@ -141,8 +141,8 @@ async function main() {
         ctxUsed: stats.filled,
         ramMB,
         showContextBar: config.defaults.showContextBar !== false
-      }, model, isThinking, isPendingPlan || pendingPlan, planMenuIndex, diffsExpanded);
-    };
+      }, model, isThinking, pendingPlan, planMenuIndex, diffsExpanded);
+    }
 
     const formatToolResult = (toolName: string, result: string, diffSummary: string, args: any) => {
       const sections: string[] = [`**${toolName}**`];
@@ -186,18 +186,31 @@ async function main() {
       if (process.stdin.isTTY) process.stdin.setRawMode(true);
       process.stdin.resume(); // ensure stdin is flowing after phone.cleanup() may have paused it
 
-      let isStreaming = chatSession.activeStreams.has(chatSession.threadId);
-      let isDetached = false;
-
       const onStreamUpdate = (id: string) => {
         if (id === chatSession.threadId && !isDetached) {
           if (!chatSession.activeStreams.has(id)) {
             isStreaming = false;
           }
-          render(isStreaming);
+          render();
         }
       };
       sessionEvents.on('stream_update', onStreamUpdate);
+
+      sessionEvents.on('stream_update', (threadId) => {
+        if (chatSession.threadId === threadId && !isDetached) {
+          flushStreamRender();
+        }
+      });
+
+      sessionEvents.on('prompt_start', () => {
+        isPrompting = true;
+        if (streamRenderTimer) clearTimeout(streamRenderTimer);
+      });
+
+      sessionEvents.on('prompt_end', () => {
+        isPrompting = false;
+        render(true);
+      });
 
       const cleanup = () => {
         sessionEvents.removeListener('stream_update', onStreamUpdate);
@@ -214,7 +227,7 @@ async function main() {
           process.exit(0);
         } else if (key.ctrl && key.name === 'e') {
           diffsExpanded = !diffsExpanded;
-          render(isStreaming);
+          render(true);
           return;
         } else if (key.name === 'escape') {
           stopThinkingAnimation();
@@ -244,72 +257,74 @@ async function main() {
               chatUI.scrollToBottom();
               render(true);
               try {
-                let isDone = false;
                 const preferredName = Configurator.getUsername(config) || 'user';
                 const nameHint = `\n\nUser's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.`;
-                while (!isDone) {
-                  const msgsToSend = [new SystemMessage(rules + nameHint), ...messages];
-                  const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
-                  const aiMessage = new AIMessage('');
-                  messages.push(aiMessage);
-                  syncMessages();
-                  let finalMessage: any = null;
-                  const stream = await provider.stream(optimizedMsgs);
-                  for await (const chunk of stream) {
-                    if (!finalMessage) finalMessage = chunk;
-                    else finalMessage = concat(finalMessage, chunk);
-                    if (chunk && chunk.content) {
-                      aiMessage.content = (aiMessage.content as string) + chunk.content;
+                
+                const msgsToSend = [new SystemMessage(rules + nameHint), ...messages];
+                const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
+                
+                let aiMessage: any = null;
+                const stream = provider.streamReactAgent(optimizedMsgs);
+                
+                for await (const { chunk, metadata } of stream) {
+                  if (chunk._getType() === 'ai') {
+                    if (!aiMessage) {
+                      aiMessage = chunk;
+                      messages.push(aiMessage);
                       syncMessages();
+                    } else {
+                      aiMessage = concat(aiMessage, chunk);
+                      messages[messages.length - 1] = aiMessage;
+                      syncMessages();
+                    }
+                    
+                    const currentLength = (aiMessage.content as string).length;
+                    const delta = currentLength - lastStreamContentLength;
+                    const fenceCount = ((aiMessage.content as string).match(/```/g) ?? []).length;
+                    const isInsideCodeFence = fenceCount % 2 === 1;
+                    const shouldRender =
+                      delta >= (isInsideCodeFence ? 96 : 24) ||
+                      (!isInsideCodeFence && /[\s,.;:!?)\}\]\n]$/.test(String(chunk.content))) ||
+                      currentLength < 24;
+                    if (shouldRender) {
+                      lastStreamContentLength = currentLength;
                       if (!isDetached) {
-                         scheduleStreamRender(160);
+                        scheduleStreamRender(isInsideCodeFence ? 260 : 160);
                       } else {
-                         sessionEvents.emit('stream_update', chatSession.threadId);
+                        sessionEvents.emit('stream_update', chatSession.threadId);
                       }
                     }
-                  }
-                  config = provider.getConfig();
-                  phone.updateConfig(config);
-                  messages[messages.length - 1] = finalMessage;
-                  lastStreamContentLength = 0;
-                  syncMessages();
-                  const responseText = String(finalMessage?.content ?? '');
-                  const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
-                  const hasToolCalls = finalMessage?.tool_calls && finalMessage.tool_calls.length > 0;
-                  if (hasPlanBlock && !hasToolCalls) {
-                    pendingPlan = true;
-                    planMenuIndex = 0;
-                    isDone = true;
-                    if (!isDetached) flushStreamRender(true);
-                  } else if (hasToolCalls) {
-                    pendingPlan = false;
-                    if (!isDetached) flushStreamRender();
-                    for (const call of finalMessage.tool_calls) {
-                      const tool = tools.find(t => t.name === call.name);
-                      let toolResultStr = '';
-                      if (tool) {
-                        try {
-                          const beforeSnapshot = call.name === 'execute_terminal_command' ? captureWorkspaceSnapshot() : null;
-                          const res = await (tool as any).invoke(call.args);
-                          const afterSnapshot = beforeSnapshot ? captureWorkspaceSnapshot() : null;
-                          const diffSummary = beforeSnapshot && afterSnapshot ? formatWorkspaceChanges(beforeSnapshot, afterSnapshot) : '';
-                          toolResultStr = formatToolResult(call.name, String(res), diffSummary, call.args);
-                        } catch (e: any) { toolResultStr = formatToolResult(call.name, `Error: ${e.message}`, '', call.args); }
-                      } else { toolResultStr = formatToolResult(call.name, `Error: Tool ${call.name} not found.`, '', call.args); }
-                      messages.push(new ToolMessage({ content: toolResultStr, tool_call_id: call.id, name: call.name }));
-                      syncMessages();
-                    }
+                  } else if (chunk._getType() === 'tool') {
+                    const toolMsg = chunk;
+                    const toolResultStr = formatToolResult(toolMsg.name, String(toolMsg.content), '', {});
+                    messages.push(new ToolMessage({ content: toolResultStr, tool_call_id: toolMsg.tool_call_id, name: toolMsg.name }));
+                    syncMessages();
+                    aiMessage = null;
                     if (!isDetached) {
                       render(true);
                     } else {
                       sessionEvents.emit('stream_update', chatSession.threadId);
                     }
-                  } else {
-                    pendingPlan = false;
-                    isDone = true;
-                    if (!isDetached) flushStreamRender();
                   }
                 }
+                
+                config = provider.getConfig();
+                phone.updateConfig(config);
+                lastStreamContentLength = 0;
+                syncMessages();
+
+                const responseText = String(messages[messages.length - 1]?.content ?? '');
+                const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
+
+                if (hasPlanBlock) {
+                  pendingPlan = true;
+                  planMenuIndex = 0;
+                  if (!isDetached) flushStreamRender(true);
+                } else {
+                  pendingPlan = false;
+                  if (!isDetached) flushStreamRender(true);
+                }
+
                 isStreaming = false;
                 chatSession.activeStreams.delete(chatSession.threadId);
                 sessionEvents.emit('stream_update', chatSession.threadId);
@@ -321,13 +336,13 @@ async function main() {
                 sessionEvents.emit('stream_update', chatSession.threadId);
               }
               if (!isDetached) {
-                 render();
+                 render(true);
               }
             } else {
               // Edit mode: drop into normal input so user can type modifications
               pendingPlan = false;
               planMenuIndex = 0;
-              render();
+              render(true);
             }
             return;
           }
@@ -348,7 +363,7 @@ async function main() {
               messages.splice(lastHumanIdx);
               syncMessages();
             }
-            render(false);
+            render(true);
             return;
           }
           if (chatSession.activeStreams.has(chatSession.threadId)) {
@@ -356,100 +371,89 @@ async function main() {
              return;
           }
 
+          let finalInputStr = inputStr;
+          if (inputStr === '/plan') {
+             finalInputStr = 'Please create an implementation plan using the <!-- PLAN_START --> and <!-- PLAN_END --> tags for our discussion so I can approve it.';
+          }
+
           isStreaming = true;
           isDetached = false;
           chatSession.activeStreams.add(chatSession.threadId);
-          chatSession.ensureNamedFromPrompt(inputStr);
-          messages.push(new HumanMessage(inputStr));
+          chatSession.ensureNamedFromPrompt(finalInputStr);
+          messages.push(new HumanMessage(finalInputStr));
           syncMessages();
           chatUI.scrollToBottom(); // always show new message being sent
           render(true);
 
           try {
-            let isDone = false;
             const preferredName = Configurator.getUsername(config) || 'user';
             const nameHint = `\n\nUser's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.`;
-            while (!isDone) {
-              const msgsToSend = [new SystemMessage(rules + nameHint), ...messages];
-              const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
-              
-              const aiMessage = new AIMessage('');
-              messages.push(aiMessage);
-              syncMessages();
-              
-              let finalMessage: any = null;
-              const stream = await provider.stream(optimizedMsgs);
-              
-              for await (const chunk of stream) {
-                if (!finalMessage) finalMessage = chunk;
-                else finalMessage = concat(finalMessage, chunk);
-                
-                if (chunk && chunk.content) {
-                  aiMessage.content = (aiMessage.content as string) + chunk.content;
+            
+            const msgsToSend = [new SystemMessage(rules + nameHint), ...messages];
+            const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
+            
+            let aiMessage: any = null;
+            const stream = provider.streamReactAgent(optimizedMsgs);
+            
+            for await (const { chunk, metadata } of stream) {
+              if (chunk._getType() === 'ai') {
+                if (!aiMessage) {
+                  aiMessage = chunk;
+                  messages.push(aiMessage);
                   syncMessages();
-                  const currentLength = (aiMessage.content as string).length;
-                  const delta = currentLength - lastStreamContentLength;
-                  const fenceCount = ((aiMessage.content as string).match(/```/g) ?? []).length;
-                  const isInsideCodeFence = fenceCount % 2 === 1;
-                  const shouldRender =
-                    delta >= (isInsideCodeFence ? 96 : 24) ||
-                    (!isInsideCodeFence && /[\s,.;:!?)\}\]\n]$/.test(String(chunk.content))) ||
-                    currentLength < 24;
-                  if (shouldRender) {
-                    lastStreamContentLength = currentLength;
-                    if (!isDetached) {
-                      scheduleStreamRender(isInsideCodeFence ? 260 : 160);
-                    } else {
-                      sessionEvents.emit('stream_update', chatSession.threadId);
-                    }
+                } else {
+                  aiMessage = concat(aiMessage, chunk);
+                  messages[messages.length - 1] = aiMessage;
+                  syncMessages();
+                }
+                
+                const currentLength = (aiMessage.content as string).length;
+                const delta = currentLength - lastStreamContentLength;
+                const fenceCount = ((aiMessage.content as string).match(/```/g) ?? []).length;
+                const isInsideCodeFence = fenceCount % 2 === 1;
+                const shouldRender =
+                  delta >= (isInsideCodeFence ? 96 : 24) ||
+                  (!isInsideCodeFence && /[\s,.;:!?)\}\]\n]$/.test(String(chunk.content))) ||
+                  currentLength < 24;
+                if (shouldRender) {
+                  lastStreamContentLength = currentLength;
+                  if (!isDetached) {
+                    scheduleStreamRender(isInsideCodeFence ? 260 : 160);
+                  } else {
+                    sessionEvents.emit('stream_update', chatSession.threadId);
                   }
                 }
-              }
-              config = provider.getConfig();
-              phone.updateConfig(config);
-              
-              messages[messages.length - 1] = finalMessage;
-              lastStreamContentLength = 0;
-              syncMessages();
-
-              const responseText = String(finalMessage?.content ?? '');
-              const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
-              const hasToolCalls = finalMessage?.tool_calls && finalMessage.tool_calls.length > 0;
-
-              if (hasPlanBlock && !hasToolCalls) {
-                pendingPlan = true;
-                planMenuIndex = 0;
-                isDone = true;
-                if (!isDetached) flushStreamRender(true);
-              } else if (hasToolCalls) {
-                pendingPlan = false;
-                if (!isDetached) flushStreamRender();
-                for (const call of finalMessage.tool_calls) {
-                  const tool = tools.find(t => t.name === call.name);
-                  let toolResultStr = '';
-                  if (tool) {
-                    try {
-                      const beforeSnapshot = call.name === 'execute_terminal_command' ? captureWorkspaceSnapshot() : null;
-                      const res = await (tool as any).invoke(call.args);
-                      const afterSnapshot = beforeSnapshot ? captureWorkspaceSnapshot() : null;
-                      const diffSummary = beforeSnapshot && afterSnapshot ? formatWorkspaceChanges(beforeSnapshot, afterSnapshot) : '';
-                      toolResultStr = formatToolResult(call.name, String(res), diffSummary, call.args);
-                    } catch (e: any) { toolResultStr = formatToolResult(call.name, `Error: ${e.message}`, '', call.args); }
-                  } else { toolResultStr = formatToolResult(call.name, `Error: Tool ${call.name} not found.`, '', call.args); }
-                  messages.push(new ToolMessage({ content: toolResultStr, tool_call_id: call.id, name: call.name }));
-                  syncMessages();
-                }
-                if (!isDetached) {
+              } else if (chunk._getType() === 'tool') {
+                const toolMsg = chunk;
+                const toolResultStr = formatToolResult(toolMsg.name, String(toolMsg.content), '', {});
+                messages.push(new ToolMessage({ content: toolResultStr, tool_call_id: toolMsg.tool_call_id, name: toolMsg.name }));
+                syncMessages();
+                aiMessage = null;
+                if (!isDetached && !isPrompting) {
                   render(true);
                 } else {
                   sessionEvents.emit('stream_update', chatSession.threadId);
                 }
-              } else {
-                pendingPlan = false;
-                isDone = true;
-                if (!isDetached) flushStreamRender();
               }
             }
+            
+            config = provider.getConfig();
+            phone.updateConfig(config);
+            lastStreamContentLength = 0;
+            syncMessages();
+
+            const responseText = String(messages[messages.length - 1]?.content ?? '');
+            const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
+
+            if (hasPlanBlock) {
+              pendingPlan = true;
+              planMenuIndex = 0;
+              if (!isDetached) flushStreamRender(true);
+            } else {
+              pendingPlan = false;
+              if (!isDetached) flushStreamRender(true);
+            }
+
             isStreaming = false;
             chatSession.activeStreams.delete(chatSession.threadId);
             sessionEvents.emit('stream_update', chatSession.threadId);
@@ -462,7 +466,7 @@ async function main() {
           }
           
           if (!isDetached) {
-            render();
+            render(true);
           }
         } else if (key.name === 'up') {
           if (pendingPlan) {
@@ -1412,7 +1416,7 @@ async function main() {
       const isDefaultName = !config.profile?.username;
 
       if (isCompact) {
-        console.log(borderDim(' ╭─ O.T.T.Ov1.1.11 ' + '─'.repeat(Math.max(0, W - 18)) + '╮'));
+        console.log(borderDim(' ╭─ O.T.T.O v1.1.11 ' + '─'.repeat(Math.max(0, W - 18)) + '╮'));
         console.log(borderDim(' │ ') + chalk.whiteBright(`Welcome back, ${displayName}!`).padEnd(Math.max(0, W - 1)) + borderDim('│'));
         if (isDefaultName) {
           console.log(borderDim(' │ ') + chalk.hex('#F59E0B')('⚠  Go to Settings › Profile to set your username').padEnd(Math.max(0, W - 1)) + borderDim('│'));
@@ -1444,7 +1448,7 @@ async function main() {
         ''
       ];
 
-      console.log(borderDim(' ╭─ O.T.T.Ov1.1.11 ' + '─'.repeat(Math.max(0, W - 18)) + '╮'));
+      console.log(borderDim(' ╭─ O.T.T.O v1.1.11 ' + '─'.repeat(Math.max(0, W - 18)) + '╮'));
 
       drawRow(`      Welcome back, ${displayName}!`, rightRows[0], chalk.white, chalk.white);
       if (isDefaultName) {

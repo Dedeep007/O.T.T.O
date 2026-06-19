@@ -414,11 +414,22 @@ export class ChatUI {
     const scrollHint   = linesBelow > 0
       ? this.MUTED('  [scrolled \u2014 End to return]')
       : '';
-    const placeholder  = currentInput.length === 0
-      ? (pendingPlan
+    let placeholder = '';
+    if (currentInput.length === 0) {
+      placeholder = pendingPlan
           ? chalk.hex('#F5C400')('\u2191\u2193 choose  \u21b5 confirm')
-          : this.MUTED('Type your message... (esc to menu)'))
-      : '';
+          : this.MUTED('Type your message... (esc to menu)');
+    } else if (currentInput.endsWith('@')) {
+      try {
+        const fs = require('fs');
+        const entries = fs.readdirSync(process.cwd(), { withFileTypes: true })
+          .filter((e: any) => !e.name.startsWith('.') && e.name !== 'node_modules')
+          .map((e: any) => e.isDirectory() ? e.name + '/' : e.name);
+        if (entries.length > 0) {
+          placeholder = this.MUTED('  [Recs: ' + entries.slice(0, 5).join(', ') + (entries.length > 5 ? '...' : '') + ']');
+        }
+      } catch (e) {}
+    }
     process.stdout.write('\x1B[2K\r' + promptPrefix + chalk.white(currentInput) + placeholder + scrollHint);
   }
 }

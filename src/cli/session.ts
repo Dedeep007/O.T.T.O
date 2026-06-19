@@ -23,8 +23,10 @@ export class ChatSession {
   public threadName: string;
   private username: string;
   private hostname: string;
-  private threadMessages = new Map<string, any[]>();
+  public threadMessages = new Map<string, any[]>();
   public activeStreams = new Set<string>();
+  public isChatActive = false;
+  public pendingApprovals: { threadId: string, cmd: string, commandStr: string, resolve: (choice: 'now' | 'always' | 'deny') => void }[] = [];
   private static readonly DEFAULT_THREAD_NAME = 'New Chat';
 
   constructor() {

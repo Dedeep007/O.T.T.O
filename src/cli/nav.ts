@@ -241,6 +241,15 @@ export class PhoneOS {
     // ── Section Body / Dashboard Stats ────────────────────────────
     let hasBody = false;
     
+    if (chatSession.pendingApprovals && chatSession.pendingApprovals.length > 0) {
+      console.log('  ' + RED.bold(`[!] Pending Approvals: ${chatSession.pendingApprovals.length} command(s) waiting for your permission!`));
+      for (const p of chatSession.pendingApprovals) {
+        console.log('      ' + CYAN(p.cmd) + MUTED(` (Thread: ${p.threadId})`));
+      }
+      console.log('');
+      hasBody = true;
+    }
+
     if (view.subtitle) {
       console.log('  ' + BOLD(WHITE(view.subtitle)));
       hasBody = true;

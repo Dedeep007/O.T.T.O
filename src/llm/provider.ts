@@ -9,6 +9,7 @@ import { quotaManager } from './quota.js';
 import { ui } from '../cli/ui.js';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { tools } from './tools.js';
+import { createReactAgent } from '@langchain/langgraph/prebuilt';
 
 type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini';
 
@@ -186,6 +187,41 @@ export class ProviderEngine {
         if (attempt <= 6) {
           ui.info(`Retrying stream after backoff (attempt ${attempt + 1}/6)...`);
           yield* this.stream(messages, attempt + 1);
+          return;
+        }
+
+        ui.error('Max retries exceeded due to TPM exhaustion.');
+      }
+      throw error;
+    }
+  }
+
+  public async *streamReactAgent(messages: any[], attempt = 1): AsyncGenerator<any, void, unknown> {
+    if (!this.primaryModel) {
+      throw new Error('No valid LLM provider initialized.');
+    }
+
+    try {
+      const agent = createReactAgent({ llm: this.primaryModel, tools });
+      const stream = await agent.stream({ messages }, { streamMode: 'messages' });
+      for await (const [chunk, metadata] of stream) {
+        yield { chunk, metadata };
+      }
+      quotaManager.resetBackoff();
+    } catch (error: any) {
+      if (this.isRateLimit(error)) {
+        const retryAfter = error?.response?.headers?.['retry-after'];
+
+        if (attempt <= 6 && this.tryFallback(attempt)) {
+          ui.info(`Retrying agent stream with fallback (attempt ${attempt + 1}/6)...`);
+          yield* this.streamReactAgent(messages, attempt + 1);
+          return;
+        }
+
+        await quotaManager.handleRateLimit(retryAfter);
+        if (attempt <= 6) {
+          ui.info(`Retrying agent stream after backoff (attempt ${attempt + 1}/6)...`);
+          yield* this.streamReactAgent(messages, attempt + 1);
           return;
         }
 
