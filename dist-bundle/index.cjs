@@ -57,7 +57,7 @@ function wrapText(text, maxWidth, indent) {
 }
 function renderDiffBlock(codeStr, diffWidth, isExpanded) {
   let output = "\n";
-  const bar = (bg, fg) => import_chalk9.default.bgHex(bg).hex(fg)("  ");
+  const bar = (bg) => import_chalk9.default.bgHex(bg)("  ");
   const row = (bg, fg, text) => import_chalk9.default.bgHex(bg).hex(fg)(padVisible(` ${text}`, diffWidth - 2));
   const allLines = codeStr.split("\n");
   const total = allLines.length;
@@ -73,9 +73,9 @@ function renderDiffBlock(codeStr, diffWidth, isExpanded) {
     } else if (line.startsWith("@@")) {
       output += import_chalk9.default.bgHex("#0C4A6E").hex("#67E8F9")(padVisible(` ${line}`, diffWidth)) + "\n";
     } else if (line.startsWith("+")) {
-      output += bar("#16A34A", "#052e16") + row("#15803D", "#F0FDF4", line) + "\n";
+      output += bar("#22C55E") + row("#14532D", "#BBF7D0", line) + "\n";
     } else if (line.startsWith("-")) {
-      output += bar("#DC2626", "#450a0a") + row("#B91C1C", "#FFF1F2", line) + "\n";
+      output += bar("#EF4444") + row("#7F1D1D", "#FECACA", line) + "\n";
     } else if (line.startsWith("... (")) {
       output += import_chalk9.default.bgHex("#374151").hex("#FBBF24")(padVisible(` ${line}`, diffWidth)) + "\n";
     } else {
@@ -97,18 +97,11 @@ function renderMarkdownWithOttoStyles(content, width, diffsExpanded) {
         placeholders.push(rendered);
         return key;
       } else {
-        const langStr = lang ? ` ${lang} ` : " code ";
         let output = "\n";
-        const border = import_chalk9.default.hex("#475569");
-        const bg = import_chalk9.default.bgHex("#0F172A").hex("#94A3B8");
-        const langBg = import_chalk9.default.bgHex("#1E293B").hex("#38BDF8");
-        output += "  " + border("\u256D" + "\u2500".repeat(diffWidth)) + border("\u256E\n");
-        output += "  " + border("\u2502") + langBg(padVisible(langStr, diffWidth)) + border("\u2502\n");
-        output += "  " + border("\u251C" + "\u2500".repeat(diffWidth)) + border("\u2524\n");
-        codeStr.replace(/\n$/, "").split("\n").forEach((line) => {
-          output += "  " + border("\u2502") + bg(padVisible(` ${line}`, diffWidth)) + border("\u2502\n");
+        const lines = codeStr.replace(/\n$/, "").split("\n");
+        lines.forEach((line) => {
+          output += import_chalk9.default.bgHex("#0F172A").hex("#CBD5E1")(padVisible(` ${line}`, diffWidth)) + "\n";
         });
-        output += "  " + border("\u2570" + "\u2500".repeat(diffWidth)) + border("\u256F\n");
         const key = `\0DIFF${placeholders.length}\0`;
         placeholders.push(output + "\n");
         return key;

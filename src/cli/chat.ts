@@ -58,7 +58,7 @@ function wrapText(text: string, maxWidth: number, indent: number): string[] {
 function renderDiffBlock(codeStr: string, diffWidth: number, isExpanded: boolean): string {
   let output = '\n';
 
-  const bar = (bg: string, fg: string) => chalk.bgHex(bg).hex(fg)('  ');
+  const bar = (bg: string) => chalk.bgHex(bg)('  ');
   const row = (bg: string, fg: string, text: string) =>
     chalk.bgHex(bg).hex(fg)(padVisible(` ${text}`, diffWidth - 2));
 
@@ -78,9 +78,9 @@ function renderDiffBlock(codeStr: string, diffWidth: number, isExpanded: boolean
     } else if (line.startsWith('@@')) {
       output += chalk.bgHex('#0C4A6E').hex('#67E8F9')(padVisible(` ${line}`, diffWidth)) + '\n';
     } else if (line.startsWith('+')) {
-      output += bar('#16A34A', '#052e16') + row('#15803D', '#F0FDF4', line) + '\n';
+      output += bar('#22C55E') + row('#14532D', '#BBF7D0', line) + '\n';
     } else if (line.startsWith('-')) {
-      output += bar('#DC2626', '#450a0a') + row('#B91C1C', '#FFF1F2', line) + '\n';
+      output += bar('#EF4444') + row('#7F1D1D', '#FECACA', line) + '\n';
     } else if (line.startsWith('... (')) {
       output += chalk.bgHex('#374151').hex('#FBBF24')(padVisible(` ${line}`, diffWidth)) + '\n';
     } else {
@@ -105,21 +105,12 @@ function renderMarkdownWithOttoStyles(content: string, width: number, diffsExpan
         placeholders.push(rendered);
         return key;
       } else {
-        const langStr = lang ? ` ${lang} ` : ' code ';
         let output = '\n';
-        const border = chalk.hex('#475569');
-        const bg = chalk.bgHex('#0F172A').hex('#94A3B8');
-        const langBg = chalk.bgHex('#1E293B').hex('#38BDF8');
-        
-        output += '  ' + border('╭' + '─'.repeat(diffWidth)) + border('╮\n');
-        output += '  ' + border('│') + langBg(padVisible(langStr, diffWidth)) + border('│\n');
-        output += '  ' + border('├' + '─'.repeat(diffWidth)) + border('┤\n');
-        
-        codeStr.replace(/\n$/, '').split('\n').forEach(line => {
-          output += '  ' + border('│') + bg(padVisible(` ${line}`, diffWidth)) + border('│\n');
+        const lines = codeStr.replace(/\n$/, '').split('\n');
+        lines.forEach(line => {
+          output += chalk.bgHex('#0F172A').hex('#CBD5E1')(padVisible(` ${line}`, diffWidth)) + '\n';
         });
-        output += '  ' + border('╰' + '─'.repeat(diffWidth)) + border('╯\n');
-        
+
         const key = `\u0000DIFF${placeholders.length}\u0000`;
         placeholders.push(output + '\n');
         return key;
