@@ -37,8 +37,32 @@ __export(chat_exports, {
 function stripAnsi(str) {
   return str.replace(/\x1B\[[0-9;]*m/g, "");
 }
+function getCharWidth(char) {
+  const codePoint = char.codePointAt(0);
+  if (!codePoint) return 0;
+  if (codePoint >= 127744 && codePoint <= 129535 || codePoint >= 128512 && codePoint <= 128591 || codePoint >= 128640 && codePoint <= 128767 || codePoint >= 9728 && codePoint <= 10175 || codePoint >= 19968 && codePoint <= 40959 || codePoint >= 44032 && codePoint <= 55203 || codePoint >= 65280 && codePoint <= 65519) {
+    return 2;
+  }
+  if (codePoint === 65039 || codePoint === 65038) {
+    return 0;
+  }
+  return 1;
+}
+function getStringWidth(str) {
+  const stripped = stripAnsi(str);
+  let width = 0;
+  for (const char of stripped) {
+    width += getCharWidth(char);
+  }
+  return width;
+}
+function ansiPadEnd(str, targetWidth, padChar = " ") {
+  const currentWidth = getStringWidth(str);
+  const padLen = Math.max(0, targetWidth - currentWidth);
+  return str + padChar.repeat(padLen);
+}
 function padVisible(str, width) {
-  return str + " ".repeat(Math.max(0, width - stripAnsi(str).length));
+  return str + " ".repeat(Math.max(0, width - getStringWidth(str)));
 }
 function wrapText(text, maxWidth, indent) {
   const words = text.split(" ");
@@ -232,7 +256,7 @@ var init_chat = __esm({
                 const stepColor = import_chalk9.default.hex("#22D3EE");
                 const fileColor = import_chalk9.default.hex("#86EFAC");
                 const boxRow = (styledContent, bgHex) => {
-                  const visLen = stripAnsi(styledContent).length;
+                  const visLen = getStringWidth(styledContent);
                   const pad = " ".repeat(Math.max(0, planWidth - visLen));
                   const inner = bgHex ? import_chalk9.default.bgHex(bgHex)(styledContent + pad) : styledContent + pad;
                   return "  " + boxBorder("\u2551") + inner + boxBorder("\u2551");
@@ -305,7 +329,8 @@ var init_chat = __esm({
           menuItems.forEach((item, idx) => {
             const isSelected = idx === planMenuIndex;
             const cursor = isSelected ? import_chalk9.default.hex("#F5C400").bold(" \u25B6 ") : "   ";
-            const label = isSelected ? import_chalk9.default.bgHex("#1a1200")(item.color.bold(item.label.padEnd(menuWidth - 1))) : import_chalk9.default.hex("#6B7280")(item.label.padEnd(menuWidth - 1));
+            const paddedLabel = ansiPadEnd(item.label, menuWidth - 1);
+            const label = isSelected ? import_chalk9.default.bgHex("#1a1200")(item.color.bold(paddedLabel)) : import_chalk9.default.hex("#6B7280")(paddedLabel);
             push("  " + border("\u2502") + cursor + label + border("\u2502"));
           });
           push("  " + border("\u2500".repeat(menuWidth + 2)));

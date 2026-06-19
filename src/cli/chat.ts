@@ -19,8 +19,43 @@ function stripAnsi(str: string): string {
   return str.replace(/\x1B\[[0-9;]*m/g, '');
 }
 
+function getCharWidth(char: string): number {
+  const codePoint = char.codePointAt(0);
+  if (!codePoint) return 0;
+  if (
+    (codePoint >= 0x1F300 && codePoint <= 0x1F9FF) ||
+    (codePoint >= 0x1F600 && codePoint <= 0x1F64F) ||
+    (codePoint >= 0x1F680 && codePoint <= 0x1F6FF) ||
+    (codePoint >= 0x2600 && codePoint <= 0x27BF) ||
+    (codePoint >= 0x4E00 && codePoint <= 0x9FFF) ||
+    (codePoint >= 0xAC00 && codePoint <= 0xD7A3) ||
+    (codePoint >= 0xFF00 && codePoint <= 0xFFEF)
+  ) {
+    return 2;
+  }
+  if (codePoint === 0xFE0F || codePoint === 0xFE0E) {
+    return 0;
+  }
+  return 1;
+}
+
+function getStringWidth(str: string): number {
+  const stripped = stripAnsi(str);
+  let width = 0;
+  for (const char of stripped) {
+    width += getCharWidth(char);
+  }
+  return width;
+}
+
+function ansiPadEnd(str: string, targetWidth: number, padChar = ' '): string {
+  const currentWidth = getStringWidth(str);
+  const padLen = Math.max(0, targetWidth - currentWidth);
+  return str + padChar.repeat(padLen);
+}
+
 function padVisible(str: string, width: number): string {
-  return str + ' '.repeat(Math.max(0, width - stripAnsi(str).length));
+  return str + ' '.repeat(Math.max(0, width - getStringWidth(str)));
 }
 
 function ansiRgb(fg: string, bg: string, text: string): string {
@@ -289,7 +324,7 @@ export class ChatUI {
 
             // ANSI-aware box row: pads styled string to planWidth using visible length
             const boxRow = (styledContent: string, bgHex?: string) => {
-              const visLen = stripAnsi(styledContent).length;
+              const visLen = getStringWidth(styledContent);
               const pad = ' '.repeat(Math.max(0, planWidth - visLen));
               const inner = bgHex
                 ? chalk.bgHex(bgHex)(styledContent + pad)
@@ -298,7 +333,7 @@ export class ChatUI {
             };
 
             push('  ' + boxBorder('╔' + '═'.repeat(planWidth) + '╗'));
-            push(boxRow(chalk.hex('#F5C400').bold(' \uD83D\uDCCB IMPLEMENTATION PLAN '), '#1a1200'));
+            push(boxRow(chalk.hex('#F5C400').bold(' 📋 IMPLEMENTATION PLAN '), '#1a1200'));
             push('  ' + boxBorder('╠' + '═'.repeat(planWidth) + '╣'));
 
             planContent.split('\n').forEach(line => {
@@ -380,9 +415,10 @@ export class ChatUI {
       menuItems.forEach((item, idx) => {
         const isSelected = idx === planMenuIndex;
         const cursor  = isSelected ? chalk.hex('#F5C400').bold(' \u25b6 ') : '   ';
+        const paddedLabel = ansiPadEnd(item.label, menuWidth - 1);
         const label   = isSelected
-          ? chalk.bgHex('#1a1200')(item.color.bold(item.label.padEnd(menuWidth - 1)))
-          : chalk.hex('#6B7280')(item.label.padEnd(menuWidth - 1));
+          ? chalk.bgHex('#1a1200')(item.color.bold(paddedLabel))
+          : chalk.hex('#6B7280')(paddedLabel);
         push('  ' + border('\u2502') + cursor + label + border('\u2502'));
       });
       push('  ' + border('\u2500'.repeat(menuWidth + 2)));
