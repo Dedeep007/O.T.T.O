@@ -29,7 +29,7 @@ const CLI_VERSION = pkg.version;
 import { SystemMessage, HumanMessage, AIMessage, ToolMessage } from '@langchain/core/messages';
 import { concat } from '@langchain/core/utils/stream';
 import { tools } from './llm/tools.js';
-import { confirm } from '@inquirer/prompts';
+import { confirm, select } from '@inquirer/prompts';
 import chalk from 'chalk';
 import os from 'os';
 async function main() {
@@ -55,8 +55,7 @@ async function main() {
     const messages = chatSession.getMessages();
     let currentInput = '';
     let thinkingTimer: NodeJS.Timeout | null = null;
-    let streamRenderTimer: NodeJS.Timeout | null = null;
-    let isStreaming = false;
+    let isStreaming = chatSession.activeStreams.has(chatSession.threadId);
     let isDetached = false;
     let isPrompting = false;
     let lastStreamContentLength = 0;
@@ -141,22 +140,14 @@ async function main() {
       }
     };
 
-    function flushStreamRender(force = false) {
+    let lastRenderTime = 0;
+    function throttleRender(force = false) {
       if (isPrompting) return;
-      if (streamRenderTimer) {
-        clearTimeout(streamRenderTimer);
-        streamRenderTimer = null;
+      const now = Date.now();
+      if (force || now - lastRenderTime >= 60) {
+        lastRenderTime = now;
+        render(force);
       }
-      render(force);
-    }
-
-    function scheduleStreamRender(delayMs = 160) {
-      if (isPrompting) return;
-      if (streamRenderTimer) clearTimeout(streamRenderTimer);
-      streamRenderTimer = setTimeout(() => {
-        streamRenderTimer = null;
-        render();
-      }, delayMs);
     }
 
     const startThinkingAnimation = () => {
@@ -180,6 +171,7 @@ async function main() {
         showContextBar: config.defaults.showContextBar !== false
       }, model, isThinking, pendingPlan, planMenuIndex, diffsExpanded);
     }
+
 
     const formatToolResult = (toolName: string, result: string, diffSummary: string, args: any) => {
       const sections: string[] = [`**${toolName}**`];
@@ -224,49 +216,233 @@ async function main() {
       if (process.stdin.isTTY) process.stdin.setRawMode(true);
       process.stdin.resume(); // ensure stdin is flowing after phone.cleanup() may have paused it
 
+      const processPendingApprovals = async () => {
+        while (true) {
+          const idx = chatSession.pendingApprovals.findIndex(p => p.threadId === chatSession.threadId);
+          if (idx === -1) break;
+          
+          // Remove it from the pending list
+          const item = chatSession.pendingApprovals.splice(idx, 1)[0];
+          
+          // Prompt the user in-chat
+          try {
+            onPromptStart();
+            ui.warning(`The agent wants to execute: ${item.commandStr}`);
+            const choice = await select({
+              message: 'Choose an action:',
+              choices: [
+                { name: 'Approve for now', value: 'now' },
+                { name: `Approve always (whitelist '${item.cmd}')`, value: 'always' },
+                { name: `Don't approve`, value: 'deny' }
+              ]
+            }) as 'now' | 'always' | 'deny';
+            onPromptEnd();
+            
+            if (choice === 'always') {
+              const currentConfig = await Configurator.init();
+              if (!currentConfig.security.allowedCommands.includes(item.cmd)) {
+                currentConfig.security.allowedCommands.push(item.cmd);
+              }
+              if (currentConfig.security.mode === 'ask') {
+                currentConfig.security.mode = 'approve';
+              }
+              Configurator.saveConfig(currentConfig);
+              config = currentConfig;
+              provider.setConfig(config);
+              phone.updateConfig(config);
+            }
+            
+            item.resolve(choice);
+          } catch (err) {
+            item.resolve('deny');
+          }
+        }
+      };
+
       const onStreamUpdate = (id: string) => {
         if (id === chatSession.threadId && !isDetached) {
           if (!chatSession.activeStreams.has(id)) {
             isStreaming = false;
           }
-          render();
+          render(true);
         }
       };
-      sessionEvents.on('stream_update', onStreamUpdate);
 
-      sessionEvents.on('stream_update', (threadId) => {
-        if (chatSession.threadId === threadId && !isDetached) {
-          flushStreamRender();
-        }
-      });
-
-      sessionEvents.on('prompt_start', () => {
+      function onPromptStart() {
         isPrompting = true;
-        if (streamRenderTimer) clearTimeout(streamRenderTimer);
         process.stdout.write('\x1B[?1049l');
         process.stdin.removeListener('keypress', onKeypress);
-        if (process.stdin.isTTY) process.stdin.setRawMode(false);
-      });
+      }
 
-      sessionEvents.on('prompt_end', () => {
+      function onPromptEnd() {
         isPrompting = false;
         process.stdout.write('\x1B[?1049h');
-        if (process.stdin.isTTY) process.stdin.setRawMode(true);
         process.stdin.on('keypress', onKeypress);
         render(true);
-      });
+      }
+
+      sessionEvents.on('stream_update', onStreamUpdate);
+      sessionEvents.on('prompt_start', onPromptStart);
+      sessionEvents.on('prompt_end', onPromptEnd);
 
       const cleanup = () => {
         chatSession.isChatActive = false;
         sessionEvents.removeListener('stream_update', onStreamUpdate);
+        sessionEvents.removeListener('prompt_start', onPromptStart);
+        sessionEvents.removeListener('prompt_end', onPromptEnd);
         process.stdout.write('\x1B[?1049l');
         process.stdin.removeListener('keypress', onKeypress);
+      };
+
+      const runAgentLoop = async (inputText: string) => {
+        isStreaming = true;
+        isDetached = false;
+        chatSession.activeStreams.add(chatSession.threadId);
+        chatSession.ensureNamedFromPrompt(inputText);
+        messages.push(new HumanMessage(inputText));
+        syncMessages();
+        chatUI.scrollToBottom();
+        render(true);
+        startThinkingAnimation();
+
+        try {
+          let isDone = false;
+          const preferredName = Configurator.getUsername(config) || 'user';
+          const nameHint = `\n\nUser's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.`;
+          
+          while (!isDone) {
+            const msgsToSend = [new SystemMessage(rules + nameHint), ...messages];
+            const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
+            
+            const aiMessage = new AIMessage('');
+            messages.push(aiMessage);
+            syncMessages();
+            
+            let finalMessage: any = null;
+            const stream = await provider.stream(optimizedMsgs);
+            
+            for await (const chunk of stream) {
+              if (!finalMessage) finalMessage = chunk;
+              else finalMessage = concat(finalMessage, chunk);
+              
+              if (chunk) {
+                const reasoning = finalMessage.additional_kwargs?.reasoning_content;
+                if (reasoning || finalMessage.content) {
+                  stopThinkingAnimation();
+                }
+                
+                let content = '';
+                if (reasoning) {
+                  content += `<think>\n${reasoning}`;
+                  if (finalMessage.content) {
+                    content += '\n</think>\n';
+                  }
+                }
+                content += finalMessage.content;
+                aiMessage.content = content;
+
+                if (finalMessage && finalMessage.tool_calls && finalMessage.tool_calls.length > 0) {
+                  stopThinkingAnimation();
+                  aiMessage.tool_calls = finalMessage.tool_calls;
+                  startToolAnimation();
+                }
+                syncMessages();
+                if (!isDetached) {
+                  throttleRender();
+                } else {
+                  sessionEvents.emit('stream_update', chatSession.threadId);
+                }
+              }
+            }
+            
+            let finalContent = '';
+            const reasoning = finalMessage?.additional_kwargs?.reasoning_content;
+            if (reasoning) {
+              finalContent += `<think>\n${reasoning}\n</think>\n`;
+            }
+            finalContent += finalMessage?.content ?? '';
+            
+            if (finalMessage) {
+              finalMessage.content = finalContent;
+            }
+            
+            config = provider.getConfig();
+            phone.updateConfig(config);
+            
+            messages[messages.length - 1] = finalMessage;
+            lastStreamContentLength = 0;
+            syncMessages();
+            if (!isDetached) {
+              render(true);
+            }
+
+            const responseText = String(finalMessage?.content ?? '');
+            const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
+            const hasToolCalls = finalMessage?.tool_calls && finalMessage.tool_calls.length > 0;
+
+            if (hasPlanBlock && !hasToolCalls) {
+              pendingPlan = true;
+              planMenuIndex = 0;
+              isDone = true;
+              if (!isDetached) render(true);
+            } else if (hasToolCalls) {
+              pendingPlan = false;
+              startToolAnimation();
+              if (!isDetached) render(true);
+              
+              for (const call of finalMessage.tool_calls) {
+                const tool = tools.find(t => t.name === call.name);
+                let toolResultStr = '';
+                if (tool) {
+                  try {
+                    const beforeSnapshot = call.name === 'execute_terminal_command' ? captureWorkspaceSnapshot() : null;
+                    const res = await (tool as any).invoke(call.args);
+                    const afterSnapshot = beforeSnapshot ? captureWorkspaceSnapshot() : null;
+                    const diffSummary = beforeSnapshot && afterSnapshot ? formatWorkspaceChanges(beforeSnapshot, afterSnapshot) : '';
+                    toolResultStr = formatToolResult(call.name, String(res), diffSummary, call.args);
+                  } catch (e: any) {
+                    toolResultStr = formatToolResult(call.name, `Error: ${e.message}`, '', call.args);
+                  }
+                } else {
+                  toolResultStr = formatToolResult(call.name, `Error: Tool ${call.name} not found.`, '', call.args);
+                }
+                messages.push(new ToolMessage({ content: toolResultStr, tool_call_id: call.id, name: call.name }));
+                syncMessages();
+              }
+              if (!isDetached) {
+                render(true);
+              } else {
+                sessionEvents.emit('stream_update', chatSession.threadId);
+              }
+            } else {
+              pendingPlan = false;
+              isDone = true;
+              if (!isDetached) render(true);
+            }
+          }
+          
+          stopToolAnimation();
+          isStreaming = false;
+          chatSession.activeStreams.delete(chatSession.threadId);
+          sessionEvents.emit('stream_update', chatSession.threadId);
+        } catch (error: any) {
+          stopThinkingAnimation();
+          stopToolAnimation();
+          isStreaming = false;
+          chatSession.activeStreams.delete(chatSession.threadId);
+          messages.push(new SystemMessage(formatChatError(error)));
+          syncMessages();
+          sessionEvents.emit('stream_update', chatSession.threadId);
+        }
+
+        if (!isDetached) {
+          render(true);
+        }
       };
 
       const onKeypress = async (str: string, key: any) => {
         if (key.ctrl && key.name === 'c') {
           stopThinkingAnimation();
-          if (streamRenderTimer) clearTimeout(streamRenderTimer);
           // Exit alternate screen before hard-quitting so the terminal is clean
           process.stdout.write('\x1B[?1049l');
           process.exit(0);
@@ -276,10 +452,6 @@ async function main() {
           return;
         } else if (key.name === 'escape') {
           stopThinkingAnimation();
-          if (streamRenderTimer) {
-            clearTimeout(streamRenderTimer);
-            streamRenderTimer = null;
-          }
           if (isStreaming) {
             isDetached = true;
           }
@@ -290,99 +462,9 @@ async function main() {
           if (pendingPlan) {
             const chosen = PLAN_MENU_OPTIONS[planMenuIndex];
             if (chosen.inject !== null) {
-              // Approve or Cancel: inject the canned response as human message
               pendingPlan = false;
               planMenuIndex = 0;
-              // Do not remove keypress listener here!
-              isStreaming = true;
-              isDetached = false;
-              chatSession.activeStreams.add(chatSession.threadId);
-              messages.push(new HumanMessage(chosen.inject));
-              syncMessages();
-              chatUI.scrollToBottom();
-              render(true);
-              try {
-                const preferredName = Configurator.getUsername(config) || 'user';
-                const nameHint = `\n\nUser's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.`;
-                
-                const msgsToSend = [new SystemMessage(rules + nameHint), ...messages];
-                const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
-                
-                let aiMessage: any = null;
-                const stream = provider.streamReactAgent(optimizedMsgs);
-                
-                for await (const { chunk, metadata } of stream) {
-                  if (chunk._getType() === 'ai') {
-                    if (!aiMessage) {
-                      aiMessage = chunk;
-                      messages.push(aiMessage);
-                      syncMessages();
-                    } else {
-                      aiMessage = concat(aiMessage, chunk);
-                      messages[messages.length - 1] = aiMessage;
-                      syncMessages();
-                    }
-                    
-                    const currentLength = (aiMessage.content as string).length;
-                    const delta = currentLength - lastStreamContentLength;
-                    const fenceCount = ((aiMessage.content as string).match(/```/g) ?? []).length;
-                    const isInsideCodeFence = fenceCount % 2 === 1;
-                    const shouldRender =
-                      delta >= (isInsideCodeFence ? 96 : 24) ||
-                      (!isInsideCodeFence && /[\s,.;:!?)\}\]\n]$/.test(String(chunk.content))) ||
-                      currentLength < 24;
-                    if (shouldRender) {
-                      lastStreamContentLength = currentLength;
-                      if (!isDetached) {
-                        scheduleStreamRender(isInsideCodeFence ? 260 : 160);
-                      } else {
-                        sessionEvents.emit('stream_update', chatSession.threadId);
-                      }
-                    }
-                  } else if (chunk._getType() === 'tool') {
-                    const toolMsg = chunk;
-                    const toolResultStr = formatToolResult(toolMsg.name, String(toolMsg.content), '', {});
-                    messages.push(new ToolMessage({ content: toolResultStr, tool_call_id: toolMsg.tool_call_id, name: toolMsg.name }));
-                    syncMessages();
-                    aiMessage = null;
-                    if (!isDetached) {
-                      render(true);
-                    } else {
-                      sessionEvents.emit('stream_update', chatSession.threadId);
-                    }
-                  }
-                }
-                
-                config = provider.getConfig();
-                phone.updateConfig(config);
-                lastStreamContentLength = 0;
-                syncMessages();
-
-                const responseText = String(messages[messages.length - 1]?.content ?? '');
-                const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
-
-                if (hasPlanBlock) {
-                  pendingPlan = true;
-                  planMenuIndex = 0;
-                  if (!isDetached) flushStreamRender(true);
-                } else {
-                  pendingPlan = false;
-                  if (!isDetached) flushStreamRender(true);
-                }
-
-                isStreaming = false;
-                chatSession.activeStreams.delete(chatSession.threadId);
-                sessionEvents.emit('stream_update', chatSession.threadId);
-              } catch (error: any) {
-                isStreaming = false;
-                chatSession.activeStreams.delete(chatSession.threadId);
-                messages.push(new SystemMessage(formatChatError(error)));
-                syncMessages();
-                sessionEvents.emit('stream_update', chatSession.threadId);
-              }
-              if (!isDetached) {
-                 render(true);
-              }
+              runAgentLoop(chosen.inject);
             } else {
               // Edit mode: drop into normal input so user can type modifications
               pendingPlan = false;
@@ -421,107 +503,7 @@ async function main() {
              finalInputStr = 'Please create an implementation plan using the <!-- PLAN_START --> and <!-- PLAN_END --> tags for our discussion so I can approve it.';
           }
 
-          isStreaming = true;
-          isDetached = false;
-          chatSession.activeStreams.add(chatSession.threadId);
-          chatSession.ensureNamedFromPrompt(finalInputStr);
-          messages.push(new HumanMessage(finalInputStr));
-          syncMessages();
-          chatUI.scrollToBottom(); // always show new message being sent
-          render(true);
-          startThinkingAnimation();
-
-          try {
-            const preferredName = Configurator.getUsername(config) || 'user';
-            const nameHint = `\n\nUser's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.`;
-            
-            const msgsToSend = [new SystemMessage(rules + nameHint), ...messages];
-            const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
-            
-            let aiMessage: any = null;
-            const stream = provider.streamReactAgent(optimizedMsgs);
-            
-            for await (const { chunk, metadata } of stream) {
-              stopThinkingAnimation();
-              if (chunk._getType() === 'ai') {
-                if (!aiMessage) {
-                  aiMessage = chunk;
-                  messages.push(aiMessage);
-                  syncMessages();
-                } else {
-                  aiMessage = concat(aiMessage, chunk);
-                  messages[messages.length - 1] = aiMessage;
-                  syncMessages();
-                }
-
-                if (chunk.tool_calls && chunk.tool_calls.length > 0) {
-                  startToolAnimation();
-                }
-                
-                const currentLength = (aiMessage.content as string).length;
-                const delta = currentLength - lastStreamContentLength;
-                const fenceCount = ((aiMessage.content as string).match(/```/g) ?? []).length;
-                const isInsideCodeFence = fenceCount % 2 === 1;
-                const shouldRender =
-                  delta >= (isInsideCodeFence ? 96 : 24) ||
-                  (!isInsideCodeFence && /[\s,.;:!?)\}\]\n]$/.test(String(chunk.content))) ||
-                  currentLength < 24;
-                if (shouldRender) {
-                  lastStreamContentLength = currentLength;
-                  if (!isDetached) {
-                    scheduleStreamRender(isInsideCodeFence ? 260 : 160);
-                  } else {
-                    sessionEvents.emit('stream_update', chatSession.threadId);
-                  }
-                }
-              } else if (chunk._getType() === 'tool') {
-                const toolMsg = chunk;
-                const toolResultStr = formatToolResult(toolMsg.name, String(toolMsg.content), '', {});
-                messages.push(new ToolMessage({ content: toolResultStr, tool_call_id: toolMsg.tool_call_id, name: toolMsg.name }));
-                syncMessages();
-                aiMessage = null;
-                if (!isDetached && !isPrompting) {
-                  render(true);
-                } else {
-                  sessionEvents.emit('stream_update', chatSession.threadId);
-                }
-              }
-            }
-            
-            config = provider.getConfig();
-            phone.updateConfig(config);
-            lastStreamContentLength = 0;
-            syncMessages();
-
-            const responseText = String(messages[messages.length - 1]?.content ?? '');
-            const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
-
-            if (hasPlanBlock) {
-              pendingPlan = true;
-              planMenuIndex = 0;
-              if (!isDetached) flushStreamRender(true);
-            } else {
-              pendingPlan = false;
-              if (!isDetached) flushStreamRender(true);
-            }
-
-            stopToolAnimation();
-            isStreaming = false;
-            chatSession.activeStreams.delete(chatSession.threadId);
-            sessionEvents.emit('stream_update', chatSession.threadId);
-          } catch (error: any) {
-            stopThinkingAnimation();
-            stopToolAnimation();
-            isStreaming = false;
-            chatSession.activeStreams.delete(chatSession.threadId);
-            messages.push(new SystemMessage(formatChatError(error)));
-            syncMessages();
-            sessionEvents.emit('stream_update', chatSession.threadId);
-          }
-          
-          if (!isDetached) {
-            render(true);
-          }
+          runAgentLoop(finalInputStr);
         } else if (key.name === 'up') {
           if (pendingPlan) {
             planMenuIndex = (planMenuIndex - 1 + PLAN_MENU_OPTIONS.length) % PLAN_MENU_OPTIONS.length;
@@ -555,7 +537,9 @@ async function main() {
       };
 
       process.stdin.on('keypress', onKeypress);
-      render(isStreaming);
+      processPendingApprovals().then(() => {
+        render(isStreaming);
+      });
     });
   };
 

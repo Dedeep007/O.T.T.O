@@ -8,9 +8,7 @@ import { Configurator } from '../cli/configurator.js';
 import { quotaManager } from './quota.js';
 import { ui } from '../cli/ui.js';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import { ToolMessage } from '@langchain/core/messages';
 import { tools } from './tools.js';
-import { createReactAgent } from '@langchain/langgraph/prebuilt';
 
 type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini';
 
@@ -202,56 +200,6 @@ export class ProviderEngine {
     }
   }
 
-  public async *streamReactAgent(messages: any[], attempt = 1): AsyncGenerator<any, void, unknown> {
-    if (!this.primaryModel) {
-      throw new Error('No valid LLM provider initialized.');
-    }
-
-    try {
-      const agent = createReactAgent({ llm: this.primaryModel, tools });
-      const stream = await agent.streamEvents({ messages }, { version: 'v2' });
-      for await (const event of stream) {
-        if (event.event === "on_chat_model_stream" && event.data?.chunk) {
-          yield { chunk: event.data.chunk, metadata: event.metadata };
-        } else if (event.event === "on_tool_end" && event.data?.output !== undefined) {
-          const output = event.data.output;
-          let contentStr = "";
-          if (output && typeof output === 'object' && output._getType) {
-             yield { chunk: output, metadata: event.metadata };
-          } else {
-             contentStr = typeof output === 'string' ? output : JSON.stringify(output);
-             const toolMsg = new ToolMessage({
-               content: contentStr,
-               name: event.name,
-               tool_call_id: event.run_id
-             });
-             yield { chunk: toolMsg, metadata: event.metadata };
-          }
-        }
-      }
-      quotaManager.resetBackoff();
-    } catch (error: any) {
-      if (this.isRateLimit(error)) {
-        const retryAfter = error?.response?.headers?.['retry-after'];
-
-        if (attempt <= 6 && this.tryFallback(attempt)) {
-          ui.info(`Retrying agent stream with fallback (attempt ${attempt + 1}/6)...`);
-          yield* this.streamReactAgent(messages, attempt + 1);
-          return;
-        }
-
-        await quotaManager.handleRateLimit(retryAfter);
-        if (attempt <= 6) {
-          ui.info(`Retrying agent stream after backoff (attempt ${attempt + 1}/6)...`);
-          yield* this.streamReactAgent(messages, attempt + 1);
-          return;
-        }
-
-        ui.error('Max retries exceeded due to TPM exhaustion.');
-      }
-      throw error;
-    }
-  }
 
   public getModel(): BaseChatModel {
     if (!this.primaryModel) throw new Error('Model not initialized');
