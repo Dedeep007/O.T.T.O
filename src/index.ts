@@ -321,7 +321,13 @@ async function main() {
         if (toolName === 'execute_terminal_command' && args.command) {
           sections.push(`Command: \`${args.command}\``);
         } else {
-          sections.push(`Arguments:\n\`\`\`json\n${JSON.stringify(args, null, 2)}\n\`\`\``);
+          const sanitizedArgs = { ...args };
+          for (const key of Object.keys(sanitizedArgs)) {
+            if (typeof sanitizedArgs[key] === 'string' && sanitizedArgs[key].length > 400) {
+              sanitizedArgs[key] = sanitizedArgs[key].slice(0, 400) + `\n... [truncated ${sanitizedArgs[key].length - 400} characters] ...`;
+            }
+          }
+          sections.push(`Arguments:\n\`\`\`json\n${JSON.stringify(sanitizedArgs, null, 2)}\n\`\`\``);
         }
       }
 

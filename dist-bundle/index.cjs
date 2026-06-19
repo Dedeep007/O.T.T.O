@@ -18700,9 +18700,16 @@ async function main() {
         if (toolName === "execute_terminal_command" && args2.command) {
           sections.push(`Command: \`${args2.command}\``);
         } else {
+          const sanitizedArgs = { ...args2 };
+          for (const key of Object.keys(sanitizedArgs)) {
+            if (typeof sanitizedArgs[key] === "string" && sanitizedArgs[key].length > 400) {
+              sanitizedArgs[key] = sanitizedArgs[key].slice(0, 400) + `
+... [truncated ${sanitizedArgs[key].length - 400} characters] ...`;
+            }
+          }
           sections.push(`Arguments:
 \`\`\`json
-${JSON.stringify(args2, null, 2)}
+${JSON.stringify(sanitizedArgs, null, 2)}
 \`\`\``);
         }
       }
