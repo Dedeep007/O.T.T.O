@@ -27,6 +27,9 @@ export class ChatSession {
   public activeStreams = new Set<string>();
   public isChatActive = false;
   public pendingApprovals: { threadId: string, cmd: string, commandStr: string, resolve: (choice: 'now' | 'always' | 'deny') => void }[] = [];
+  public pendingPlans = new Set<string>();
+  public agentStates = new Map<string, 'thinking' | 'tools' | 'idle'>();
+  public planMenuIndices = new Map<string, number>();
   private static readonly DEFAULT_THREAD_NAME = 'New Chat';
 
   constructor() {

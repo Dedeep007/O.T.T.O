@@ -1072,6 +1072,9 @@ var ChatSession = class _ChatSession {
   activeStreams = /* @__PURE__ */ new Set();
   isChatActive = false;
   pendingApprovals = [];
+  pendingPlans = /* @__PURE__ */ new Set();
+  agentStates = /* @__PURE__ */ new Map();
+  planMenuIndices = /* @__PURE__ */ new Map();
   static DEFAULT_THREAD_NAME = "New Chat";
   constructor() {
     this.username = import_os3.default.userInfo().username;
@@ -18605,12 +18608,18 @@ async function main() {
     const chatUI = new ChatUI2();
     const messages = chatSession.getMessages();
     let currentInput = "";
-    let thinkingTimer = null;
-    let isStreaming = chatSession.activeStreams.has(chatSession.threadId);
+    const getIsStreaming = () => chatSession.activeStreams.has(chatSession.threadId);
     let isPrompting = false;
     let lastStreamContentLength = 0;
-    let pendingPlan = false;
-    let planMenuIndex = 0;
+    const getPendingPlan = () => chatSession.pendingPlans.has(chatSession.threadId);
+    const setPendingPlan = (val) => {
+      if (val) chatSession.pendingPlans.add(chatSession.threadId);
+      else chatSession.pendingPlans.delete(chatSession.threadId);
+    };
+    const getPlanMenuIndex = () => chatSession.planMenuIndices.get(chatSession.threadId) ?? 0;
+    const setPlanMenuIndex = (val) => {
+      chatSession.planMenuIndices.set(chatSession.threadId, val);
+    };
     const PLAN_MENU_OPTIONS = [
       { label: "\u2705  Approve \u2014 execute the plan", inject: "approved \u2014 please proceed with the plan exactly as described." },
       { label: "\u270F\uFE0F   Edit \u2014 request changes first", inject: null },
@@ -18657,21 +18666,22 @@ async function main() {
     const syncMessages = () => {
       chatSession.setMessages(messages);
     };
-    const stopThinkingAnimation = () => {
-      if (thinkingTimer) {
-        clearInterval(thinkingTimer);
-        thinkingTimer = null;
-      }
-    };
-    let toolAnimationTimer = null;
-    const startToolAnimation = () => {
-      if (toolAnimationTimer) return;
-      toolAnimationTimer = setInterval(() => render(true), 350);
-    };
-    const stopToolAnimation = () => {
-      if (toolAnimationTimer) {
-        clearInterval(toolAnimationTimer);
-        toolAnimationTimer = null;
+    let animationTimer = null;
+    const updateAnimationTimer = () => {
+      const state = chatSession.agentStates.get(chatSession.threadId) || "idle";
+      if (state !== "idle") {
+        if (!animationTimer) {
+          animationTimer = setInterval(() => {
+            if (chatSession.isChatActive) {
+              render(true);
+            }
+          }, 350);
+        }
+      } else {
+        if (animationTimer) {
+          clearInterval(animationTimer);
+          animationTimer = null;
+        }
       }
     };
     let lastRenderTime = 0;
@@ -18683,14 +18693,12 @@ async function main() {
         render(force);
       }
     }
-    const startThinkingAnimation = () => {
-      if (thinkingTimer) return;
-      thinkingTimer = setInterval(() => render(true), 350);
-    };
     let diffsExpanded = false;
     function render(force = false) {
       if (isPrompting) return;
-      const isThinking = !!thinkingTimer;
+      if (!chatSession.isChatActive) return;
+      updateAnimationTimer();
+      const isThinking = chatSession.agentStates.get(chatSession.threadId) === "thinking";
       const stats = memoryManager.getBudgetStatsForMessages(messages, rules);
       const prov = config2.defaults.primaryProvider;
       const model = Configurator.getActiveModel(config2, prov) ?? "default";
@@ -18700,7 +18708,7 @@ async function main() {
         ctxUsed: stats.filled,
         ramMB,
         showContextBar: config2.defaults.showContextBar !== false
-      }, model, isThinking, pendingPlan, planMenuIndex, diffsExpanded);
+      }, model, isThinking, getPendingPlan(), getPlanMenuIndex(), diffsExpanded);
     }
     const formatToolResult = (toolName, result, diffSummary, args2) => {
       const sections = [`**Tool call: ${toolName}**`];
@@ -18794,9 +18802,6 @@ ${outputContent}
       };
       const onStreamUpdate = (id) => {
         if (id === chatSession.threadId && chatSession.isChatActive) {
-          if (!chatSession.activeStreams.has(id)) {
-            isStreaming = false;
-          }
           render(true);
         }
       };
@@ -18814,6 +18819,10 @@ ${outputContent}
       sessionEvents.on("prompt_end", onPromptEnd);
       const cleanup = () => {
         chatSession.isChatActive = false;
+        if (animationTimer) {
+          clearInterval(animationTimer);
+          animationTimer = null;
+        }
         sessionEvents.removeListener("stream_update", onStreamUpdate);
         sessionEvents.removeListener("prompt_start", onPromptStart);
         sessionEvents.removeListener("prompt_end", onPromptEnd);
@@ -18821,14 +18830,17 @@ ${outputContent}
         process.stdin.removeListener("keypress", onKeypress);
       };
       const runAgentLoop = async (inputText) => {
-        isStreaming = true;
         chatSession.activeStreams.add(chatSession.threadId);
         chatSession.ensureNamedFromPrompt(inputText);
         messages.push(new import_messages4.HumanMessage(inputText));
         syncMessages();
         chatUI.scrollToBottom();
-        render(true);
-        startThinkingAnimation();
+        chatSession.agentStates.set(chatSession.threadId, "thinking");
+        if (chatSession.isChatActive) {
+          render(true);
+        } else {
+          sessionEvents.emit("stream_update", chatSession.threadId);
+        }
         try {
           let isDone = false;
           const preferredName = Configurator.getUsername(config2) || "user";
@@ -18842,6 +18854,12 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
             messages.push(aiMessage);
             syncMessages();
             let finalMessage = null;
+            chatSession.agentStates.set(chatSession.threadId, "thinking");
+            if (chatSession.isChatActive) {
+              render(true);
+            } else {
+              sessionEvents.emit("stream_update", chatSession.threadId);
+            }
             const stream = await provider.stream(optimizedMsgs);
             for await (const chunk of stream) {
               if (!finalMessage) finalMessage = chunk;
@@ -18849,7 +18867,10 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
               if (chunk) {
                 const reasoning2 = finalMessage.additional_kwargs?.reasoning_content;
                 if (reasoning2 || finalMessage.content) {
-                  stopThinkingAnimation();
+                  if (chatSession.agentStates.get(chatSession.threadId) === "thinking") {
+                    chatSession.agentStates.set(chatSession.threadId, "idle");
+                    sessionEvents.emit("stream_update", chatSession.threadId);
+                  }
                 }
                 let content = "";
                 if (reasoning2) {
@@ -18862,9 +18883,9 @@ ${reasoning2}`;
                 content += finalMessage.content;
                 aiMessage.content = content;
                 if (finalMessage && finalMessage.tool_calls && finalMessage.tool_calls.length > 0) {
-                  stopThinkingAnimation();
                   aiMessage.tool_calls = finalMessage.tool_calls;
-                  startToolAnimation();
+                  chatSession.agentStates.set(chatSession.threadId, "tools");
+                  sessionEvents.emit("stream_update", chatSession.threadId);
                 }
                 syncMessages();
                 if (chatSession.isChatActive) {
@@ -18924,21 +18945,24 @@ ${reasoning}
             const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
             if (hasPlanBlock && !hasToolCalls) {
               if (config2.security.mode === "full") {
-                pendingPlan = false;
+                setPendingPlan(false);
                 isDone = true;
                 setTimeout(() => {
                   runAgentLoop("approved \u2014 please proceed with the plan exactly as described.");
                 }, 50);
               } else {
-                pendingPlan = true;
-                planMenuIndex = 0;
+                setPendingPlan(true);
+                setPlanMenuIndex(0);
                 isDone = true;
+                chatSession.agentStates.set(chatSession.threadId, "idle");
                 if (chatSession.isChatActive) render(true);
+                else sessionEvents.emit("stream_update", chatSession.threadId);
               }
             } else if (hasToolCalls) {
-              pendingPlan = false;
-              startToolAnimation();
+              setPendingPlan(false);
+              chatSession.agentStates.set(chatSession.threadId, "tools");
               if (chatSession.isChatActive) render(true);
+              else sessionEvents.emit("stream_update", chatSession.threadId);
               for (const call of finalMessage.tool_calls) {
                 const tool2 = tools.find((t) => t.name === call.name);
                 let toolResultStr = "";
@@ -18964,19 +18988,18 @@ ${reasoning}
                 sessionEvents.emit("stream_update", chatSession.threadId);
               }
             } else {
-              pendingPlan = false;
+              setPendingPlan(false);
               isDone = true;
+              chatSession.agentStates.set(chatSession.threadId, "idle");
               if (chatSession.isChatActive) render(true);
+              else sessionEvents.emit("stream_update", chatSession.threadId);
             }
           }
-          stopToolAnimation();
-          isStreaming = false;
+          chatSession.agentStates.set(chatSession.threadId, "idle");
           chatSession.activeStreams.delete(chatSession.threadId);
           sessionEvents.emit("stream_update", chatSession.threadId);
         } catch (error51) {
-          stopThinkingAnimation();
-          stopToolAnimation();
-          isStreaming = false;
+          chatSession.agentStates.set(chatSession.threadId, "idle");
           chatSession.activeStreams.delete(chatSession.threadId);
           messages.push(new import_messages4.SystemMessage(formatChatError(error51)));
           syncMessages();
@@ -18988,7 +19011,6 @@ ${reasoning}
       };
       const onKeypress = async (str, key) => {
         if (key.ctrl && key.name === "c") {
-          stopThinkingAnimation();
           process.stdout.write("\x1B[?1049l");
           process.exit(0);
         } else if (key.ctrl && key.name === "e") {
@@ -18996,19 +19018,18 @@ ${reasoning}
           render(true);
           return;
         } else if (key.name === "escape") {
-          stopThinkingAnimation();
           cleanup();
           resolve();
         } else if (key.name === "return") {
-          if (pendingPlan) {
-            const chosen = PLAN_MENU_OPTIONS[planMenuIndex];
+          if (getPendingPlan()) {
+            const chosen = PLAN_MENU_OPTIONS[getPlanMenuIndex()];
             if (chosen.inject !== null) {
-              pendingPlan = false;
-              planMenuIndex = 0;
+              setPendingPlan(false);
+              setPlanMenuIndex(0);
               runAgentLoop(chosen.inject);
             } else {
-              pendingPlan = false;
-              planMenuIndex = 0;
+              setPendingPlan(false);
+              setPlanMenuIndex(0);
               render(true);
             }
             return;
@@ -19040,46 +19061,46 @@ ${reasoning}
           }
           runAgentLoop(finalInputStr);
         } else if (key.name === "up") {
-          if (pendingPlan) {
-            planMenuIndex = (planMenuIndex - 1 + PLAN_MENU_OPTIONS.length) % PLAN_MENU_OPTIONS.length;
+          if (getPendingPlan()) {
+            setPlanMenuIndex((getPlanMenuIndex() - 1 + PLAN_MENU_OPTIONS.length) % PLAN_MENU_OPTIONS.length);
           } else {
             chatUI.scrollUp(3);
           }
-          render(isStreaming);
+          render(getIsStreaming());
         } else if (key.name === "down") {
-          if (pendingPlan) {
-            planMenuIndex = (planMenuIndex + 1) % PLAN_MENU_OPTIONS.length;
+          if (getPendingPlan()) {
+            setPlanMenuIndex((getPlanMenuIndex() + 1) % PLAN_MENU_OPTIONS.length);
           } else {
             chatUI.scrollDown(3);
           }
-          render(isStreaming);
+          render(getIsStreaming());
         } else if (key.name === "pageup") {
-          if (!pendingPlan) chatUI.scrollUp(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
-          render(isStreaming);
+          if (!getPendingPlan()) chatUI.scrollUp(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
+          render(getIsStreaming());
         } else if (key.name === "pagedown") {
-          if (!pendingPlan) chatUI.scrollDown(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
-          render(isStreaming);
+          if (!getPendingPlan()) chatUI.scrollDown(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
+          render(getIsStreaming());
         } else if (key.name === "end") {
-          if (!pendingPlan) chatUI.scrollToBottom();
-          render(isStreaming);
+          if (!getPendingPlan()) chatUI.scrollToBottom();
+          render(getIsStreaming());
         } else if (key.name === "backspace") {
-          if (isStreaming) return;
-          if (!pendingPlan) {
+          if (getIsStreaming()) return;
+          if (!getPendingPlan()) {
             currentInput = currentInput.slice(0, -1);
             render();
           }
         } else if (str && !key.ctrl && !key.meta) {
-          if (isStreaming) return;
-          if (!pendingPlan) {
+          if (getIsStreaming()) return;
+          if (!getPendingPlan()) {
             currentInput += str;
             render();
           }
         }
       };
       process.stdin.on("keypress", onKeypress);
-      render(isStreaming);
+      render(getIsStreaming());
       processPendingApprovals().then(() => {
-        render(isStreaming);
+        render(getIsStreaming());
       });
     });
   };
