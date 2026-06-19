@@ -3,6 +3,7 @@ import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
 import { executor } from '../security/executor.js';
+import { backgroundManager } from '../security/background.js';
 import { osController } from '../hardware/os.js';
 import { browserAutomation } from '../hardware/browser.js';
 import { captureWorkspaceSnapshot, formatWorkspaceChanges } from '../cli/workspaceDiff.js';
@@ -355,6 +356,27 @@ const readBrowserAccessibility = tool(
   }
 );
 
+const listBackgroundProcesses = tool(
+  async () => {
+    try {
+      const procs = backgroundManager.getProcesses();
+      if (procs.length === 0) {
+        return "No active background terminal processes running under O.T.T.O.";
+      }
+      return procs
+        .map(p => `- PID ${p.pid}: ${p.command} (running for ${Math.round((Date.now() - p.startTime) / 1000)}s)`)
+        .join('\n');
+    } catch (e: any) {
+      return `Error listing background processes: ${e.message}`;
+    }
+  },
+  {
+    name: "list_background_processes",
+    description: "Lists all active background terminal sessions running under O.T.T.O, including their PIDs and start times.",
+    schema: z.object({}),
+  }
+);
+
 export const tools = [
   searchCode,
   readFileLines,
@@ -364,5 +386,6 @@ export const tools = [
   writeFile,
   executeTerminalCommand,
   launchOsApp,
-  readBrowserAccessibility
+  readBrowserAccessibility,
+  listBackgroundProcesses
 ];

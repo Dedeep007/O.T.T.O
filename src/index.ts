@@ -469,9 +469,15 @@ async function main() {
         try {
           let isDone = false;
           const preferredName = Configurator.getUsername(config) || 'user';
-          const nameHint = `\n\nUser's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.`;
           
           while (!isDone) {
+            const bgProcs = backgroundManager.getProcesses();
+            const bgInfo = bgProcs.length > 0
+              ? `\n\nActive background terminal processes running under O.T.T.O:\n${bgProcs.map(p => `- PID ${p.pid}: "${p.command}" (running for ${Math.round((Date.now() - p.startTime) / 1000)}s)`).join('\n')}`
+              : `\n\nNo active background terminal processes running under O.T.T.O.`;
+            
+            const nameHint = `\n\nUser's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.${bgInfo}`;
+            
             const msgsToSend = [new SystemMessage(rules + nameHint), ...messages];
             const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
             

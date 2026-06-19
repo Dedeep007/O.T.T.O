@@ -16476,6 +16476,24 @@ var readBrowserAccessibility = (0, import_tools.tool)(
     })
   }
 );
+var listBackgroundProcesses = (0, import_tools.tool)(
+  async () => {
+    try {
+      const procs = backgroundManager.getProcesses();
+      if (procs.length === 0) {
+        return "No active background terminal processes running under O.T.T.O.";
+      }
+      return procs.map((p) => `- PID ${p.pid}: ${p.command} (running for ${Math.round((Date.now() - p.startTime) / 1e3)}s)`).join("\n");
+    } catch (e) {
+      return `Error listing background processes: ${e.message}`;
+    }
+  },
+  {
+    name: "list_background_processes",
+    description: "Lists all active background terminal sessions running under O.T.T.O, including their PIDs and start times.",
+    schema: external_exports.object({})
+  }
+);
 var tools = [
   searchCode,
   readFileLines,
@@ -16485,7 +16503,8 @@ var tools = [
   writeFile,
   executeTerminalCommand,
   launchOsApp,
-  readBrowserAccessibility
+  readBrowserAccessibility,
+  listBackgroundProcesses
 ];
 
 // src/llm/provider.ts
@@ -18844,10 +18863,17 @@ ${outputContent}
         try {
           let isDone = false;
           const preferredName = Configurator.getUsername(config2) || "user";
-          const nameHint = `
-
-User's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.`;
           while (!isDone) {
+            const bgProcs = backgroundManager.getProcesses();
+            const bgInfo = bgProcs.length > 0 ? `
+
+Active background terminal processes running under O.T.T.O:
+${bgProcs.map((p) => `- PID ${p.pid}: "${p.command}" (running for ${Math.round((Date.now() - p.startTime) / 1e3)}s)`).join("\n")}` : `
+
+No active background terminal processes running under O.T.T.O.`;
+            const nameHint = `
+
+User's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.${bgInfo}`;
             const msgsToSend = [new import_messages4.SystemMessage(rules + nameHint), ...messages];
             const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
             const aiMessage = new import_messages4.AIMessage("");
