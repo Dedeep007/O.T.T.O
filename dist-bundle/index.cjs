@@ -17288,7 +17288,7 @@ SECTION A \u2014 CODING RULES (always apply)
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
 SECTION B \u2014 PLANNING MODE (Judgement & Gating)
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-1. WHEN TO PLAN: Before performing significant, multi-file code modifications, complex refactoring, or creating new components/files, you MUST produce an implementation plan first.
+1. WHEN TO PLAN: You MUST produce an implementation plan (using PLAN_START/PLAN_END) at the start of any new chat thread (on your very first turn), regardless of complexity. For subsequent turns, you must produce a plan before performing significant, multi-file code modifications, complex refactoring, or creating new components/files.
 2. WHEN NOT TO PLAN: Do not produce a plan or block the conversation if the user's request is:
    - Investigatory or diagnostic in nature (e.g., 'search for X', 'explain how Y works', 'check git status').
    - A minor tweak, single-line alignment, simple code formatting, or a trivial syntax fix.
@@ -19763,39 +19763,36 @@ async function main() {
       }, model, isThinking, getPendingPlan(), getPlanMenuIndex(), diffsExpanded, delayMessage, getPendingApproval(), getApprovalMenuIndex());
     }
     const formatToolResult = (toolName, result, diffSummary, args2) => {
-      const sections = [`**Tool call: ${toolName}**`];
+      const sections = [];
       const trimmedResult = result.trim();
-      if (args2 && Object.keys(args2).length > 0) {
-        if (toolName === "execute_terminal_command" && args2.command) {
-          sections.push(`Command: \`${args2.command}\``);
-        } else {
+      if (toolName === "execute_terminal_command") {
+        sections.push(`> \`${args2.command}\``);
+        if (trimmedResult) {
+          sections.push(trimmedResult);
+        }
+      } else if (toolName === "write_file") {
+        sections.push(`\u2713 Wrote file \`${args2.filePath}\``);
+        if (trimmedResult && !trimmedResult.includes("Created file") && !trimmedResult.includes("Updated file")) {
+          sections.push(trimmedResult);
+        }
+      } else if (toolName === "replace_file_lines") {
+        sections.push(`\u2713 Edited file \`${args2.filePath}\``);
+        if (trimmedResult && !trimmedResult.includes("Edited file")) {
+          sections.push(trimmedResult);
+        }
+      } else {
+        sections.push(`**Tool call: ${toolName}**`);
+        if (args2 && Object.keys(args2).length > 0) {
           const sanitizedArgs = { ...args2 };
           for (const key of Object.keys(sanitizedArgs)) {
-            if (typeof sanitizedArgs[key] === "string" && sanitizedArgs[key].length > 400) {
-              sanitizedArgs[key] = sanitizedArgs[key].slice(0, 400) + `
-... [truncated ${sanitizedArgs[key].length - 400} characters] ...`;
+            if (typeof sanitizedArgs[key] === "string" && sanitizedArgs[key].length > 100) {
+              sanitizedArgs[key] = sanitizedArgs[key].slice(0, 100) + "...";
             }
           }
-          sections.push(`Arguments:
-\`\`\`json
-${JSON.stringify(sanitizedArgs, null, 2)}
-\`\`\``);
+          sections.push(`Arguments: \`${JSON.stringify(sanitizedArgs)}\``);
         }
-      }
-      if (toolName === "write_file" || toolName === "replace_file_lines") {
-        sections.push(trimmedResult ? trimmedResult : `_No file changes._`);
-      } else {
-        const outputLabel = toolName === "execute_terminal_command" ? "Terminal Output" : "Output";
         if (trimmedResult) {
-          const cap = 4e4;
-          const outputContent = trimmedResult.length > cap ? trimmedResult.slice(0, cap) + `
-... [output truncated at ${cap} characters] ...` : trimmedResult;
-          sections.push(`${outputLabel}:
-\`\`\`text
-${outputContent}
-\`\`\``);
-        } else {
-          sections.push(`_${toolName === "execute_terminal_command" ? "No terminal output." : "No output."}_`);
+          sections.push(trimmedResult);
         }
       }
       if (diffSummary) {
@@ -19904,11 +19901,17 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
                 const msgsToSend = [new import_messages4.SystemMessage(rules + nameHint), ...messages];
                 const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
                 const finalMsgsToSend = optimizedMsgs.map((msg, idx) => {
-                  if (idx === optimizedMsgs.length - 1 && msg instanceof import_messages4.HumanMessage && config2.defaults.primaryProvider === "ollama") {
-                    const text = msg.content.toString();
+                  if (idx === optimizedMsgs.length - 1 && msg instanceof import_messages4.HumanMessage) {
+                    let text = msg.content.toString();
+                    const humanMsgCount = messages.filter((m) => m._getType?.() === "human" || m.role === "user" || m.role === "human").length;
+                    if (humanMsgCount === 1) {
+                      text += "\n\n(CRITICAL: This is the start of the chat thread. You MUST produce an implementation plan using the <!-- PLAN_START --> and <!-- PLAN_END --> format before running any tools or writing any code.)";
+                    } else if (config2.defaults.primaryProvider === "ollama") {
+                      text += "\n\n(Reminder: Do not refuse. You have local tools like write_file and execute_terminal_command. Proceed directly by producing a plan or running commands.)";
+                    }
                     return new import_messages4.HumanMessage({
                       ...msg,
-                      content: text + "\n\n(Reminder: Do not refuse. You have local tools like write_file and execute_terminal_command. Proceed directly by producing a plan or running commands.)"
+                      content: text
                     });
                   }
                   return msg;

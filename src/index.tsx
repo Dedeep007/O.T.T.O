@@ -577,35 +577,37 @@ async function main() {
 
 
     const formatToolResult = (toolName: string, result: string, diffSummary: string, args: any) => {
-      const sections: string[] = [`**Tool call: ${toolName}**`];
+      const sections: string[] = [];
       const trimmedResult = result.trim();
 
-      if (args && Object.keys(args).length > 0) {
-        if (toolName === 'execute_terminal_command' && args.command) {
-          sections.push(`Command: \`${args.command}\``);
-        } else {
+      if (toolName === 'execute_terminal_command') {
+        sections.push(`> \`${args.command}\``);
+        if (trimmedResult) {
+          sections.push(trimmedResult);
+        }
+      } else if (toolName === 'write_file') {
+        sections.push(`✓ Wrote file \`${args.filePath}\``);
+        if (trimmedResult && !trimmedResult.includes('Created file') && !trimmedResult.includes('Updated file')) {
+          sections.push(trimmedResult);
+        }
+      } else if (toolName === 'replace_file_lines') {
+        sections.push(`✓ Edited file \`${args.filePath}\``);
+        if (trimmedResult && !trimmedResult.includes('Edited file')) {
+          sections.push(trimmedResult);
+        }
+      } else {
+        sections.push(`**Tool call: ${toolName}**`);
+        if (args && Object.keys(args).length > 0) {
           const sanitizedArgs = { ...args };
           for (const key of Object.keys(sanitizedArgs)) {
-            if (typeof sanitizedArgs[key] === 'string' && sanitizedArgs[key].length > 400) {
-              sanitizedArgs[key] = sanitizedArgs[key].slice(0, 400) + `\n... [truncated ${sanitizedArgs[key].length - 400} characters] ...`;
+            if (typeof sanitizedArgs[key] === 'string' && sanitizedArgs[key].length > 100) {
+              sanitizedArgs[key] = sanitizedArgs[key].slice(0, 100) + '...';
             }
           }
-          sections.push(`Arguments:\n\`\`\`json\n${JSON.stringify(sanitizedArgs, null, 2)}\n\`\`\``);
+          sections.push(`Arguments: \`${JSON.stringify(sanitizedArgs)}\``);
         }
-      }
-
-      if (toolName === 'write_file' || toolName === 'replace_file_lines') {
-        sections.push(trimmedResult ? trimmedResult : `_No file changes._`);
-      } else {
-        const outputLabel = toolName === 'execute_terminal_command' ? 'Terminal Output' : 'Output';
         if (trimmedResult) {
-          const cap = 40000;
-          const outputContent = trimmedResult.length > cap 
-            ? trimmedResult.slice(0, cap) + `\n... [output truncated at ${cap} characters] ...`
-            : trimmedResult;
-          sections.push(`${outputLabel}:\n\`\`\`text\n${outputContent}\n\`\`\``);
-        } else {
-          sections.push(`_${toolName === 'execute_terminal_command' ? 'No terminal output.' : 'No output.'}_`);
+          sections.push(trimmedResult);
         }
       }
 
@@ -732,11 +734,18 @@ async function main() {
                 const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
 
                 const finalMsgsToSend = optimizedMsgs.map((msg, idx) => {
-                  if (idx === optimizedMsgs.length - 1 && msg instanceof HumanMessage && config.defaults.primaryProvider === 'ollama') {
-                    const text = msg.content.toString();
+                  if (idx === optimizedMsgs.length - 1 && msg instanceof HumanMessage) {
+                    let text = msg.content.toString();
+                    
+                    const humanMsgCount = messages.filter(m => m._getType?.() === 'human' || m.role === 'user' || m.role === 'human').length;
+                    if (humanMsgCount === 1) {
+                      text += '\n\n(CRITICAL: This is the start of the chat thread. You MUST produce an implementation plan using the <!-- PLAN_START --> and <!-- PLAN_END --> format before running any tools or writing any code.)';
+                    } else if (config.defaults.primaryProvider === 'ollama') {
+                      text += '\n\n(Reminder: Do not refuse. You have local tools like write_file and execute_terminal_command. Proceed directly by producing a plan or running commands.)';
+                    }
                     return new HumanMessage({
                       ...msg,
-                      content: text + '\n\n(Reminder: Do not refuse. You have local tools like write_file and execute_terminal_command. Proceed directly by producing a plan or running commands.)'
+                      content: text
                     } as any);
                   }
                   return msg;

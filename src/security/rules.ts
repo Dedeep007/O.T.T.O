@@ -49,7 +49,7 @@ SECTION A — CODING RULES (always apply)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 SECTION B — PLANNING MODE (Judgement & Gating)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. WHEN TO PLAN: Before performing significant, multi-file code modifications, complex refactoring, or creating new components/files, you MUST produce an implementation plan first.
+1. WHEN TO PLAN: You MUST produce an implementation plan (using PLAN_START/PLAN_END) at the start of any new chat thread (on your very first turn), regardless of complexity. For subsequent turns, you must produce a plan before performing significant, multi-file code modifications, complex refactoring, or creating new components/files.
 2. WHEN NOT TO PLAN: Do not produce a plan or block the conversation if the user's request is:
    - Investigatory or diagnostic in nature (e.g., 'search for X', 'explain how Y works', 'check git status').
    - A minor tweak, single-line alignment, simple code formatting, or a trivial syntax fix.
