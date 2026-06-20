@@ -22,6 +22,8 @@ import { captureWorkspaceSnapshot, formatWorkspaceChanges } from './cli/workspac
 import { parseAndExecuteCLI } from './cli/parser.js';
 import * as readline from 'readline';
 import { createRequire } from 'module';
+import fs from 'fs';
+import path from 'path';
 
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
@@ -207,6 +209,12 @@ async function main() {
     const getIsStreaming = () => chatSession.activeStreams.has(chatSession.threadId);
     let isPrompting = false;
     let lastStreamContentLength = 0;
+    let autocompleteState: {
+      originalInput: string;
+      lastAtIdx: number;
+      matches: string[];
+      matchIdx: number;
+    } | null = null;
     
     const getPendingPlan = () => chatSession.pendingPlans.has(chatSession.threadId);
     const setPendingPlan = (val: boolean) => {
@@ -726,7 +734,77 @@ async function main() {
         } else if (key.name === 'escape') {
           cleanup();
           resolve();
+        } else if (key.name === 'tab') {
+          if (getIsStreaming() || getPendingPlan()) return;
+          
+          if (autocompleteState) {
+            const state = autocompleteState;
+            state.matchIdx = (state.matchIdx + 1) % state.matches.length;
+            const completed = state.matches[state.matchIdx];
+            const before = state.originalInput.slice(0, state.lastAtIdx + 1);
+            currentInput = before + completed;
+            render();
+            return;
+          }
+
+          const lastAtIdx = currentInput.lastIndexOf('@');
+          if (lastAtIdx !== -1 && (!/\s/.test(currentInput.charAt(lastAtIdx + 1)) || currentInput.charAt(lastAtIdx + 1) === '')) {
+            const prefix = currentInput.slice(lastAtIdx + 1);
+            
+            let dir = '.';
+            let filePrefix = prefix;
+            
+            if (prefix.includes('/') || prefix.includes('\\')) {
+              const normalized = prefix.replace(/\\/g, '/');
+              const lastSlash = normalized.lastIndexOf('/');
+              dir = prefix.slice(0, lastSlash);
+              filePrefix = prefix.slice(lastSlash + 1);
+            }
+            
+            try {
+              const fullDir = path.resolve(process.cwd(), dir);
+              if (fs.existsSync(fullDir) && fs.statSync(fullDir).isDirectory()) {
+                const entries = fs.readdirSync(fullDir, { withFileTypes: true });
+                const matches = entries
+                  .filter(e => {
+                    const name = e.name;
+                    if (name.startsWith('.') && !filePrefix.startsWith('.')) return false;
+                    if (name === 'node_modules') return false;
+                    return name.toLowerCase().startsWith(filePrefix.toLowerCase());
+                  })
+                  .map(e => {
+                    const relPath = dir === '.' ? e.name : `${dir}/${e.name}`;
+                    return e.isDirectory() ? relPath + '/' : relPath;
+                  });
+
+                if (matches.length > 0) {
+                  matches.sort((a, b) => {
+                    const aIsDir = a.endsWith('/');
+                    const bIsDir = b.endsWith('/');
+                    if (aIsDir && !bIsDir) return -1;
+                    if (!aIsDir && bIsDir) return 1;
+                    return a.localeCompare(b);
+                  });
+
+                  autocompleteState = {
+                    originalInput: currentInput,
+                    lastAtIdx,
+                    matches,
+                    matchIdx: 0
+                  };
+
+                  const completed = matches[0];
+                  const before = currentInput.slice(0, lastAtIdx + 1);
+                  currentInput = before + completed;
+                  render();
+                  return;
+                }
+              }
+            } catch (e) {}
+          }
+          return;
         } else if (key.name === 'return' || key.name === 'enter') {
+          autocompleteState = null;
           // ── PLAN MENU SELECTION ───────────────────────────────────────────
           if (getPendingPlan()) {
             const chosen = PLAN_MENU_OPTIONS[getPlanMenuIndex()];
@@ -774,6 +852,7 @@ async function main() {
 
           runAgentLoop(finalInputStr);
         } else if (key.name === 'up') {
+          autocompleteState = null;
           if (getPendingPlan()) {
             setPlanMenuIndex((getPlanMenuIndex() - 1 + PLAN_MENU_OPTIONS.length) % PLAN_MENU_OPTIONS.length);
           } else {
@@ -781,6 +860,7 @@ async function main() {
           }
           render(getIsStreaming());
         } else if (key.name === 'down') {
+          autocompleteState = null;
           if (getPendingPlan()) {
             setPlanMenuIndex((getPlanMenuIndex() + 1) % PLAN_MENU_OPTIONS.length);
           } else {
@@ -788,18 +868,24 @@ async function main() {
           }
           render(getIsStreaming());
         } else if (key.name === 'pageup') {
+          autocompleteState = null;
           if (!getPendingPlan()) chatUI.scrollUp(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
           render(getIsStreaming());
         } else if (key.name === 'pagedown') {
+          autocompleteState = null;
           if (!getPendingPlan()) chatUI.scrollDown(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
           render(getIsStreaming());
         } else if (key.name === 'end') {
+          autocompleteState = null;
           if (!getPendingPlan()) chatUI.scrollToBottom();
           render(getIsStreaming());
         } else if (key.name === 'backspace') {
+          autocompleteState = null;
           if (getIsStreaming()) return;
           if (!getPendingPlan()) { currentInput = currentInput.slice(0, -1); render(); }
         } else if (str && !key.ctrl && !key.meta) {
+          if (key.name === 'tab') return;
+          autocompleteState = null;
           if (getIsStreaming()) return;
           if (!getPendingPlan()) { currentInput += str; render(); }
         }

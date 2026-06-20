@@ -152,7 +152,7 @@ function renderMarkdownWithOttoStyles(content, width, diffsExpanded) {
   const parsed = import_marked2.marked.parse(withPlaceholders);
   return parsed.replace(/\u0000DIFF(\d+)\u0000/g, (_m, idx) => placeholders[Number(idx)]);
 }
-var import_chalk9, import_marked2, import_marked_terminal2, import_fs8, ChatUI;
+var import_chalk9, import_marked2, import_marked_terminal2, import_fs8, import_path9, ChatUI;
 var init_chat = __esm({
   "src/cli/chat.ts"() {
     "use strict";
@@ -160,6 +160,7 @@ var init_chat = __esm({
     import_marked2 = require("marked");
     import_marked_terminal2 = __toESM(require("marked-terminal"), 1);
     import_fs8 = __toESM(require("fs"), 1);
+    import_path9 = __toESM(require("path"), 1);
     ChatUI = class {
       W = 72;
       lastLineCount = 0;
@@ -386,11 +387,28 @@ var init_chat = __esm({
         let placeholder = "";
         if (currentInput.length === 0) {
           placeholder = pendingPlan ? import_chalk9.default.hex("#F5C400")("\u2191\u2193 choose  \u21B5 confirm") : this.MUTED("Type your message... (esc to menu)");
-        } else if (currentInput.endsWith("@")) {
+        } else if (/[@][^\s]*$/.test(currentInput)) {
           try {
-            const entries = import_fs8.default.readdirSync(process.cwd(), { withFileTypes: true }).filter((e) => !e.name.startsWith(".") && e.name !== "node_modules").map((e) => e.isDirectory() ? e.name + "/" : e.name);
-            if (entries.length > 0) {
-              placeholder = this.MUTED("  [Recs: " + entries.slice(0, 5).join(", ") + (entries.length > 5 ? "..." : "") + "]");
+            const match = currentInput.match(/@([^\s]*)$/);
+            const prefix = match ? match[1] : "";
+            let dir = ".";
+            let filePrefix = prefix;
+            if (prefix.includes("/") || prefix.includes("\\")) {
+              const normalized = prefix.replace(/\\/g, "/");
+              const lastSlash = normalized.lastIndexOf("/");
+              dir = prefix.slice(0, lastSlash);
+              filePrefix = prefix.slice(lastSlash + 1);
+            }
+            const fullDir = import_path9.default.resolve(process.cwd(), dir);
+            if (import_fs8.default.existsSync(fullDir) && import_fs8.default.statSync(fullDir).isDirectory()) {
+              const entries = import_fs8.default.readdirSync(fullDir, { withFileTypes: true }).filter((e) => {
+                if (e.name.startsWith(".") && !filePrefix.startsWith(".")) return false;
+                if (e.name === "node_modules") return false;
+                return e.name.toLowerCase().startsWith(filePrefix.toLowerCase());
+              }).map((e) => e.isDirectory() ? e.name + "/" : e.name);
+              if (entries.length > 0) {
+                placeholder = this.MUTED("  [Press Tab to cycle: " + entries.slice(0, 5).join(", ") + (entries.length > 5 ? "..." : "") + "]");
+              }
             }
           } catch (e) {
           }
@@ -2242,10 +2260,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path10) {
-  if (!path10)
+function getElementAtPath(obj, path12) {
+  if (!path12)
     return obj;
-  return path10.reduce((acc, key) => acc?.[key], obj);
+  return path12.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -2654,11 +2672,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path10, issues) {
+function prefixIssues(path12, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path10);
+    iss.path.unshift(path12);
     return iss;
   });
 }
@@ -2805,16 +2823,16 @@ function flattenError(error51, mapper = (issue2) => issue2.message) {
 }
 function formatError(error51, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error52, path10 = []) => {
+  const processError = (error52, path12 = []) => {
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path10, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path12, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path12, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path12, ...issue2.path]);
       } else {
-        const fullpath = [...path10, ...issue2.path];
+        const fullpath = [...path12, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -2841,17 +2859,17 @@ function formatError(error51, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error51, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error52, path10 = []) => {
+  const processError = (error52, path12 = []) => {
     var _a3, _b;
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path10, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path12, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path12, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path12, ...issue2.path]);
       } else {
-        const fullpath = [...path10, ...issue2.path];
+        const fullpath = [...path12, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -2883,8 +2901,8 @@ function treeifyError(error51, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path10 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path10) {
+  const path12 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path12) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -15576,13 +15594,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path10 = ref.slice(1).split("/").filter(Boolean);
-  if (path10.length === 0) {
+  const path12 = ref.slice(1).split("/").filter(Boolean);
+  if (path12.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path10[0] === defsKey) {
-    const key = path10[1];
+  if (path12[0] === defsKey) {
+    const key = path12[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -17441,8 +17459,8 @@ var PhoneOS = class {
   }
   onKey = async (_, key) => {
     try {
-      const fs10 = await import("fs");
-      fs10.appendFileSync("C:\\Users\\dedeep vasireddy\\keypresses.log", `onKey: active=${this.active} key=${JSON.stringify(key)}
+      const fs11 = await import("fs");
+      fs11.appendFileSync("C:\\Users\\dedeep vasireddy\\keypresses.log", `onKey: active=${this.active} key=${JSON.stringify(key)}
 `);
     } catch {
     }
@@ -18766,6 +18784,8 @@ ${c.error("\u274C")} Unknown command: ${command}`);
 // src/index.ts
 var readline3 = __toESM(require("readline"), 1);
 var import_module2 = require("module");
+var import_fs9 = __toESM(require("fs"), 1);
+var import_path10 = __toESM(require("path"), 1);
 var import_messages4 = require("@langchain/core/messages");
 var import_stream2 = require("@langchain/core/utils/stream");
 var import_prompts5 = require("@inquirer/prompts");
@@ -18921,6 +18941,7 @@ async function main() {
     const getIsStreaming = () => chatSession.activeStreams.has(chatSession.threadId);
     let isPrompting = false;
     let lastStreamContentLength = 0;
+    let autocompleteState = null;
     const getPendingPlan = () => chatSession.pendingPlans.has(chatSession.threadId);
     const setPendingPlan = (val) => {
       if (val) chatSession.pendingPlans.add(chatSession.threadId);
@@ -19384,7 +19405,68 @@ ${reasoning}
         } else if (key.name === "escape") {
           cleanup();
           resolve();
+        } else if (key.name === "tab") {
+          if (getIsStreaming() || getPendingPlan()) return;
+          if (autocompleteState) {
+            const state = autocompleteState;
+            state.matchIdx = (state.matchIdx + 1) % state.matches.length;
+            const completed = state.matches[state.matchIdx];
+            const before = state.originalInput.slice(0, state.lastAtIdx + 1);
+            currentInput = before + completed;
+            render();
+            return;
+          }
+          const lastAtIdx = currentInput.lastIndexOf("@");
+          if (lastAtIdx !== -1 && (!/\s/.test(currentInput.charAt(lastAtIdx + 1)) || currentInput.charAt(lastAtIdx + 1) === "")) {
+            const prefix = currentInput.slice(lastAtIdx + 1);
+            let dir = ".";
+            let filePrefix = prefix;
+            if (prefix.includes("/") || prefix.includes("\\")) {
+              const normalized = prefix.replace(/\\/g, "/");
+              const lastSlash = normalized.lastIndexOf("/");
+              dir = prefix.slice(0, lastSlash);
+              filePrefix = prefix.slice(lastSlash + 1);
+            }
+            try {
+              const fullDir = import_path10.default.resolve(process.cwd(), dir);
+              if (import_fs9.default.existsSync(fullDir) && import_fs9.default.statSync(fullDir).isDirectory()) {
+                const entries = import_fs9.default.readdirSync(fullDir, { withFileTypes: true });
+                const matches = entries.filter((e) => {
+                  const name = e.name;
+                  if (name.startsWith(".") && !filePrefix.startsWith(".")) return false;
+                  if (name === "node_modules") return false;
+                  return name.toLowerCase().startsWith(filePrefix.toLowerCase());
+                }).map((e) => {
+                  const relPath = dir === "." ? e.name : `${dir}/${e.name}`;
+                  return e.isDirectory() ? relPath + "/" : relPath;
+                });
+                if (matches.length > 0) {
+                  matches.sort((a, b) => {
+                    const aIsDir = a.endsWith("/");
+                    const bIsDir = b.endsWith("/");
+                    if (aIsDir && !bIsDir) return -1;
+                    if (!aIsDir && bIsDir) return 1;
+                    return a.localeCompare(b);
+                  });
+                  autocompleteState = {
+                    originalInput: currentInput,
+                    lastAtIdx,
+                    matches,
+                    matchIdx: 0
+                  };
+                  const completed = matches[0];
+                  const before = currentInput.slice(0, lastAtIdx + 1);
+                  currentInput = before + completed;
+                  render();
+                  return;
+                }
+              }
+            } catch (e) {
+            }
+          }
+          return;
         } else if (key.name === "return" || key.name === "enter") {
+          autocompleteState = null;
           if (getPendingPlan()) {
             const chosen = PLAN_MENU_OPTIONS[getPlanMenuIndex()];
             if (chosen.inject !== null) {
@@ -19425,6 +19507,7 @@ ${reasoning}
           }
           runAgentLoop(finalInputStr);
         } else if (key.name === "up") {
+          autocompleteState = null;
           if (getPendingPlan()) {
             setPlanMenuIndex((getPlanMenuIndex() - 1 + PLAN_MENU_OPTIONS.length) % PLAN_MENU_OPTIONS.length);
           } else {
@@ -19432,6 +19515,7 @@ ${reasoning}
           }
           render(getIsStreaming());
         } else if (key.name === "down") {
+          autocompleteState = null;
           if (getPendingPlan()) {
             setPlanMenuIndex((getPlanMenuIndex() + 1) % PLAN_MENU_OPTIONS.length);
           } else {
@@ -19439,21 +19523,27 @@ ${reasoning}
           }
           render(getIsStreaming());
         } else if (key.name === "pageup") {
+          autocompleteState = null;
           if (!getPendingPlan()) chatUI.scrollUp(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
           render(getIsStreaming());
         } else if (key.name === "pagedown") {
+          autocompleteState = null;
           if (!getPendingPlan()) chatUI.scrollDown(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
           render(getIsStreaming());
         } else if (key.name === "end") {
+          autocompleteState = null;
           if (!getPendingPlan()) chatUI.scrollToBottom();
           render(getIsStreaming());
         } else if (key.name === "backspace") {
+          autocompleteState = null;
           if (getIsStreaming()) return;
           if (!getPendingPlan()) {
             currentInput = currentInput.slice(0, -1);
             render();
           }
         } else if (str && !key.ctrl && !key.meta) {
+          if (key.name === "tab") return;
+          autocompleteState = null;
           if (getIsStreaming()) return;
           if (!getPendingPlan()) {
             currentInput += str;

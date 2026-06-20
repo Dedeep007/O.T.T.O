@@ -2,6 +2,7 @@ import chalk from 'chalk';
 import { marked } from 'marked';
 import TerminalRenderer from 'marked-terminal';
 import fs from 'fs';
+import path from 'path';
 
 export interface ChatMessage {
   role: 'user' | 'ai' | 'system' | 'tool';
@@ -502,13 +503,33 @@ export class ChatUI {
       placeholder = pendingPlan
           ? chalk.hex('#F5C400')('\u2191\u2193 choose  \u21b5 confirm')
           : this.MUTED('Type your message... (esc to menu)');
-    } else if (currentInput.endsWith('@')) {
+    } else if (/[@][^\s]*$/.test(currentInput)) {
       try {
-        const entries = fs.readdirSync(process.cwd(), { withFileTypes: true })
-          .filter((e: any) => !e.name.startsWith('.') && e.name !== 'node_modules')
-          .map((e: any) => e.isDirectory() ? e.name + '/' : e.name);
-        if (entries.length > 0) {
-          placeholder = this.MUTED('  [Recs: ' + entries.slice(0, 5).join(', ') + (entries.length > 5 ? '...' : '') + ']');
+        const match = currentInput.match(/@([^\s]*)$/);
+        const prefix = match ? match[1] : '';
+        
+        let dir = '.';
+        let filePrefix = prefix;
+        if (prefix.includes('/') || prefix.includes('\\')) {
+          const normalized = prefix.replace(/\\/g, '/');
+          const lastSlash = normalized.lastIndexOf('/');
+          dir = prefix.slice(0, lastSlash);
+          filePrefix = prefix.slice(lastSlash + 1);
+        }
+        
+        const fullDir = path.resolve(process.cwd(), dir);
+        if (fs.existsSync(fullDir) && fs.statSync(fullDir).isDirectory()) {
+          const entries = fs.readdirSync(fullDir, { withFileTypes: true })
+            .filter((e: any) => {
+              if (e.name.startsWith('.') && !filePrefix.startsWith('.')) return false;
+              if (e.name === 'node_modules') return false;
+              return e.name.toLowerCase().startsWith(filePrefix.toLowerCase());
+            })
+            .map((e: any) => e.isDirectory() ? e.name + '/' : e.name);
+            
+          if (entries.length > 0) {
+            placeholder = this.MUTED('  [Press Tab to cycle: ' + entries.slice(0, 5).join(', ') + (entries.length > 5 ? '...' : '') + ']');
+          }
         }
       } catch (e) {}
     }
