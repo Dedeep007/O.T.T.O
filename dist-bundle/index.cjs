@@ -105,9 +105,9 @@ var ui = {
       console.log(import_chalk.default.yellow(`[!] ${text}`));
     }
   },
-  warning: (text) => {
+  warning: (text, timeoutMs) => {
     if (ui.tuiActive) {
-      if (ui.onTuiMessage) ui.onTuiMessage("warning", text);
+      if (ui.onTuiMessage) ui.onTuiMessage("warning", text, timeoutMs);
     } else {
       console.log(import_chalk.default.yellow.inverse(` WARNING `) + import_chalk.default.yellow(` ${text}`));
     }
@@ -782,6 +782,7 @@ var ChatSession = class _ChatSession {
   hostname;
   threadMessages = /* @__PURE__ */ new Map();
   activeStreams = /* @__PURE__ */ new Set();
+  cancelledThreads = /* @__PURE__ */ new Set();
   isChatActive = false;
   pendingApprovals = [];
   pendingPlans = /* @__PURE__ */ new Set();
@@ -994,7 +995,7 @@ var QuotaManager = class {
     this.cleanHistory(model);
   }
   // Returns wait time in milliseconds if any limit is violated, or 0 if okay
-  checkLimits(model, limits) {
+  checkLimits(model, limits, estimatedTokens = 0) {
     this.cleanHistory(model);
     const records = this.getHistory(model);
     const now = Date.now();
@@ -1033,28 +1034,27 @@ var QuotaManager = class {
       const wait = getWaitTimeForDayLimit(limits.rpd, recs1d);
       if (wait > maxWait) maxWait = wait;
     }
-    if (limits.tpm && tpmUsed >= limits.tpm) {
-      let accumulated = 0;
-      const sorted = [...recs1m].sort((a, b) => b.timestamp - a.timestamp);
-      let lastNeededTimestamp = now - 6e4;
+    if (limits.tpm && tpmUsed + estimatedTokens >= limits.tpm) {
+      let accumulated = tpmUsed + estimatedTokens;
+      const sorted = [...recs1m].sort((a, b) => a.timestamp - b.timestamp);
+      let wait = 6e4;
       for (const r of sorted) {
-        accumulated += r.inputTokens + r.outputTokens;
-        if (accumulated >= limits.tpm) {
-          lastNeededTimestamp = r.timestamp;
+        accumulated -= r.inputTokens + r.outputTokens;
+        if (accumulated < limits.tpm) {
+          const elapsed = now - r.timestamp;
+          wait = Math.max(0, 6e4 - elapsed + 100);
           break;
         }
       }
-      const elapsed = now - lastNeededTimestamp;
-      const wait = Math.max(0, 6e4 - elapsed + 100);
       if (wait > maxWait) maxWait = wait;
     }
-    if (limits.tpd && tpdUsed >= limits.tpd) {
-      let accumulated = 0;
-      const sorted = [...recs1d].sort((a, b) => b.timestamp - a.timestamp);
+    if (limits.tpd && tpdUsed + estimatedTokens >= limits.tpd) {
+      let accumulated = tpdUsed + estimatedTokens;
+      const sorted = [...recs1d].sort((a, b) => a.timestamp - b.timestamp);
       let lastNeededTimestamp = now - 24 * 60 * 60 * 1e3;
       for (const r of sorted) {
-        accumulated += r.inputTokens + r.outputTokens;
-        if (accumulated >= limits.tpd) {
+        accumulated -= r.inputTokens + r.outputTokens;
+        if (accumulated < limits.tpd) {
           lastNeededTimestamp = r.timestamp;
           break;
         }
@@ -1063,19 +1063,18 @@ var QuotaManager = class {
       const wait = Math.max(0, 24 * 60 * 60 * 1e3 - elapsed + 100);
       if (wait > maxWait) maxWait = wait;
     }
-    if (limits.itpm && itpmUsed >= limits.itpm) {
-      let accumulated = 0;
-      const sorted = [...recs1m].sort((a, b) => b.timestamp - a.timestamp);
-      let lastNeededTimestamp = now - 6e4;
+    if (limits.itpm && itpmUsed + estimatedTokens >= limits.itpm) {
+      let accumulated = itpmUsed + estimatedTokens;
+      const sorted = [...recs1m].sort((a, b) => a.timestamp - b.timestamp);
+      let wait = 6e4;
       for (const r of sorted) {
-        accumulated += r.inputTokens;
-        if (accumulated >= limits.itpm) {
-          lastNeededTimestamp = r.timestamp;
+        accumulated -= r.inputTokens;
+        if (accumulated < limits.itpm) {
+          const elapsed = now - r.timestamp;
+          wait = Math.max(0, 6e4 - elapsed + 100);
           break;
         }
       }
-      const elapsed = now - lastNeededTimestamp;
-      const wait = Math.max(0, 6e4 - elapsed + 100);
       if (wait > maxWait) maxWait = wait;
     }
     if (limits.otpm && otpmUsed >= limits.otpm) {
@@ -1095,15 +1094,25 @@ var QuotaManager = class {
     }
     return maxWait;
   }
-  async enforceLimits(model, limits) {
+  async enforceLimits(model, limits, estimatedTokens = 0) {
     if (!limits) return;
     const hasAnyLimit = limits.rpm || limits.rpd || limits.tpm || limits.tpd || limits.itpm || limits.otpm;
     if (!hasAnyLimit) return;
     const threadId = chatSession.threadId || "default";
     while (true) {
-      const waitTime = this.checkLimits(model, limits);
+      let waitTime = this.checkLimits(model, limits, estimatedTokens);
       if (waitTime <= 0) break;
-      ui.warning(`Rate limit threshold approached for ${model}. Pausing execution for ${Math.ceil(waitTime / 1e3)}s to remain within configured limits.`);
+      const now = Date.now();
+      const records = this.getHistory(model);
+      const recs1m = records.filter((r) => r.timestamp > now - 6e4);
+      const tpmUsed = recs1m.reduce((acc, r) => acc + r.inputTokens + r.outputTokens, 0);
+      const itpmUsed = recs1m.reduce((acc, r) => acc + r.inputTokens, 0);
+      const otpmUsed = recs1m.reduce((acc, r) => acc + r.outputTokens, 0);
+      const isMinLimit = limits.tpm && tpmUsed + estimatedTokens >= limits.tpm || limits.itpm && itpmUsed + estimatedTokens >= limits.itpm || limits.otpm && otpmUsed >= limits.otpm;
+      if (isMinLimit) {
+        waitTime = Math.max(waitTime, 6e4);
+      }
+      ui.warning(`Rate limit threshold approached for ${model}. Pausing execution for ${Math.ceil(waitTime / 1e3)}s to remain within configured limits.`, waitTime);
       let remaining = Math.ceil(waitTime / 1e3);
       chatSession.agentStates.set(threadId, "delaying");
       while (remaining > 0) {
@@ -1915,10 +1924,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path12) {
-  if (!path12)
+function getElementAtPath(obj, path13) {
+  if (!path13)
     return obj;
-  return path12.reduce((acc, key) => acc?.[key], obj);
+  return path13.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -2327,11 +2336,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path12, issues) {
+function prefixIssues(path13, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path12);
+    iss.path.unshift(path13);
     return iss;
   });
 }
@@ -2478,16 +2487,16 @@ function flattenError(error51, mapper = (issue2) => issue2.message) {
 }
 function formatError(error51, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error52, path12 = []) => {
+  const processError = (error52, path13 = []) => {
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path12, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path13, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path12, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path13, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path12, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path13, ...issue2.path]);
       } else {
-        const fullpath = [...path12, ...issue2.path];
+        const fullpath = [...path13, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -2514,17 +2523,17 @@ function formatError(error51, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error51, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error52, path12 = []) => {
+  const processError = (error52, path13 = []) => {
     var _a3, _b;
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path12, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path13, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path12, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path13, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path12, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path13, ...issue2.path]);
       } else {
-        const fullpath = [...path12, ...issue2.path];
+        const fullpath = [...path13, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -2556,8 +2565,8 @@ function treeifyError(error51, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path12 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path12) {
+  const path13 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path13) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -15249,13 +15258,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path12 = ref.slice(1).split("/").filter(Boolean);
-  if (path12.length === 0) {
+  const path13 = ref.slice(1).split("/").filter(Boolean);
+  if (path13.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path12[0] === defsKey) {
-    const key = path12[1];
+  if (path13[0] === defsKey) {
+    const key = path13[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -16111,6 +16120,29 @@ ${createDeletedFileDiff(relPath, prev)}
   }
   return changes.join("\n\n");
 }
+function restoreWorkspaceSnapshot(backup, root = process.cwd()) {
+  const current = captureWorkspaceSnapshot(root);
+  for (const [relPath, content] of backup.entries()) {
+    const fullPath = import_path3.default.join(root, relPath);
+    const dir = import_path3.default.dirname(fullPath);
+    if (!import_fs2.default.existsSync(dir)) {
+      import_fs2.default.mkdirSync(dir, { recursive: true });
+    }
+    const currentContent = current.get(relPath);
+    if (currentContent !== content) {
+      import_fs2.default.writeFileSync(fullPath, content, "utf8");
+    }
+  }
+  for (const relPath of current.keys()) {
+    if (!backup.has(relPath)) {
+      const fullPath = import_path3.default.join(root, relPath);
+      try {
+        import_fs2.default.unlinkSync(fullPath);
+      } catch {
+      }
+    }
+  }
+}
 
 // src/llm/tools.ts
 var EXCLUDED_DIRS2 = /* @__PURE__ */ new Set(["node_modules", "dist", "dist-bundle", "build", ".git", ".agents", ".codex"]);
@@ -16482,6 +16514,295 @@ var tools = [
 
 // src/llm/provider.ts
 var import_stream = require("@langchain/core/utils/stream");
+
+// src/memory/budget.ts
+var import_messages2 = require("@langchain/core/messages");
+var import_messages3 = require("@langchain/core/messages");
+var MemoryManager = class {
+  config = null;
+  setConfig(newConfig) {
+    this.config = newConfig;
+  }
+  get C_max() {
+    try {
+      const config2 = this.config || Configurator.loadConfig();
+      if (config2) {
+        const prov = config2.defaults.primaryProvider;
+        const model = Configurator.getActiveModel(config2, prov);
+        let providerDefault = 64e3;
+        if (prov === "openai") providerDefault = 128e3;
+        else if (prov === "anthropic") providerDefault = 2e5;
+        else if (prov === "gemini") providerDefault = 128e3;
+        else if (prov === "mistral") providerDefault = 128e3;
+        else if (prov === "bedrock") providerDefault = 2e5;
+        else if (prov === "groq") providerDefault = 32768;
+        else if (prov === "ollama") {
+          providerDefault = config2.providers.ollama?.num_ctx || 8192;
+        }
+        if (model) {
+          const limits = config2.modelLimits?.[model];
+          if (limits && typeof limits.tpm === "number" && limits.tpm > 0) {
+            const safetyBuffer = Math.min(1e3, Math.floor(limits.tpm * 0.1));
+            return Math.min(config2.defaults.maxCtx || providerDefault, limits.tpm - safetyBuffer);
+          }
+        }
+        if (typeof config2.defaults.maxCtx === "number") {
+          return Math.min(providerDefault, config2.defaults.maxCtx);
+        }
+        return providerDefault;
+      }
+    } catch {
+    }
+    return 64e3;
+  }
+  B_sys = 3e3;
+  // System prompt budget
+  B_out = 4e3;
+  // Expected output buffer
+  Max_Msg_Tokens = 2e4;
+  // Increased truncation threshold for large files/logs
+  SummaryBudget = 4e3;
+  lastContextSize = 0;
+  totalCompressedTokens = 0;
+  lastSummary = "";
+  getChatBudget() {
+    const cMax = this.C_max;
+    const bSys = cMax < 1e4 ? Math.floor(cMax * 0.25) : this.B_sys;
+    const bOut = cMax < 1e4 ? Math.floor(cMax * 0.25) : this.B_out;
+    return cMax - (bSys + bOut);
+  }
+  getBudgetStats() {
+    return {
+      max: this.C_max,
+      filled: this.lastContextSize,
+      compressed: this.totalCompressedTokens
+    };
+  }
+  getBudgetStatsForMessages(messages, systemPrompt = "") {
+    const conversational = messages.filter((message) => message._getType?.() !== "system");
+    const systemTokens = systemPrompt ? this.estimateTokens(systemPrompt) : 0;
+    const isSmall = this.C_max < 5e3;
+    const limit = Math.min(this.Max_Msg_Tokens, Math.max(isSmall ? 200 : 1e3, Math.floor(this.C_max * 0.5)));
+    const baseBudget = this.getChatBudget();
+    const summaryBudget = Math.min(this.SummaryBudget, Math.max(isSmall ? 50 : 400, Math.floor(baseBudget * 0.15)));
+    const workingBudget = Math.max(isSmall ? 200 : 1200, baseBudget - summaryBudget);
+    const reversed = [...conversational].reverse();
+    let accumulated = 0;
+    for (const msg of reversed) {
+      const content = msg?.content?.toString?.() ?? "";
+      const tokens = this.estimateTokens(content);
+      const truncatedTokens = Math.min(tokens, limit);
+      if (accumulated + truncatedTokens <= workingBudget) {
+        accumulated += truncatedTokens;
+      } else {
+        break;
+      }
+    }
+    const filled = systemTokens + accumulated;
+    return {
+      max: this.C_max,
+      filled,
+      compressed: this.totalCompressedTokens
+    };
+  }
+  getLastSummary() {
+    return this.lastSummary;
+  }
+  // Rough estimation of tokens based on character count (1 token ~= 4 chars)
+  estimateTokens(text) {
+    return Math.ceil(text.length / 4);
+  }
+  perMessageTruncate(text) {
+    const tokens = this.estimateTokens(text);
+    const isSmall = this.C_max < 5e3;
+    const limit = Math.min(this.Max_Msg_Tokens, Math.max(isSmall ? 200 : 1e3, Math.floor(this.C_max * 0.5)));
+    if (tokens > limit) {
+      ui.alert(`Payload truncated. Original size: ~${tokens} tokens, limit: ${limit}`);
+      const allowedChars = limit * 4;
+      this.totalCompressedTokens += tokens - limit;
+      return text.substring(0, allowedChars) + "\n\n...[TRUNCATED BY OTTO BUDGETER]...";
+    }
+    return text;
+  }
+  async optimizeContext(messages, systemPrompt, originalHistory) {
+    const conversationalMessages = messages.filter((message) => message._getType() !== "system");
+    const normalizedMessages = conversationalMessages.map((message) => {
+      const content = message.content.toString();
+      const truncatedContent = this.perMessageTruncate(content);
+      if (truncatedContent === content) return message;
+      if (message instanceof import_messages2.HumanMessage) {
+        return new import_messages2.HumanMessage(truncatedContent);
+      }
+      if (message instanceof import_messages2.AIMessage) {
+        return new import_messages2.AIMessage(truncatedContent);
+      }
+      if (message instanceof import_messages2.ToolMessage) {
+        return new import_messages2.ToolMessage({
+          content: truncatedContent,
+          tool_call_id: message.tool_call_id,
+          name: message.name
+        });
+      }
+      return new import_messages2.SystemMessage(truncatedContent);
+    });
+    const baseBudget = this.getChatBudget();
+    const isSmall = this.C_max < 5e3;
+    const summaryBudget = Math.min(this.SummaryBudget, Math.max(isSmall ? 50 : 400, Math.floor(baseBudget * 0.15)));
+    const workingBudget = Math.max(isSmall ? 200 : 1200, baseBudget - summaryBudget);
+    const trimmed = await (0, import_messages3.trimMessages)(normalizedMessages, {
+      maxTokens: workingBudget,
+      tokenCounter: (msgs) => msgs.reduce((acc, m) => acc + this.estimateTokens(m.content.toString()), 0),
+      strategy: "last",
+      allowPartial: false,
+      includeSystem: false
+    });
+    const dropped = normalizedMessages.slice(0, Math.max(0, normalizedMessages.length - trimmed.length));
+    const hasHuman = trimmed.some((m) => m._getType() === "human");
+    if (!hasHuman) {
+      const lastHuman = [...normalizedMessages].reverse().find((m) => m._getType() === "human");
+      if (lastHuman) {
+        trimmed.unshift(lastHuman);
+      }
+    }
+    let summaryText = "";
+    if (dropped.length > 0) {
+      if (originalHistory) {
+        const oldSummaries = originalHistory.filter((m) => m._getType() === "system");
+        const itemsToSummarize = [...oldSummaries, ...dropped];
+        summaryText = this.buildSummary(itemsToSummarize);
+        this.lastSummary = summaryText;
+        let firstTrimmedIndex = originalHistory.length;
+        if (trimmed.length > 0) {
+          const firstTrimmed = trimmed[0];
+          const idx = originalHistory.findIndex((m) => m._getType() === firstTrimmed._getType() && m.content.toString() === firstTrimmed.content.toString());
+          if (idx !== -1) {
+            firstTrimmedIndex = idx;
+          }
+        }
+        if (firstTrimmedIndex > 0) {
+          originalHistory.splice(0, firstTrimmedIndex);
+        }
+        if (summaryText) {
+          originalHistory.unshift(new import_messages2.SystemMessage(summaryText));
+        }
+      } else {
+        summaryText = this.buildSummary(dropped);
+        this.lastSummary = summaryText;
+      }
+    } else {
+      if (originalHistory) {
+        const existingSummary = originalHistory.find((m) => m._getType() === "system" && m.content.toString().startsWith("Conversation summary of earlier context:"));
+        if (existingSummary) {
+          summaryText = existingSummary.content.toString();
+          this.lastSummary = summaryText;
+        }
+      }
+    }
+    const finalMessages = summaryText ? [new import_messages2.SystemMessage(systemPrompt), new import_messages2.SystemMessage(summaryText), ...trimmed.filter((m) => m._getType() !== "system")] : [new import_messages2.SystemMessage(systemPrompt), ...trimmed.filter((m) => m._getType() !== "system")];
+    this.lastContextSize = finalMessages.reduce((acc, m) => acc + this.estimateTokens(m.content.toString()), 0);
+    return finalMessages;
+  }
+  buildSummary(dropped) {
+    if (dropped.length === 0) return "";
+    const userGoals = [];
+    const files = [];
+    const commands = [];
+    const notes = [];
+    for (const message of dropped) {
+      const type = message._getType();
+      const content = message.content.toString();
+      const cleanedContent = content.replace(/\s+/g, " ").trim();
+      if (!cleanedContent) continue;
+      if (type === "system" && content.startsWith("Conversation summary of earlier context:")) {
+        const lines = content.split("\n");
+        for (const line of lines) {
+          const cleanLine = line.trim();
+          if (cleanLine.startsWith("- Earlier goals:")) {
+            const items = cleanLine.substring("- Earlier goals:".length).split("|").map((s) => s.trim()).filter(Boolean);
+            userGoals.push(...items);
+          } else if (cleanLine.startsWith("- Files touched:")) {
+            const items = cleanLine.substring("- Files touched:".length).split(",").map((s) => s.trim()).filter(Boolean);
+            files.push(...items);
+          } else if (cleanLine.startsWith("- Commands seen:")) {
+            const items = cleanLine.substring("- Commands seen:".length).split("|").map((s) => s.trim()).filter(Boolean);
+            commands.push(...items);
+          } else if (cleanLine.startsWith("- Recent outcomes:")) {
+            const items = cleanLine.substring("- Recent outcomes:".length).split("|").map((s) => s.trim()).filter(Boolean);
+            notes.push(...items);
+          }
+        }
+      } else if (type === "human") {
+        const short = this.shortenForSummary(cleanedContent, 100);
+        if (short) userGoals.push(short);
+        this.collectFiles(content, files);
+      } else if (type === "ai") {
+        this.collectFiles(content, files);
+        this.collectCommands(content, commands);
+        const note = this.extractHeadline(content);
+        if (note) notes.push(note);
+      } else if (type === "tool") {
+        this.collectFiles(content, files);
+        this.collectCommands(content, commands);
+        const note = this.extractDiffHeadline(content);
+        if (note) notes.push(note);
+      }
+    }
+    const unique = (items) => Array.from(new Set(items)).slice(0, 8);
+    const sections = [];
+    const goals = unique(userGoals);
+    if (goals.length) sections.push(`Earlier goals: ${goals.join(" | ")}`);
+    const fileList = unique(files);
+    if (fileList.length) sections.push(`Files touched: ${fileList.join(", ")}`);
+    const cmdList = unique(commands);
+    if (cmdList.length) sections.push(`Commands seen: ${cmdList.join(" | ")}`);
+    const noteList = unique(notes);
+    if (noteList.length) sections.push(`Recent outcomes: ${noteList.join(" | ")}`);
+    if (!sections.length) return "";
+    return [
+      "Conversation summary of earlier context:",
+      ...sections.map((line) => `- ${line}`)
+    ].join("\n");
+  }
+  collectFiles(text, bucket) {
+    const patterns = [
+      /(?:^|[\s"'`([{])([A-Za-z]:[\\/][^\s"'`]+(?:\.[A-Za-z0-9_+-]+)?)/g,
+      /(?:^|[\s"'`([{])([A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+\.[A-Za-z0-9_+-]+?)/g,
+      /---\s+([^\s]+)\s*$/gm,
+      /\+\+\+\s+([^\s]+)\s*$/gm
+    ];
+    for (const pattern of patterns) {
+      let match;
+      while ((match = pattern.exec(text)) !== null) {
+        const value = match[1].replace(/^[\s"'`([{]+|[\s"'`)\]}.,]+$/g, "");
+        if (value && !bucket.includes(value)) bucket.push(value);
+      }
+    }
+  }
+  collectCommands(text, bucket) {
+    const match = text.match(/Command:\s*`([^`]+)`/i);
+    if (match?.[1]) {
+      const cmd = this.shortenForSummary(match[1], 120);
+      if (cmd && !bucket.includes(cmd)) bucket.push(cmd);
+    }
+  }
+  extractHeadline(text) {
+    const sentence = text.split(/[.!?\n]/).map((s) => s.trim()).find(Boolean) ?? "";
+    return this.shortenForSummary(sentence, 110);
+  }
+  extractDiffHeadline(text) {
+    const match = text.match(/^(Edited file|Created file|Deleted file):\s+(.+)$/m);
+    if (match) return `${match[1]} ${this.shortenForSummary(match[2], 80)}`;
+    return this.extractHeadline(text);
+  }
+  shortenForSummary(text, maxLen) {
+    const cleaned = text.replace(/\s+/g, " ").trim();
+    if (!cleaned) return "";
+    return cleaned.length > maxLen ? cleaned.slice(0, maxLen - 1).trimEnd() + "..." : cleaned;
+  }
+};
+var memoryManager = new MemoryManager();
+
+// src/llm/provider.ts
 function sanitizeJsonString(jsonStr) {
   let result = "";
   let inString = false;
@@ -16515,6 +16836,65 @@ function isToolCallFormat(obj) {
   }
   return obj && typeof obj === "object" && "name" in obj && ("args" in obj || "arguments" in obj);
 }
+function parseInvalidWriteFileJson(jsonStr) {
+  if (!jsonStr.includes("write_file")) return null;
+  const filePathMatch = jsonStr.match(/"filePath"\s*:\s*"([^"]+)"/);
+  if (!filePathMatch) return null;
+  const filePath = filePathMatch[1];
+  const contentIdx = jsonStr.indexOf('"content"');
+  if (contentIdx === -1) return null;
+  const colonIdx = jsonStr.indexOf(":", contentIdx);
+  if (colonIdx === -1) return null;
+  const startQuoteIdx = jsonStr.indexOf('"', colonIdx);
+  if (startQuoteIdx === -1) return null;
+  let endQuoteIdx = -1;
+  for (let i = jsonStr.length - 1; i > startQuoteIdx; i--) {
+    if (jsonStr[i] === '"') {
+      const tail = jsonStr.substring(i + 1).trim();
+      if (/^[\s,}]*$/.test(tail)) {
+        if (tail.includes("}")) {
+          endQuoteIdx = i;
+          break;
+        }
+      }
+    }
+  }
+  if (endQuoteIdx === -1) return null;
+  let content = jsonStr.substring(startQuoteIdx + 1, endQuoteIdx);
+  let unescaped = "";
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] === "\\") {
+      const next = content[i + 1];
+      if (next === "n") {
+        unescaped += "\n";
+        i++;
+      } else if (next === "r") {
+        unescaped += "\r";
+        i++;
+      } else if (next === "t") {
+        unescaped += "	";
+        i++;
+      } else if (next === '"') {
+        unescaped += '"';
+        i++;
+      } else if (next === "\\") {
+        unescaped += "\\";
+        i++;
+      } else {
+        unescaped += "\\";
+      }
+    } else {
+      unescaped += content[i];
+    }
+  }
+  return {
+    name: "write_file",
+    arguments: {
+      filePath,
+      content: unescaped
+    }
+  };
+}
 function parseFallbackToolCalls(content, messages) {
   const trimmed = content.trim();
   if (!trimmed) return null;
@@ -16547,6 +16927,10 @@ function parseFallbackToolCalls(content, messages) {
       }
     }
   } catch {
+    const customParsed = parseInvalidWriteFileJson(trimmed);
+    if (customParsed) {
+      addIfValid(customParsed);
+    }
   }
   const jsonBlockRegex = /```json\s*([\s\S]*?)\s*```/g;
   let match;
@@ -16568,6 +16952,12 @@ function parseFallbackToolCalls(content, messages) {
         }
       }
     } catch {
+      const customParsed = parseInvalidWriteFileJson(match[1].trim());
+      if (customParsed) {
+        if (addIfValid(customParsed)) {
+          parsedBlockIndexes.add(match.index);
+        }
+      }
     }
   }
   let inString = false;
@@ -16601,6 +16991,10 @@ function parseFallbackToolCalls(content, messages) {
             const parsed = JSON.parse(sanitized);
             addIfValid(parsed);
           } catch {
+            const customParsed = parseInvalidWriteFileJson(potentialJson);
+            if (customParsed) {
+              addIfValid(customParsed);
+            }
           }
         }
       }
@@ -16620,6 +17014,8 @@ function parseFallbackToolCalls(content, messages) {
     lastIdx = blockRegex.lastIndex;
     if (!code) continue;
     if (lang === "diff" || lang === "patch") continue;
+    const looksLikeToolCall = (code.includes('"name"') || code.includes("'name'")) && (code.includes('"arguments"') || code.includes("'arguments'") || code.includes('"args"') || code.includes("'args'"));
+    if (looksLikeToolCall) continue;
     if (messages && messages.length > 0) {
       const lastMsg = messages[messages.length - 1];
       const isToolMessage = lastMsg && (lastMsg._getType?.() === "tool" || lastMsg.role === "tool" || lastMsg.content && lastMsg.content.toString().includes("Background process started") || lastMsg.content && lastMsg.content.toString().includes("Initial Output Logs"));
@@ -16863,14 +17259,14 @@ var ProviderEngine = class {
               response.tool_calls = fallbackCalls;
               const rawTrimmed = response.content.toString().trim();
               try {
-                JSON.parse(rawTrimmed);
+                JSON.parse(sanitizeJsonString(rawTrimmed));
                 response.content = "";
               } catch {
                 const blockRegex = /^```json\s*([\s\S]*?)\s*```$/i;
                 const match = rawTrimmed.match(blockRegex);
                 if (match) {
                   try {
-                    JSON.parse(match[1].trim());
+                    JSON.parse(sanitizeJsonString(match[1].trim()));
                     response.content = "";
                   } catch {
                   }
@@ -16921,6 +17317,7 @@ var ProviderEngine = class {
   }
   setConfig(newConfig) {
     this.config = Configurator.normalizeConfig(newConfig);
+    memoryManager.setConfig(this.config);
     this.initProvider();
   }
   getConfig() {
@@ -16958,7 +17355,8 @@ var ProviderEngine = class {
     const activeModel = Configurator.getActiveModel(this.config, activeProvider) || "default";
     const limits = this.config.modelLimits?.[activeModel];
     if (limits) {
-      await quotaManager.enforceLimits(activeModel, limits);
+      const estimatedInputTokens = Math.ceil(messages.reduce((acc, m) => acc + (m.content?.toString() || "").length, 0) / 4);
+      await quotaManager.enforceLimits(activeModel, limits, estimatedInputTokens);
     }
     try {
       const response = await this.primaryModel.invoke(messages);
@@ -16998,7 +17396,8 @@ var ProviderEngine = class {
     const activeModel = Configurator.getActiveModel(this.config, activeProvider) || "default";
     const limits = this.config.modelLimits?.[activeModel];
     if (limits) {
-      await quotaManager.enforceLimits(activeModel, limits);
+      const estimatedInputTokens = Math.ceil(messages.reduce((acc, m) => acc + (m.content?.toString() || "").length, 0) / 4);
+      await quotaManager.enforceLimits(activeModel, limits, estimatedInputTokens);
     }
     let finalMessage = null;
     try {
@@ -17043,211 +17442,6 @@ var ProviderEngine = class {
   }
 };
 
-// src/memory/budget.ts
-var import_messages2 = require("@langchain/core/messages");
-var import_messages3 = require("@langchain/core/messages");
-var MemoryManager = class {
-  get C_max() {
-    try {
-      const config2 = Configurator.loadConfig();
-      if (config2) {
-        const prov = config2.defaults.primaryProvider;
-        const model = Configurator.getActiveModel(config2, prov);
-        if (model) {
-          const limits = config2.modelLimits?.[model];
-          if (limits && typeof limits.tpm === "number" && limits.tpm > 0) {
-            const safetyBuffer = Math.min(1e3, Math.floor(limits.tpm * 0.1));
-            return Math.min(config2.defaults.maxCtx || 64e3, limits.tpm - safetyBuffer);
-          }
-        }
-        if (typeof config2.defaults.maxCtx === "number") {
-          return config2.defaults.maxCtx;
-        }
-      }
-    } catch {
-    }
-    return 64e3;
-  }
-  B_sys = 3e3;
-  // System prompt budget
-  B_out = 4e3;
-  // Expected output buffer
-  Max_Msg_Tokens = 2e4;
-  // Increased truncation threshold for large files/logs
-  SummaryBudget = 4e3;
-  lastContextSize = 0;
-  totalCompressedTokens = 0;
-  lastSummary = "";
-  getChatBudget() {
-    const cMax = this.C_max;
-    const bSys = cMax < 1e4 ? Math.floor(cMax * 0.25) : this.B_sys;
-    const bOut = cMax < 1e4 ? Math.floor(cMax * 0.25) : this.B_out;
-    return cMax - (bSys + bOut);
-  }
-  getBudgetStats() {
-    return {
-      max: this.C_max,
-      filled: this.lastContextSize,
-      compressed: this.totalCompressedTokens
-    };
-  }
-  getBudgetStatsForMessages(messages, systemPrompt = "") {
-    const conversational = messages.filter((message) => message._getType?.() !== "system");
-    const systemTokens = systemPrompt ? this.estimateTokens(systemPrompt) : 0;
-    const filled = conversational.reduce((acc, message) => {
-      const content = message?.content?.toString?.() ?? "";
-      return acc + this.estimateTokens(content);
-    }, systemTokens);
-    return {
-      max: this.C_max,
-      filled,
-      compressed: this.totalCompressedTokens
-    };
-  }
-  getLastSummary() {
-    return this.lastSummary;
-  }
-  // Rough estimation of tokens based on character count (1 token ~= 4 chars)
-  estimateTokens(text) {
-    return Math.ceil(text.length / 4);
-  }
-  perMessageTruncate(text) {
-    const tokens = this.estimateTokens(text);
-    const limit = Math.min(this.Max_Msg_Tokens, Math.max(1e3, Math.floor(this.C_max * 0.5)));
-    if (tokens > limit) {
-      ui.alert(`Payload truncated. Original size: ~${tokens} tokens, limit: ${limit}`);
-      const allowedChars = limit * 4;
-      this.totalCompressedTokens += tokens - limit;
-      return text.substring(0, allowedChars) + "\n\n...[TRUNCATED BY OTTO BUDGETER]...";
-    }
-    return text;
-  }
-  async optimizeContext(messages, systemPrompt) {
-    const conversationalMessages = messages.filter((message) => message._getType() !== "system");
-    const normalizedMessages = conversationalMessages.map((message) => {
-      const content = message.content.toString();
-      const truncatedContent = this.perMessageTruncate(content);
-      if (truncatedContent === content) return message;
-      if (message instanceof import_messages2.HumanMessage) {
-        return new import_messages2.HumanMessage(truncatedContent);
-      }
-      if (message instanceof import_messages2.AIMessage) {
-        return new import_messages2.AIMessage(truncatedContent);
-      }
-      if (message instanceof import_messages2.ToolMessage) {
-        return new import_messages2.ToolMessage({
-          content: truncatedContent,
-          tool_call_id: message.tool_call_id,
-          name: message.name
-        });
-      }
-      return new import_messages2.SystemMessage(truncatedContent);
-    });
-    const baseBudget = this.getChatBudget();
-    const summaryBudget = Math.min(this.SummaryBudget, Math.max(400, Math.floor(baseBudget * 0.15)));
-    const workingBudget = Math.max(1200, baseBudget - summaryBudget);
-    const trimmed = await (0, import_messages3.trimMessages)(normalizedMessages, {
-      maxTokens: workingBudget,
-      tokenCounter: (msgs) => msgs.reduce((acc, m) => acc + this.estimateTokens(m.content.toString()), 0),
-      strategy: "last",
-      allowPartial: false,
-      includeSystem: false
-    });
-    const dropped = normalizedMessages.slice(0, Math.max(0, normalizedMessages.length - trimmed.length));
-    const hasHuman = trimmed.some((m) => m._getType() === "human");
-    if (!hasHuman) {
-      const lastHuman = [...normalizedMessages].reverse().find((m) => m._getType() === "human");
-      if (lastHuman) {
-        trimmed.unshift(lastHuman);
-      }
-    }
-    const summaryText = this.buildSummary(dropped);
-    this.lastSummary = summaryText;
-    const finalMessages = summaryText ? [new import_messages2.SystemMessage(systemPrompt), new import_messages2.SystemMessage(summaryText), ...trimmed.filter((m) => m._getType() !== "system")] : [new import_messages2.SystemMessage(systemPrompt), ...trimmed.filter((m) => m._getType() !== "system")];
-    this.lastContextSize = finalMessages.reduce((acc, m) => acc + this.estimateTokens(m.content.toString()), 0);
-    return finalMessages;
-  }
-  buildSummary(dropped) {
-    if (dropped.length === 0) return "";
-    const userGoals = [];
-    const files = [];
-    const commands = [];
-    const notes = [];
-    for (const message of dropped) {
-      const type = message._getType();
-      const content = message.content.toString().replace(/\s+/g, " ").trim();
-      if (!content) continue;
-      if (type === "human") {
-        const short = this.shortenForSummary(content, 100);
-        if (short) userGoals.push(short);
-        this.collectFiles(content, files);
-      } else if (type === "ai") {
-        this.collectFiles(content, files);
-        this.collectCommands(content, commands);
-        const note = this.extractHeadline(content);
-        if (note) notes.push(note);
-      } else if (type === "tool") {
-        this.collectFiles(content, files);
-        this.collectCommands(content, commands);
-        const note = this.extractDiffHeadline(content);
-        if (note) notes.push(note);
-      }
-    }
-    const unique = (items) => Array.from(new Set(items)).slice(0, 8);
-    const sections = [];
-    const goals = unique(userGoals);
-    if (goals.length) sections.push(`Earlier goals: ${goals.join(" | ")}`);
-    const fileList = unique(files);
-    if (fileList.length) sections.push(`Files touched: ${fileList.join(", ")}`);
-    const cmdList = unique(commands);
-    if (cmdList.length) sections.push(`Commands seen: ${cmdList.join(" | ")}`);
-    const noteList = unique(notes);
-    if (noteList.length) sections.push(`Recent outcomes: ${noteList.join(" | ")}`);
-    if (!sections.length) return "";
-    return [
-      "Conversation summary of earlier context:",
-      ...sections.map((line) => `- ${line}`)
-    ].join("\n");
-  }
-  collectFiles(text, bucket) {
-    const patterns = [
-      /(?:^|[\s"'`([{])([A-Za-z]:[\\/][^\s"'`]+(?:\.[A-Za-z0-9_+-]+)?)/g,
-      /(?:^|[\s"'`([{])([A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+\.[A-Za-z0-9_+-]+?)/g,
-      /---\s+([^\s]+)\s*$/gm,
-      /\+\+\+\s+([^\s]+)\s*$/gm
-    ];
-    for (const pattern of patterns) {
-      let match;
-      while ((match = pattern.exec(text)) !== null) {
-        const value = match[1].replace(/^[\s"'`([{]+|[\s"'`)\]}.,]+$/g, "");
-        if (value && !bucket.includes(value)) bucket.push(value);
-      }
-    }
-  }
-  collectCommands(text, bucket) {
-    const match = text.match(/Command:\s*`([^`]+)`/i);
-    if (match?.[1]) {
-      const cmd = this.shortenForSummary(match[1], 120);
-      if (cmd && !bucket.includes(cmd)) bucket.push(cmd);
-    }
-  }
-  extractHeadline(text) {
-    const sentence = text.split(/[.!?\n]/).map((s) => s.trim()).find(Boolean) ?? "";
-    return this.shortenForSummary(sentence, 110);
-  }
-  extractDiffHeadline(text) {
-    const match = text.match(/^(Edited file|Created file|Deleted file):\s+(.+)$/m);
-    if (match) return `${match[1]} ${this.shortenForSummary(match[2], 80)}`;
-    return this.extractHeadline(text);
-  }
-  shortenForSummary(text, maxLen) {
-    const cleaned = text.replace(/\s+/g, " ").trim();
-    if (!cleaned) return "";
-    return cleaned.length > maxLen ? cleaned.slice(0, maxLen - 1).trimEnd() + "..." : cleaned;
-  }
-};
-var memoryManager = new MemoryManager();
-
 // src/security/rules.ts
 var import_fs4 = __toESM(require("fs"), 1);
 var import_path5 = __toESM(require("path"), 1);
@@ -17265,57 +17459,57 @@ var RuleGuardrail = class {
     const defaultRules = `# O.T.T.O System Directives
 
 These are the core rules the agent must follow.
-1. The user is running Windows (PowerShell). DO NOT use Linux/Bash-specific commands like \`cat > file << EOF\` or \`touch\`.
-2. To create or modify files, you MUST use native Node.js tools if available, or write PowerShell compatible commands (e.g., \`Set-Content\`, \`Out-File\`).
-3. Always verify commands are compatible with Windows.`;
+1. The user is running Windows (PowerShell). DO NOT use Linux/Bash-specific commands like \`cat\` or \`touch\`.
+2. Always verify commands are compatible with Windows.`;
     import_fs4.default.writeFileSync(this.rulesPath, defaultRules, "utf-8");
   }
-  getRules() {
+  getRules(maxCtx) {
     const persistedRules = import_fs4.default.readFileSync(this.rulesPath, "utf-8");
+    if (maxCtx && maxCtx < 5e3) {
+      return `O.T.T.O Directives (Condensed):
+- OS: Windows (PowerShell). No Linux commands.
+- Planning: Create plan (PLAN_START/PLAN_END) for new threads/large edits.
+- Workflow: 1. Plan, 2. Gather Context, 3. Edit (replace_file_lines), 4. Run commands, 5. Self-correct.`;
+    }
     return `${persistedRules}
 
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-SECTION A \u2014 CODING RULES (always apply)
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-1. SEARCH BEFORE EDITING: Use search_code to locate target symbols/files. Inspect precise ranges with read_file_lines. Do not read entire large files or edit blindly.
-2. TARGETED EDITS: Use replace_file_lines for modifying code to preserve diffs. Use write_file only for new files. Do not use shell redirections or heredocs (e.g. >, >>, Out-File, Set-Content) to write code.
-3. DISCOVER LAYOUT: Use list_files to explore directory structure before making assumptions.
-4. CONCISE RESPONSES: Summarize actions in 1-2 sentences. Do not dump code blocks into chat; the TUI diff shows them automatically.
-5. PROACTIVE & AUTONOMOUS: Proactively run compile/test commands (e.g., npm run build, npx tsc, npm test) via execute_terminal_command to verify changes. If they fail, inspect stderr/logs and fix errors autonomously.
-6. TOOL COMPATIBILITY: Prioritize using native Node.js APIs or workspace-provided tools rather than executing shell commands where possible to maximize performance and reliability.
-7. WINDOWS COMPATIBILITY: Run PowerShell compatible commands. Do not use Linux utilities (like touch).
-8. BACKGROUND RUNS: For servers/watchers, always set background: true. Read logs/status after 2-3 seconds to verify startup.
-9. PARALLEL TOOLS: Proactively call multiple tools in parallel in a single turn if operations are independent.
-10. ZERO RESISTANCE: Resolve implementation details directly without asking for confirmation unless severely ambiguous.
-11. ACTUAL TOOL CALLS: You MUST invoke tools programmatically. Do not simulate tool outputs in your text response. If you cannot use native tool calling, output a valid JSON code block containing the tool calls: \`\`\`json
-[{"name": "tool_name", "args": {...}}]
-\`\`\`.
-12. NO REFUSALS: Do not refuse tasks or output capability refusals (e.g. 'I'm sorry, but I can't assist', 'as an AI language model'). You have access to local terminal execution via execute_terminal_command. You CAN run scripts, install packages, train models, compile code, and inspect systems natively. Always proceed by writing code and executing it.
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+O.T.T.O Agent Directives & Workflow
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+You must follow this step-by-step workflow to execute any coding task:
 
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-SECTION B \u2014 PLANNING MODE (Judgement & Gating)
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-1. WHEN TO PLAN: You MUST produce an implementation plan (using PLAN_START/PLAN_END) at the start of any new chat thread (on your very first turn), regardless of complexity. For subsequent turns, you must produce a plan before performing significant, multi-file code modifications, complex refactoring, or creating new components/files.
-2. WHEN NOT TO PLAN: Do not produce a plan or block the conversation if the user's request is:
-   - Investigatory or diagnostic in nature (e.g., 'search for X', 'explain how Y works', 'check git status').
-   - A minor tweak, single-line alignment, simple code formatting, or a trivial syntax fix.
-   - A direct follow-up or minor correction to a plan that was already approved.
-3. HOW TO PLAN: Produce a plan using this exact format:
-<!-- PLAN_START -->
-## \u{1F4CB} Implementation Plan
-**Summary:** One sentence goal.
-**Files to modify/create:**
-- \`path/to/file\`
-**Steps:**
-1. Step description
-<!-- PLAN_END -->
-Stop immediately after outputting the plan. Wait for user approval (y/n) before execution.
-4. RESPECT CANCELLATIONS: If the user cancels the plan (e.g. typing "cancel", "no", or selecting "Cancel - do not proceed" option), you MUST respect it. Stop attempting to execute or re-propose that plan. Acknowledge the cancellation clearly, describe what you are stopping, and ask the user for new instructions or next steps instead of looping.
+1. TASK PARSING & PLANNING:
+   When the user submits a request, DO NOT immediately write code. First, parse the constraints and generate an Implementation Plan using the format:
+   <!-- PLAN_START -->
+   ## \u{1F4CB} Implementation Plan
+   **Summary:** One sentence goal.
+   **Files to modify/create:**
+   - \`path/to/file\`
+   **Steps:**
+   1. Step description
+   <!-- PLAN_END -->
+   This breaks the high-level goal into actionable sub-tasks. You must stop immediately after outputting the plan and wait for user approval.
 
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-SECTION C \u2014 EXECUTION & VERIFICATION
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-Execute approved plans step-by-step. Run verification tests after editing. Autonomously fix compilation/test failures.`;
+2. CONTEXT GATHERING (READING FILES):
+   You cannot guess how the project is structured. Use tools like list_files, search_code, or read_file_lines to explore the codebase and locate target files. Read only the relevant files or specific line ranges into your context window to keep your memory clean and focused.
+
+3. CODE GENERATION & EDITING (writing files):
+   To change code, output structured tool calls.
+   - For new files: Use write_file to write the content.
+   - For editing files: Do not rewrite the entire file. Use replace_file_lines to identify and patch only the target lines, ensuring we preserve diffs.
+
+4. TERMINAL EXECUTION (TESTING & BUILDING):
+   Interact with the shell via execute_terminal_command. You can autonomously install missing dependencies (e.g., npm install jsonwebtoken), compile code, or run test suites. Capture both stdout and stderr to inspect the results. Always set background: true for servers or long-running processes.
+
+5. VALIDATION & SELF-CORRECTION:
+   The critical loop. If a command throws an error, a test fails, or compilation flags a syntax error, observe the failure. Read the error message, reason about what caused it, loop back to editing/patching the files (Step 3), and try again. Repeat this cycle until the task succeeds.
+
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+ADDITIONAL DIRECTIVES (always apply)
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+- ENVIRONMENT: The user is running Windows (PowerShell). Ensure all commands are PowerShell compatible. DO NOT use Linux commands like 'cat', 'touch', or 'grep'.
+- CANCELLATIONS: If the user cancels the plan (e.g. typing "cancel", "no", or selecting "Cancel"), respect it. Stop, acknowledge clearly, and wait for new instructions.
+- NO REFUSALS: Do not refuse tasks or output language-model capability refusals. Proceed by writing code and executing it.`;
   }
   async requestRuleChange(newRulesContent) {
     const currentRules = this.getRules();
@@ -17368,14 +17562,17 @@ var PhoneOS = class {
   config;
   listening = false;
   notification = "";
+  notificationType = "success";
   notificationTimeout;
   ctrlKHandler;
   listeners = [];
   constructor(c2) {
     this.config = c2;
+    memoryManager.setConfig(c2);
   }
-  showNotification(msg) {
+  showNotification(msg, type = "success", timeoutMs = 2e3) {
     this.notification = msg;
+    this.notificationType = type;
     if (this.notificationTimeout) {
       clearTimeout(this.notificationTimeout);
     }
@@ -17383,7 +17580,7 @@ var PhoneOS = class {
     this.notificationTimeout = setTimeout(() => {
       this.notification = "";
       this.notify();
-    }, 2e3);
+    }, timeoutMs);
   }
   subscribe(listener) {
     this.listeners.push(listener);
@@ -17396,6 +17593,7 @@ var PhoneOS = class {
   }
   updateConfig(c2) {
     this.config = c2;
+    memoryManager.setConfig(c2);
     this.notify();
   }
   registerCtrlKHandler(handler) {
@@ -17520,7 +17718,27 @@ var PhoneOS = class {
       out += "  " + crumbs + "\n";
     }
     if (this.notification) {
-      out += "  " + import_chalk2.default.bgHex("#1F2937").hex("#10B981").bold(`  \u2713 ${this.notification}  `) + "\n";
+      let bg = "#1F2937";
+      let fg = "#10B981";
+      let icon = "\u2713";
+      if (this.notificationType === "warning") {
+        bg = "#78350F";
+        fg = "#FBBF24";
+        icon = "\u26A0";
+      } else if (this.notificationType === "error") {
+        bg = "#450A0A";
+        fg = "#F87171";
+        icon = "\u2718";
+      } else if (this.notificationType === "info") {
+        bg = "#1E3A8A";
+        fg = "#60A5FA";
+        icon = "\u2139";
+      } else if (this.notificationType === "alert") {
+        bg = "#581C87";
+        fg = "#C084FC";
+        icon = "\u{1F514}";
+      }
+      out += "  " + import_chalk2.default.bgHex(bg).hex(fg).bold(`  ${icon} ${this.notification}  `) + "\n";
     }
     let hasBody = false;
     if (chatSession.pendingApprovals && chatSession.pendingApprovals.length > 0) {
@@ -17804,6 +18022,7 @@ var ChatUI = class {
   scrollOffset = 0;
   totalContentLines = 0;
   notification = "";
+  notificationType = "success";
   notificationTimeout;
   BRAND = import_chalk3.default.hex("#F5C400");
   DIM = import_chalk3.default.hex("#374151");
@@ -17812,8 +18031,9 @@ var ChatUI = class {
   listeners = [];
   currentData = null;
   keyHandler;
-  showNotification(msg) {
+  showNotification(msg, type = "success", timeoutMs = 2e3) {
     this.notification = msg;
+    this.notificationType = type;
     if (this.notificationTimeout) {
       clearTimeout(this.notificationTimeout);
     }
@@ -17821,7 +18041,7 @@ var ChatUI = class {
     this.notificationTimeout = setTimeout(() => {
       this.notification = "";
       this.notify();
-    }, 2e3);
+    }, timeoutMs);
   }
   registerKeyHandler(handler) {
     this.keyHandler = handler;
@@ -17901,7 +18121,27 @@ var ChatUI = class {
     push(leftHeader + " ".repeat(spaces) + rightHeader);
     push(this.DIM("-".repeat(this.W)));
     if (this.notification) {
-      push("  " + import_chalk3.default.bgHex("#1F2937").hex("#10B981").bold(`  \u2713 ${this.notification}  `));
+      let bg = "#1F2937";
+      let fg = "#10B981";
+      let icon = "\u2713";
+      if (this.notificationType === "warning") {
+        bg = "#78350F";
+        fg = "#FBBF24";
+        icon = "\u26A0";
+      } else if (this.notificationType === "error") {
+        bg = "#450A0A";
+        fg = "#F87171";
+        icon = "\u2718";
+      } else if (this.notificationType === "info") {
+        bg = "#1E3A8A";
+        fg = "#60A5FA";
+        icon = "\u2139";
+      } else if (this.notificationType === "alert") {
+        bg = "#581C87";
+        fg = "#C084FC";
+        icon = "\u{1F514}";
+      }
+      push("  " + import_chalk3.default.bgHex(bg).hex(fg).bold(`  ${icon} ${this.notification}  `));
       push("");
     } else {
       push("");
@@ -18123,6 +18363,8 @@ var ChatUI = class {
         placeholder = import_chalk3.default.hex("#FB7185")("\u2191\u2193 choose  \u21B5 confirm");
       } else if (pendingPlan) {
         placeholder = import_chalk3.default.hex("#F5C400")("\u2191\u2193 choose  \u21B5 confirm");
+      } else if (telemetry.isStreaming || isThinking) {
+        placeholder = import_chalk3.default.hex("#FB7185")("Press [Ctrl+X] to terminate streaming");
       } else {
         placeholder = this.MUTED("Type your message... (esc to menu)");
       }
@@ -19146,11 +19388,77 @@ function createCommandPaletteView(phone, actions) {
   };
 }
 
-// src/cli/parser.ts
-var import_chalk9 = __toESM(require("chalk"), 1);
+// src/cli/snapshots.ts
 var import_fs8 = __toESM(require("fs"), 1);
 var import_path9 = __toESM(require("path"), 1);
 var import_os7 = __toESM(require("os"), 1);
+var SNAPSHOTS_DIR = import_path9.default.join(import_os7.default.homedir(), ".otto", "snapshots");
+var snapshotManager = {
+  saveCheckpoint: (threadId, messageIndex) => {
+    try {
+      const snapshot = captureWorkspaceSnapshot();
+      const dir = import_path9.default.join(SNAPSHOTS_DIR, threadId, String(messageIndex));
+      if (!import_fs8.default.existsSync(dir)) {
+        import_fs8.default.mkdirSync(dir, { recursive: true });
+      }
+      const data = {};
+      for (const [relPath, content] of snapshot.entries()) {
+        data[relPath] = content;
+      }
+      import_fs8.default.writeFileSync(import_path9.default.join(dir, "snapshot.json"), JSON.stringify(data), "utf8");
+    } catch (e) {
+    }
+  },
+  restoreCheckpoint: (threadId, messageIndex) => {
+    try {
+      const dir = import_path9.default.join(SNAPSHOTS_DIR, threadId, String(messageIndex));
+      const snapFile = import_path9.default.join(dir, "snapshot.json");
+      if (!import_fs8.default.existsSync(snapFile)) return false;
+      const raw = import_fs8.default.readFileSync(snapFile, "utf8");
+      const data = JSON.parse(raw);
+      const snapshot = /* @__PURE__ */ new Map();
+      for (const [relPath, content] of Object.entries(data)) {
+        snapshot.set(relPath, content);
+      }
+      restoreWorkspaceSnapshot(snapshot);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  },
+  deleteThreadSnapshots: (threadId) => {
+    try {
+      const dir = import_path9.default.join(SNAPSHOTS_DIR, threadId);
+      if (import_fs8.default.existsSync(dir)) {
+        import_fs8.default.rmSync(dir, { recursive: true, force: true });
+      }
+    } catch (e) {
+    }
+  },
+  deleteCheckpoint: (threadId, messageIndex) => {
+    try {
+      const dir = import_path9.default.join(SNAPSHOTS_DIR, threadId, String(messageIndex));
+      if (import_fs8.default.existsSync(dir)) {
+        import_fs8.default.rmSync(dir, { recursive: true, force: true });
+      }
+    } catch (e) {
+    }
+  },
+  clearAllSnapshots: () => {
+    try {
+      if (import_fs8.default.existsSync(SNAPSHOTS_DIR)) {
+        import_fs8.default.rmSync(SNAPSHOTS_DIR, { recursive: true, force: true });
+      }
+    } catch (e) {
+    }
+  }
+};
+
+// src/cli/parser.ts
+var import_chalk9 = __toESM(require("chalk"), 1);
+var import_fs9 = __toESM(require("fs"), 1);
+var import_path10 = __toESM(require("path"), 1);
+var import_os8 = __toESM(require("os"), 1);
 var import_child_process3 = require("child_process");
 var c = {
   info: (text) => import_chalk9.default.cyan(text),
@@ -19191,21 +19499,21 @@ function showStatus() {
 ${c.bright("O.T.T.O - System Status")}
 `);
   console.log(c.dim("\u2550".repeat(60)));
-  const configPath = import_path9.default.join(import_os7.default.homedir(), ".otto", "config.json");
+  const configPath = import_path10.default.join(import_os8.default.homedir(), ".otto", "config.json");
   console.log(`
 ${c.info("[INFO]")} Configuration File:`);
   console.log(`       ${c.dim(configPath)}`);
-  console.log(`       Status: ${import_fs8.default.existsSync(configPath) ? c.ok("[OK] Exists") : c.warn("[WARN] Using Defaults")}`);
-  const rulesPath = import_path9.default.join(import_os7.default.homedir(), ".otto", "rules.md");
+  console.log(`       Status: ${import_fs9.default.existsSync(configPath) ? c.ok("[OK] Exists") : c.warn("[WARN] Using Defaults")}`);
+  const rulesPath = import_path10.default.join(import_os8.default.homedir(), ".otto", "rules.md");
   console.log(`
 ${c.info("[INFO]")} System Directives File:`);
   console.log(`       ${c.dim(rulesPath)}`);
-  console.log(`       Status: ${import_fs8.default.existsSync(rulesPath) ? c.ok("[OK] Custom Rules Active") : c.warn("[WARN] No custom rules")}`);
-  const tasksPath = import_path9.default.resolve(process.cwd(), "tasks.json");
+  console.log(`       Status: ${import_fs9.default.existsSync(rulesPath) ? c.ok("[OK] Custom Rules Active") : c.warn("[WARN] No custom rules")}`);
+  const tasksPath = import_path10.default.resolve(process.cwd(), "tasks.json");
   console.log(`
 ${c.info("[INFO]")} Project Task Board:`);
   console.log(`       ${c.dim(tasksPath)}`);
-  console.log(`       Status: ${import_fs8.default.existsSync(tasksPath) ? c.ok("[OK] Active project tracking") : c.dim("Not tracking")}`);
+  console.log(`       Status: ${import_fs9.default.existsSync(tasksPath) ? c.ok("[OK] Active project tracking") : c.dim("Not tracking")}`);
   console.log("\n" + c.dim("\u2550".repeat(60)));
   console.log(`
 ${c.tip("[TIP]")} Run ${c.bright("otto sandbox")} to explore safely isolated operations.
@@ -19228,8 +19536,8 @@ ${c.error("\u274C")} Workspace path required: otto sandbox <path>
 `);
     process.exit(1);
   }
-  const resolvedPath = workspace.startsWith("~") ? workspace.replace(/^~/, import_os7.default.homedir()) : import_path9.default.resolve(workspace);
-  if (!import_fs8.default.existsSync(resolvedPath)) {
+  const resolvedPath = workspace.startsWith("~") ? workspace.replace(/^~/, import_os8.default.homedir()) : import_path10.default.resolve(workspace);
+  if (!import_fs9.default.existsSync(resolvedPath)) {
     console.error(`
 ${c.error("\u274C")} Workspace path not found: ${c.dim(resolvedPath)}
 `);
@@ -19294,8 +19602,8 @@ ${c.error("\u274C")} Unknown command: ${command}`);
 
 // src/index.tsx
 var import_module2 = require("module");
-var import_fs9 = __toESM(require("fs"), 1);
-var import_path10 = __toESM(require("path"), 1);
+var import_fs10 = __toESM(require("fs"), 1);
+var import_path11 = __toESM(require("path"), 1);
 var import_react3 = require("react");
 var import_ink3 = require("ink");
 var import_messages4 = require("@langchain/core/messages");
@@ -19339,6 +19647,65 @@ function isToolCallFormat2(obj) {
   }
   return obj && typeof obj === "object" && "name" in obj && ("args" in obj || "arguments" in obj);
 }
+function parseInvalidWriteFileJson2(jsonStr) {
+  if (!jsonStr.includes("write_file")) return null;
+  const filePathMatch = jsonStr.match(/"filePath"\s*:\s*"([^"]+)"/);
+  if (!filePathMatch) return null;
+  const filePath = filePathMatch[1];
+  const contentIdx = jsonStr.indexOf('"content"');
+  if (contentIdx === -1) return null;
+  const colonIdx = jsonStr.indexOf(":", contentIdx);
+  if (colonIdx === -1) return null;
+  const startQuoteIdx = jsonStr.indexOf('"', colonIdx);
+  if (startQuoteIdx === -1) return null;
+  let endQuoteIdx = -1;
+  for (let i = jsonStr.length - 1; i > startQuoteIdx; i--) {
+    if (jsonStr[i] === '"') {
+      const tail = jsonStr.substring(i + 1).trim();
+      if (/^[\s,}]*$/.test(tail)) {
+        if (tail.includes("}")) {
+          endQuoteIdx = i;
+          break;
+        }
+      }
+    }
+  }
+  if (endQuoteIdx === -1) return null;
+  let content = jsonStr.substring(startQuoteIdx + 1, endQuoteIdx);
+  let unescaped = "";
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] === "\\") {
+      const next = content[i + 1];
+      if (next === "n") {
+        unescaped += "\n";
+        i++;
+      } else if (next === "r") {
+        unescaped += "\r";
+        i++;
+      } else if (next === "t") {
+        unescaped += "	";
+        i++;
+      } else if (next === '"') {
+        unescaped += '"';
+        i++;
+      } else if (next === "\\") {
+        unescaped += "\\";
+        i++;
+      } else {
+        unescaped += "\\";
+      }
+    } else {
+      unescaped += content[i];
+    }
+  }
+  return {
+    name: "write_file",
+    arguments: {
+      filePath,
+      content: unescaped
+    }
+  };
+}
 function parseFallbackToolCalls2(content, messages) {
   const trimmed = content.trim();
   if (!trimmed) return null;
@@ -19371,6 +19738,10 @@ function parseFallbackToolCalls2(content, messages) {
       }
     }
   } catch {
+    const customParsed = parseInvalidWriteFileJson2(trimmed);
+    if (customParsed) {
+      addIfValid(customParsed);
+    }
   }
   const jsonBlockRegex = /```json\s*([\s\S]*?)\s*```/g;
   let match;
@@ -19392,6 +19763,12 @@ function parseFallbackToolCalls2(content, messages) {
         }
       }
     } catch {
+      const customParsed = parseInvalidWriteFileJson2(match[1].trim());
+      if (customParsed) {
+        if (addIfValid(customParsed)) {
+          parsedBlockIndexes.add(match.index);
+        }
+      }
     }
   }
   let inString = false;
@@ -19425,6 +19802,10 @@ function parseFallbackToolCalls2(content, messages) {
             const parsed = JSON.parse(sanitized);
             addIfValid(parsed);
           } catch {
+            const customParsed = parseInvalidWriteFileJson2(potentialJson);
+            if (customParsed) {
+              addIfValid(customParsed);
+            }
           }
         }
       }
@@ -19444,6 +19825,8 @@ function parseFallbackToolCalls2(content, messages) {
     lastIdx = blockRegex.lastIndex;
     if (!code) continue;
     if (lang === "diff" || lang === "patch") continue;
+    const looksLikeToolCall = (code.includes('"name"') || code.includes("'name'")) && (code.includes('"arguments"') || code.includes("'arguments'") || code.includes('"args"') || code.includes("'args'"));
+    if (looksLikeToolCall) continue;
     if (messages && messages.length > 0) {
       const lastMsg = messages[messages.length - 1];
       const isToolMessage = lastMsg && (lastMsg._getType?.() === "tool" || lastMsg.role === "tool" || lastMsg.content && lastMsg.content.toString().includes("Background process started") || lastMsg.content && lastMsg.content.toString().includes("Initial Output Logs"));
@@ -19624,12 +20007,12 @@ var rootController = new RootController();
 function AppShell({ phone, chatUI }) {
   const [mode, setMode] = (0, import_react3.useState)(rootController.getMode());
   (0, import_react3.useEffect)(() => {
-    ui.onTuiMessage = (type, text) => {
+    ui.onTuiMessage = (type, text, timeoutMs) => {
       let cleanText = text.replace(/^\[[i✓!X]\]\s*/, "").replace(/^ERROR:\s*/, "");
       if (rootController.getMode() === "chat") {
-        chatUI.showNotification(cleanText);
+        chatUI.showNotification(cleanText, type, timeoutMs);
       } else {
-        phone.showNotification(cleanText);
+        phone.showNotification(cleanText, type, timeoutMs);
       }
     };
     return () => {
@@ -19657,6 +20040,7 @@ async function main() {
   ui.tuiActive = true;
   ui.clearScreen();
   let config2 = await Configurator.init();
+  memoryManager.setConfig(config2);
   const provider = new ProviderEngine(config2);
   const rules = ruleGuardrail.getRules();
   const phone = new PhoneOS(config2);
@@ -19765,7 +20149,7 @@ async function main() {
       const state = chatSession.agentStates.get(chatSession.threadId);
       const isThinking = state === "thinking";
       const delayMessage = chatSession.delayMessages.get(chatSession.threadId);
-      const stats = memoryManager.getBudgetStatsForMessages(messages, rules);
+      const stats = memoryManager.getBudgetStatsForMessages(messages, ruleGuardrail.getRules(memoryManager.C_max));
       const prov = config2.defaults.primaryProvider;
       const model = Configurator.getActiveModel(config2, prov) ?? "default";
       const ramMB = Math.round(process.memoryUsage().rss / 1024 / 1024);
@@ -19773,7 +20157,8 @@ async function main() {
         ctxMax: stats.max,
         ctxUsed: stats.filled,
         ramMB,
-        showContextBar: config2.defaults.showContextBar !== false
+        showContextBar: config2.defaults.showContextBar !== false,
+        isStreaming: getIsStreaming()
       }, model, isThinking, getPendingPlan(), getPlanMenuIndex(), diffsExpanded, delayMessage, getPendingApproval(), getApprovalMenuIndex());
     }
     const formatToolResult = (toolName, result, diffSummary, args2) => {
@@ -19870,8 +20255,10 @@ async function main() {
         try {
           const currentThreadId = chatSession.threadId;
           await threadLocalStorage.run(currentThreadId, async () => {
+            chatSession.cancelledThreads.delete(currentThreadId);
             chatSession.activeStreams.add(currentThreadId);
             chatSession.ensureNamedFromPrompt(inputText);
+            snapshotManager.saveCheckpoint(currentThreadId, messages.length);
             messages.push(new import_messages4.HumanMessage(inputText));
             syncMessages();
             chatUI.scrollToBottom();
@@ -19912,8 +20299,10 @@ CRITICAL CONSTRAINT: The current model (${activeModel}) has rate limits configur
                 const nameHint = `
 
 User's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.${bgInfo}${limitsInfo}`;
-                const msgsToSend = [new import_messages4.SystemMessage(rules + nameHint), ...messages];
-                const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
+                const activeRules = ruleGuardrail.getRules(memoryManager.C_max);
+                const msgsToSend = [new import_messages4.SystemMessage(activeRules + nameHint), ...messages];
+                const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, activeRules, messages);
+                syncMessages();
                 const finalMsgsToSend = optimizedMsgs.map((msg, idx) => {
                   if (idx === optimizedMsgs.length - 1 && msg instanceof import_messages4.HumanMessage) {
                     let text = msg.content.toString();
@@ -19943,8 +20332,12 @@ User's preferred name: ${preferredName}. Address them as "${preferredName}" natu
                 const stream = await provider.stream(finalMsgsToSend);
                 for await (const chunk of stream) {
                   const threadExists2 = dbManager.listThreads().some((th) => th.id === currentThreadId);
-                  if (!threadExists2) {
+                  if (!threadExists2 || chatSession.cancelledThreads.has(currentThreadId)) {
                     isDone = true;
+                    aiMessage.content += "\n\n[Streaming terminated by user]";
+                    if (finalMessage) {
+                      finalMessage.content = aiMessage.content;
+                    }
                     break;
                   }
                   if (!finalMessage) finalMessage = chunk;
@@ -19979,6 +20372,7 @@ ${reasoning2}`;
                     }
                   }
                 }
+                if (isDone) break;
                 let finalContent = "";
                 const reasoning = finalMessage?.additional_kwargs?.reasoning_content;
                 if (reasoning) {
@@ -20000,7 +20394,7 @@ ${reasoning}
                     hasToolCalls = true;
                     const rawTrimmed = finalMessage.content.toString().trim();
                     try {
-                      JSON.parse(rawTrimmed);
+                      JSON.parse(sanitizeJsonString2(rawTrimmed));
                       finalMessage.content = "";
                       aiMessage.content = "";
                     } catch {
@@ -20008,7 +20402,7 @@ ${reasoning}
                       const match = rawTrimmed.match(blockRegex);
                       if (match) {
                         try {
-                          JSON.parse(match[1].trim());
+                          JSON.parse(sanitizeJsonString2(match[1].trim()));
                           finalMessage.content = "";
                           aiMessage.content = "";
                         } catch {
@@ -20048,6 +20442,14 @@ ${reasoning}
                   if (chatSession.isChatActive) render(true);
                   else sessionEvents.emit("stream_update", chatSession.threadId);
                   for (const call of finalMessage.tool_calls) {
+                    if (chatSession.cancelledThreads.has(currentThreadId)) {
+                      isDone = true;
+                      aiMessage.content += "\n\n[Tool execution terminated by user]";
+                      syncMessages();
+                      if (chatSession.isChatActive) render(true);
+                      else sessionEvents.emit("stream_update", currentThreadId);
+                      break;
+                    }
                     const tool2 = tools.find((t) => t.name === call.name);
                     let toolResultStr = "";
                     if (tool2) {
@@ -20115,6 +20517,14 @@ ${reasoning}
           phone.startListening();
           phone.pushView(createCommandPaletteView(phone, actions));
           return;
+        } else if (key.ctrl && key.name === "x") {
+          const currentThreadId = chatSession.threadId;
+          if (chatSession.activeStreams.has(currentThreadId)) {
+            chatSession.cancelledThreads.add(currentThreadId);
+            ui.warning("Streaming terminated by user.");
+            render(true);
+          }
+          return;
         } else if (key.name === "escape") {
           cleanup();
           resolve();
@@ -20141,9 +20551,9 @@ ${reasoning}
               filePrefix = prefix.slice(lastSlash + 1);
             }
             try {
-              const fullDir = import_path10.default.resolve(process.cwd(), dir);
-              if (import_fs9.default.existsSync(fullDir) && import_fs9.default.statSync(fullDir).isDirectory()) {
-                const entries = import_fs9.default.readdirSync(fullDir, { withFileTypes: true });
+              const fullDir = import_path11.default.resolve(process.cwd(), dir);
+              if (import_fs10.default.existsSync(fullDir) && import_fs10.default.statSync(fullDir).isDirectory()) {
+                const entries = import_fs10.default.readdirSync(fullDir, { withFileTypes: true });
                 const matches = entries.filter((e) => {
                   const name = e.name;
                   if (name.startsWith(".") && !filePrefix.startsWith(".")) return false;
@@ -20240,6 +20650,10 @@ ${reasoning}
               }
             }
             if (lastHumanIdx >= 0) {
+              snapshotManager.restoreCheckpoint(chatSession.threadId, lastHumanIdx);
+              for (let idx = lastHumanIdx; idx < messages.length; idx++) {
+                snapshotManager.deleteCheckpoint(chatSession.threadId, idx);
+              }
               messages.splice(lastHumanIdx);
               syncMessages();
             }
@@ -21430,6 +21844,7 @@ ${reasoning}
                   label: import_chalk10.default.red("Yes, Delete All Threads"),
                   action: async () => {
                     dbManager.deleteAllThreads();
+                    snapshotManager.clearAllSnapshots();
                     chatSession.clearAllThreadMessages();
                     chatSession.createFreshThread();
                     ui.success("Deleted all threads. Started a fresh chat.");
@@ -21476,6 +21891,7 @@ ${reasoning}
                       phone.active = false;
                       ui.clearScreen();
                       dbManager.deleteThread(t.id);
+                      snapshotManager.deleteThreadSnapshots(t.id);
                       chatSession.clearThreadMessages(t.id);
                       if (chatSession.threadId === t.id) {
                         chatSession.createFreshThread();
@@ -21762,14 +22178,14 @@ ${reasoning}
 }
 process.on("uncaughtException", (error51) => {
   try {
-    import_fs9.default.appendFileSync("otto-errors.log", `Uncaught Exception: ${error51?.stack || error51}
+    import_fs10.default.appendFileSync("otto-errors.log", `Uncaught Exception: ${error51?.stack || error51}
 `);
   } catch {
   }
 });
 process.on("unhandledRejection", (reason) => {
   try {
-    import_fs9.default.appendFileSync("otto-errors.log", `Unhandled Rejection: ${reason instanceof Error ? reason.stack : reason}
+    import_fs10.default.appendFileSync("otto-errors.log", `Unhandled Rejection: ${reason instanceof Error ? reason.stack : reason}
 `);
   } catch {
   }

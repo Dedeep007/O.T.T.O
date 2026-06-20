@@ -2,7 +2,6 @@ import { createReactAgent } from "@langchain/langgraph/prebuilt";
 import { ChatOllama } from "@langchain/ollama";
 import { tools } from "../src/llm/tools.js";
 import { executor } from "../src/security/executor.js";
-import { ruleGuardrail } from "../src/security/rules.js";
 import { SystemMessage, HumanMessage } from "@langchain/core/messages";
 import path from "path";
 import fs from "fs";
@@ -11,13 +10,6 @@ const targetDir = 'C:\\Users\\dedeep vasireddy\\sample';
 if (!fs.existsSync(targetDir)) {
   fs.mkdirSync(targetDir, { recursive: true });
 }
-
-// Kill processes on ports 3001 and 3002 to avoid EADDRINUSE
-import { execSync } from 'child_process';
-try {
-  console.log("Cleaning up ports 3001 and 3002...");
-  execSync("npx kill-port 3001 3002", { stdio: 'ignore' });
-} catch (e) {}
 
 // Auto-approve commands for headless test harness
 (executor as any).promptAction = async (cmd: string, fullCommand: string) => {
@@ -357,7 +349,7 @@ async function runScenario(name: string, instruction: string) {
   console.log(`STARTING SCENARIO: ${name}`);
   console.log(`======================================================`);
   
-  // Clean workspace target directory before each test scenario
+  // Clean workspace target directory
   const files = fs.readdirSync(targetDir);
   for (const file of files) {
     if (file === 'node_modules') continue;
@@ -379,33 +371,30 @@ async function runScenario(name: string, instruction: string) {
 
   const originalInvoke = rawModel.invoke.bind(rawModel);
   rawModel.invoke = async (inputMessages: any, options: any) => {
-    console.log(`\n--- [Step] LLM Prompt (Last msg) ---`);
+    console.log(`\n[LLM INVOKE] Sending ${inputMessages.length} messages...`);
     const lastMsg = inputMessages[inputMessages.length - 1];
-    console.log(lastMsg.content);
-
+    console.log(`[Last User Message]: ${lastMsg.content}`);
     const response = await originalInvoke(inputMessages, options);
-
-    console.log(`\n--- [Step] LLM Output ---`);
-    console.log(response.content);
+    console.log(`[LLM RESPONSE]: ${response.content}`);
     if (response.tool_calls && response.tool_calls.length > 0) {
-      console.log(`Native Tool Calls: ${JSON.stringify(response.tool_calls)}`);
+      console.log(`[LLM TOOL CALLS]: ${JSON.stringify(response.tool_calls)}`);
     }
 
     if (response && response.content && (!response.tool_calls || response.tool_calls.length === 0)) {
-      const fallbackCalls = parseFallbackToolCalls(response.content.toString(), inputMessages);
+      const fallbackCalls = parseFallbackToolCalls(response.content.toString());
       if (fallbackCalls && fallbackCalls.length > 0) {
         response.tool_calls = fallbackCalls;
-        console.log(`Fallback Tool Calls parsed: ${JSON.stringify(fallbackCalls)}`);
+        console.log(`[FALLBACK TOOL CALLS EXTRACTED]: ${JSON.stringify(fallbackCalls)}`);
         const rawTrimmed = response.content.toString().trim();
         try {
-          JSON.parse(sanitizeJsonString(rawTrimmed));
+          JSON.parse(rawTrimmed);
           response.content = '';
         } catch {
           const blockRegex = /^```json\s*([\s\S]*?)\s*```$/i;
           const match = rawTrimmed.match(blockRegex);
           if (match) {
             try {
-              JSON.parse(sanitizeJsonString(match[1].trim()));
+              JSON.parse(match[1].trim());
               response.content = '';
             } catch {}
           }
@@ -420,46 +409,24 @@ async function runScenario(name: string, instruction: string) {
     tools: tools,
   });
 
-  const response = await app.invoke({
-    messages: [
-      new SystemMessage(
-        ruleGuardrail.getRules() +
-        "\n\n=========================================\n" +
-        "You are O.T.T.O, a helpful assistant with access to local tools. " +
-        "You must execute the requested changes in the workspace using tools. " +
-        "Do not explain that you cannot run commands; you have the execute_terminal_command tool.\n" +
-        "CRITICAL FOR THIS HEADLESS RUN: You are in EXECUTION MODE. The user has already approved all plans. " +
-        "Do NOT output or request plans (do not output PLAN_START/PLAN_END). " +
-        "Proceed directly with editing, writing files, and running commands using tools.\n" +
-        "If a script execution fails with a runtime error (e.g. ZeroDivisionError, KeyError, or ReferenceError), you MUST edit the script file itself to fix the logical error. Do NOT just re-run the script or re-write unchanged data files.\n" +
-        "When writing data files (like CSVs), ensure you structure them consistently with how they are read by your scripts (e.g. including matching headers if reading with header keys like DictReader, or omitting headers and parsing columns by index if reading headerless).\n" +
-        "For TypeScript compilation: if compiling with tsc, remember to either initialize a config file using `npx tsc --init` first, or specify the input files explicitly (e.g. `npx tsc index.ts mathUtils.ts`).\n" +
-        "Before finishing, double check that ALL files requested in the instruction have been successfully created and that the compilation/run verification step succeeded."
-      ),
-      new HumanMessage(instruction)
-    ]
-  }, { recursionLimit: 45 });
-
-  console.log(`\n--- Scenario Results ---`);
-  for (const msg of response.messages) {
-    console.log(`[${msg._getType()}] ${msg.name || ''}: ${msg.content || ''}`);
-    if (msg.tool_calls && msg.tool_calls.length > 0) {
-      console.log(`  Tool Calls: ${JSON.stringify(msg.tool_calls)}`);
-    }
+  try {
+    const response = await app.invoke({
+      messages: [
+        new SystemMessage(
+          "You are O.T.T.O, a helpful assistant with access to local tools. " +
+          "You must execute the requested changes in the workspace using tools. " +
+          "Do not explain that you cannot run commands; you have the execute_terminal_command tool."
+        ),
+        new HumanMessage(instruction)
+      ]
+    });
+    console.log(`\n--- Scenario Complete! ---`);
+  } catch (e: any) {
+    console.error(`\nScenario Failed with Error:`, e);
   }
 }
 
-async function testAll() {
-  // Scenario 1: Node.js static server
-  await runScenario(
-    "Scenario 1: Node.js Web Server",
-    "Create a web server in the workspace. " +
-    "1. Write a server.js that runs on port 3002, serves static files from a public directory, and handles GET /health by returning 'OK'. " +
-    "2. Create a public/index.html with an h1 saying 'Hello from OTTO'. " +
-    "3. Run the server in the background and verify that it started successfully."
-  );
-
-  // Scenario 2: Python Data Aggregation
+async function run() {
   await runScenario(
     "Scenario 2: Python Score Analyzer",
     "Create a Python statistics tool in the workspace. " +
@@ -467,18 +434,6 @@ async function testAll() {
     "2. Write a Python script analyze.py that reads scores.csv and calculates the average score, maximum score, and minimum score, then prints them. " +
     "3. Run the Python script using execute_terminal_command and capture the output to verify it calculates stats correctly."
   );
-
-  // Scenario 3: TypeScript module and compilation
-  await runScenario(
-    "Scenario 3: TypeScript Library",
-    "Create a TypeScript utility module. " +
-    "1. Initialize package.json. " +
-    "2. Run npm install typescript --save-dev to install TypeScript. " +
-    "3. Write a mathUtils.ts exporting add(a, b) and fibonacci(n). " +
-    "4. Write an index.ts that calls mathUtils functions and prints results. " +
-    "5. Run npx tsc --init to initialize tsconfig.json. " +
-    "6. Compile the project using npx tsc and verify that the build completes successfully without errors."
-  );
 }
 
-testAll().catch(console.error);
+run().catch(console.error);

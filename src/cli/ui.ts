@@ -21,7 +21,7 @@ marked.setOptions({
 export const ui = {
   accent: chalk.yellow,
   tuiActive: false,
-  onTuiMessage: null as ((type: 'success' | 'info' | 'error' | 'warning' | 'alert', text: string) => void) | null,
+  onTuiMessage: null as ((type: 'success' | 'info' | 'error' | 'warning' | 'alert', text: string, timeoutMs?: number) => void) | null,
   
   clearScreen: () => {
     // Soft clear (move to 0,0 and clear down) to prevent glitch scrolling during live streams
@@ -78,9 +78,9 @@ export const ui = {
     }
   },
 
-  warning: (text: string) => {
+  warning: (text: string, timeoutMs?: number) => {
     if (ui.tuiActive) {
-      if (ui.onTuiMessage) ui.onTuiMessage('warning', text);
+      if (ui.onTuiMessage) ui.onTuiMessage('warning', text, timeoutMs);
     } else {
       console.log(chalk.yellow.inverse(` WARNING `) + chalk.yellow(` ${text}`));
     }

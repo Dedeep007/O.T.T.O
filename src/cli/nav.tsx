@@ -40,16 +40,19 @@ export class PhoneOS {
   public config:   OttoConfig;
   public listening: boolean      = false;
   public notification: string = '';
+  public notificationType: 'success' | 'warning' | 'error' | 'info' | 'alert' = 'success';
   private notificationTimeout?: NodeJS.Timeout;
   private ctrlKHandler?: () => void;
   private listeners: (() => void)[] = [];
 
   constructor(c: OttoConfig) {
     this.config = c;
+    memoryManager.setConfig(c);
   }
 
-  showNotification(msg: string) {
+  showNotification(msg: string, type: 'success' | 'warning' | 'error' | 'info' | 'alert' = 'success', timeoutMs: number = 2000) {
     this.notification = msg;
+    this.notificationType = type;
     if (this.notificationTimeout) {
       clearTimeout(this.notificationTimeout);
     }
@@ -57,7 +60,7 @@ export class PhoneOS {
     this.notificationTimeout = setTimeout(() => {
       this.notification = '';
       this.notify();
-    }, 2000);
+    }, timeoutMs);
   }
 
   subscribe(listener: () => void) {
@@ -73,6 +76,7 @@ export class PhoneOS {
 
   updateConfig(c: OttoConfig) { 
     this.config = c; 
+    memoryManager.setConfig(c);
     this.notify();
   }
 
@@ -231,7 +235,27 @@ export class PhoneOS {
     }
 
     if (this.notification) {
-      out += '  ' + chalk.bgHex('#1F2937').hex('#10B981').bold(`  ✓ ${this.notification}  `) + '\n';
+      let bg = '#1F2937';
+      let fg = '#10B981';
+      let icon = '✓';
+      if (this.notificationType === 'warning') {
+        bg = '#78350F';
+        fg = '#FBBF24';
+        icon = '⚠';
+      } else if (this.notificationType === 'error') {
+        bg = '#450A0A';
+        fg = '#F87171';
+        icon = '✘';
+      } else if (this.notificationType === 'info') {
+        bg = '#1E3A8A';
+        fg = '#60A5FA';
+        icon = 'ℹ';
+      } else if (this.notificationType === 'alert') {
+        bg = '#581C87';
+        fg = '#C084FC';
+        icon = '🔔';
+      }
+      out += '  ' + chalk.bgHex(bg).hex(fg).bold(`  ${icon} ${this.notification}  `) + '\n';
     }
 
     // ── Section Body / Dashboard Stats ────────────────────────────

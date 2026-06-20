@@ -16,6 +16,7 @@ export interface ChatTelemetry {
   ctxUsed: number;
   ramMB: number;
   showContextBar: boolean;
+  isStreaming?: boolean;
 }
 
 function stripAnsi(str: string): string {
@@ -166,6 +167,7 @@ export class ChatUI {
   public scrollOffset = 0;
   public totalContentLines = 0;
   public notification: string = '';
+  public notificationType: 'success' | 'warning' | 'error' | 'info' | 'alert' = 'success';
   private notificationTimeout?: NodeJS.Timeout;
 
   private BRAND = chalk.hex('#F5C400');
@@ -177,8 +179,9 @@ export class ChatUI {
   public currentData: any = null;
   private keyHandler?: (str: string, key: any) => void;
 
-  showNotification(msg: string) {
+  showNotification(msg: string, type: 'success' | 'warning' | 'error' | 'info' | 'alert' = 'success', timeoutMs: number = 2000) {
     this.notification = msg;
+    this.notificationType = type;
     if (this.notificationTimeout) {
       clearTimeout(this.notificationTimeout);
     }
@@ -186,7 +189,7 @@ export class ChatUI {
     this.notificationTimeout = setTimeout(() => {
       this.notification = '';
       this.notify();
-    }, 2000);
+    }, timeoutMs);
   }
 
   registerKeyHandler(handler: (str: string, key: any) => void) {
@@ -297,7 +300,27 @@ export class ChatUI {
     push(leftHeader + ' '.repeat(spaces) + rightHeader);
     push(this.DIM('-'.repeat(this.W)));
     if (this.notification) {
-      push('  ' + chalk.bgHex('#1F2937').hex('#10B981').bold(`  ✓ ${this.notification}  `));
+      let bg = '#1F2937';
+      let fg = '#10B981';
+      let icon = '✓';
+      if (this.notificationType === 'warning') {
+        bg = '#78350F';
+        fg = '#FBBF24';
+        icon = '⚠';
+      } else if (this.notificationType === 'error') {
+        bg = '#450A0A';
+        fg = '#F87171';
+        icon = '✘';
+      } else if (this.notificationType === 'info') {
+        bg = '#1E3A8A';
+        fg = '#60A5FA';
+        icon = 'ℹ';
+      } else if (this.notificationType === 'alert') {
+        bg = '#581C87';
+        fg = '#C084FC';
+        icon = '🔔';
+      }
+      push('  ' + chalk.bgHex(bg).hex(fg).bold(`  ${icon} ${this.notification}  `));
       push('');
     } else {
       push('');
@@ -588,6 +611,8 @@ export class ChatUI {
         placeholder = chalk.hex('#FB7185')('\u2191\u2193 choose  \u21b5 confirm');
       } else if (pendingPlan) {
         placeholder = chalk.hex('#F5C400')('\u2191\u2193 choose  \u21b5 confirm');
+      } else if (telemetry.isStreaming || isThinking) {
+        placeholder = chalk.hex('#FB7185')('Press [Ctrl+X] to terminate streaming');
       } else {
         placeholder = this.MUTED('Type your message... (esc to menu)');
       }

@@ -14,6 +14,7 @@ import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { tools } from './tools.js';
 import { concat } from '@langchain/core/utils/stream';
 import { executor } from '../security/executor.js';
+import { memoryManager } from '../memory/budget.js';
 
 type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral' | 'bedrock';
 
@@ -52,6 +53,63 @@ function isToolCallFormat(obj: any): boolean {
   return obj && typeof obj === 'object' && 'name' in obj && ('args' in obj || 'arguments' in obj);
 }
 
+function parseInvalidWriteFileJson(jsonStr: string): any | null {
+  if (!jsonStr.includes('write_file')) return null;
+
+  const filePathMatch = jsonStr.match(/"filePath"\s*:\s*"([^"]+)"/);
+  if (!filePathMatch) return null;
+  const filePath = filePathMatch[1];
+
+  const contentIdx = jsonStr.indexOf('"content"');
+  if (contentIdx === -1) return null;
+
+  const colonIdx = jsonStr.indexOf(':', contentIdx);
+  if (colonIdx === -1) return null;
+  
+  const startQuoteIdx = jsonStr.indexOf('"', colonIdx);
+  if (startQuoteIdx === -1) return null;
+
+  let endQuoteIdx = -1;
+  for (let i = jsonStr.length - 1; i > startQuoteIdx; i--) {
+    if (jsonStr[i] === '"') {
+      const tail = jsonStr.substring(i + 1).trim();
+      if (/^[\s,}]*$/.test(tail)) {
+        if (tail.includes('}')) {
+          endQuoteIdx = i;
+          break;
+        }
+      }
+    }
+  }
+
+  if (endQuoteIdx === -1) return null;
+
+  let content = jsonStr.substring(startQuoteIdx + 1, endQuoteIdx);
+
+  let unescaped = '';
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] === '\\') {
+      const next = content[i + 1];
+      if (next === 'n') { unescaped += '\n'; i++; }
+      else if (next === 'r') { unescaped += '\r'; i++; }
+      else if (next === 't') { unescaped += '\t'; i++; }
+      else if (next === '"') { unescaped += '"'; i++; }
+      else if (next === '\\') { unescaped += '\\'; i++; }
+      else { unescaped += '\\'; }
+    } else {
+      unescaped += content[i];
+    }
+  }
+
+  return {
+    name: 'write_file',
+    arguments: {
+      filePath,
+      content: unescaped
+    }
+  };
+}
+
 function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null {
   const trimmed = content.trim();
   if (!trimmed) return null;
@@ -87,7 +145,12 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
         addIfValid(parsed);
       }
     }
-  } catch {}
+  } catch {
+    const customParsed = parseInvalidWriteFileJson(trimmed);
+    if (customParsed) {
+      addIfValid(customParsed);
+    }
+  }
 
   // 2. Parse JSON code blocks
   const jsonBlockRegex = /```json\s*([\s\S]*?)\s*```/g;
@@ -107,7 +170,14 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
           parsedBlockIndexes.add(match.index);
         }
       }
-    } catch {}
+    } catch {
+      const customParsed = parseInvalidWriteFileJson(match[1].trim());
+      if (customParsed) {
+        if (addIfValid(customParsed)) {
+          parsedBlockIndexes.add(match.index);
+        }
+      }
+    }
   }
 
   // 3. Parse inline JSON objects
@@ -146,7 +216,12 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
             const sanitized = sanitizeJsonString(potentialJson);
             const parsed = JSON.parse(sanitized);
             addIfValid(parsed);
-          } catch {}
+          } catch {
+            const customParsed = parseInvalidWriteFileJson(potentialJson);
+            if (customParsed) {
+              addIfValid(customParsed);
+            }
+          }
         }
       }
     }
@@ -170,6 +245,9 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
 
     if (!code) continue;
     if (lang === 'diff' || lang === 'patch') continue;
+    
+    const looksLikeToolCall = (code.includes('"name"') || code.includes("'name'")) && (code.includes('"arguments"') || code.includes("'arguments'") || code.includes('"args"') || code.includes("'args'"));
+    if (looksLikeToolCall) continue;
 
     if (messages && messages.length > 0) {
       const lastMsg = messages[messages.length - 1];
@@ -433,14 +511,14 @@ export class ProviderEngine {
               response.tool_calls = fallbackCalls;
               const rawTrimmed = response.content.toString().trim();
               try {
-                JSON.parse(rawTrimmed);
+                JSON.parse(sanitizeJsonString(rawTrimmed));
                 response.content = '';
               } catch {
                 const blockRegex = /^```json\s*([\s\S]*?)\s*```$/i;
                 const match = rawTrimmed.match(blockRegex);
                 if (match) {
                   try {
-                    JSON.parse(match[1].trim());
+                    JSON.parse(sanitizeJsonString(match[1].trim()));
                     response.content = '';
                   } catch {}
                 }
@@ -497,6 +575,7 @@ export class ProviderEngine {
 
   public setConfig(newConfig: OttoConfig) {
     this.config = Configurator.normalizeConfig(newConfig);
+    memoryManager.setConfig(this.config);
     this.initProvider();
   }
 
@@ -559,7 +638,8 @@ export class ProviderEngine {
     const activeModel = Configurator.getActiveModel(this.config, activeProvider) || 'default';
     const limits = this.config.modelLimits?.[activeModel];
     if (limits) {
-      await quotaManager.enforceLimits(activeModel, limits);
+      const estimatedInputTokens = Math.ceil(messages.reduce((acc, m) => acc + (m.content?.toString() || '').length, 0) / 4);
+      await quotaManager.enforceLimits(activeModel, limits, estimatedInputTokens);
     }
 
     try {
@@ -608,7 +688,8 @@ export class ProviderEngine {
     const activeModel = Configurator.getActiveModel(this.config, activeProvider) || 'default';
     const limits = this.config.modelLimits?.[activeModel];
     if (limits) {
-      await quotaManager.enforceLimits(activeModel, limits);
+      const estimatedInputTokens = Math.ceil(messages.reduce((acc, m) => acc + (m.content?.toString() || '').length, 0) / 4);
+      await quotaManager.enforceLimits(activeModel, limits, estimatedInputTokens);
     }
 
     let finalMessage: any = null;

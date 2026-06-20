@@ -20,6 +20,7 @@ import { createGitPanelView } from './cli/views/gitPanel.js';
 import { createCommandPaletteView } from './cli/views/commandPalette.js';
 import { promptWithEscape } from './cli/prompt.js';
 import { captureWorkspaceSnapshot, formatWorkspaceChanges } from './cli/workspaceDiff.js';
+import { snapshotManager } from './cli/snapshots.js';
 import { parseAndExecuteCLI } from './cli/parser.js';
 import * as readline from 'readline';
 import { createRequire } from 'module';
@@ -75,6 +76,63 @@ function isToolCallFormat(obj: any): boolean {
 }
 
 type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral' | 'bedrock';
+function parseInvalidWriteFileJson(jsonStr: string): any | null {
+  if (!jsonStr.includes('write_file')) return null;
+
+  const filePathMatch = jsonStr.match(/"filePath"\s*:\s*"([^"]+)"/);
+  if (!filePathMatch) return null;
+  const filePath = filePathMatch[1];
+
+  const contentIdx = jsonStr.indexOf('"content"');
+  if (contentIdx === -1) return null;
+
+  const colonIdx = jsonStr.indexOf(':', contentIdx);
+  if (colonIdx === -1) return null;
+  
+  const startQuoteIdx = jsonStr.indexOf('"', colonIdx);
+  if (startQuoteIdx === -1) return null;
+
+  let endQuoteIdx = -1;
+  for (let i = jsonStr.length - 1; i > startQuoteIdx; i--) {
+    if (jsonStr[i] === '"') {
+      const tail = jsonStr.substring(i + 1).trim();
+      if (/^[\s,}]*$/.test(tail)) {
+        if (tail.includes('}')) {
+          endQuoteIdx = i;
+          break;
+        }
+      }
+    }
+  }
+
+  if (endQuoteIdx === -1) return null;
+
+  let content = jsonStr.substring(startQuoteIdx + 1, endQuoteIdx);
+
+  let unescaped = '';
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] === '\\') {
+      const next = content[i + 1];
+      if (next === 'n') { unescaped += '\n'; i++; }
+      else if (next === 'r') { unescaped += '\r'; i++; }
+      else if (next === 't') { unescaped += '\t'; i++; }
+      else if (next === '"') { unescaped += '"'; i++; }
+      else if (next === '\\') { unescaped += '\\'; i++; }
+      else { unescaped += '\\'; }
+    } else {
+      unescaped += content[i];
+    }
+  }
+
+  return {
+    name: 'write_file',
+    arguments: {
+      filePath,
+      content: unescaped
+    }
+  };
+}
+
 function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null {
   const trimmed = content.trim();
   if (!trimmed) return null;
@@ -110,7 +168,12 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
         addIfValid(parsed);
       }
     }
-  } catch {}
+  } catch {
+    const customParsed = parseInvalidWriteFileJson(trimmed);
+    if (customParsed) {
+      addIfValid(customParsed);
+    }
+  }
 
   // 2. Parse JSON code blocks
   const jsonBlockRegex = /```json\s*([\s\S]*?)\s*```/g;
@@ -130,7 +193,14 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
           parsedBlockIndexes.add(match.index);
         }
       }
-    } catch {}
+    } catch {
+      const customParsed = parseInvalidWriteFileJson(match[1].trim());
+      if (customParsed) {
+        if (addIfValid(customParsed)) {
+          parsedBlockIndexes.add(match.index);
+        }
+      }
+    }
   }
 
   // 3. Parse inline JSON objects
@@ -169,7 +239,12 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
             const sanitized = sanitizeJsonString(potentialJson);
             const parsed = JSON.parse(sanitized);
             addIfValid(parsed);
-          } catch {}
+          } catch {
+            const customParsed = parseInvalidWriteFileJson(potentialJson);
+            if (customParsed) {
+              addIfValid(customParsed);
+            }
+          }
         }
       }
     }
@@ -193,6 +268,9 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
 
     if (!code) continue;
     if (lang === 'diff' || lang === 'patch') continue;
+
+    const looksLikeToolCall = (code.includes('"name"') || code.includes("'name'")) && (code.includes('"arguments"') || code.includes("'arguments'") || code.includes('"args"') || code.includes("'args'"));
+    if (looksLikeToolCall) continue;
 
     if (messages && messages.length > 0) {
       const lastMsg = messages[messages.length - 1];
@@ -391,12 +469,12 @@ function AppShell({ phone, chatUI }: { phone: PhoneOS; chatUI: ChatUI }) {
   const [mode, setMode] = useState<'menu' | 'chat'>(rootController.getMode());
 
   useEffect(() => {
-    ui.onTuiMessage = (type, text) => {
+    ui.onTuiMessage = (type, text, timeoutMs) => {
       let cleanText = text.replace(/^\[[i✓!X]\]\s*/, '').replace(/^ERROR:\s*/, '');
       if (rootController.getMode() === 'chat') {
-        chatUI.showNotification(cleanText);
+        chatUI.showNotification(cleanText, type, timeoutMs);
       } else {
-        phone.showNotification(cleanText);
+        phone.showNotification(cleanText, type, timeoutMs);
       }
     };
     return () => {
@@ -430,6 +508,7 @@ async function main() {
 
   ui.clearScreen();
   let config = await Configurator.init();
+  memoryManager.setConfig(config);
   const provider = new ProviderEngine(config);
   const rules = ruleGuardrail.getRules();
 
@@ -563,7 +642,7 @@ async function main() {
       const state = chatSession.agentStates.get(chatSession.threadId);
       const isThinking = state === 'thinking';
       const delayMessage = chatSession.delayMessages.get(chatSession.threadId);
-      const stats = memoryManager.getBudgetStatsForMessages(messages, rules);
+      const stats = memoryManager.getBudgetStatsForMessages(messages, ruleGuardrail.getRules(memoryManager.C_max));
       const prov = config.defaults.primaryProvider;
       const model = Configurator.getActiveModel(config, prov as any) ?? 'default';
       const ramMB = Math.round(process.memoryUsage().rss / 1024 / 1024);
@@ -571,7 +650,8 @@ async function main() {
         ctxMax: stats.max,
         ctxUsed: stats.filled,
         ramMB,
-        showContextBar: config.defaults.showContextBar !== false
+        showContextBar: config.defaults.showContextBar !== false,
+        isStreaming: getIsStreaming()
       }, model, isThinking, getPendingPlan(), getPlanMenuIndex(), diffsExpanded, delayMessage, getPendingApproval(), getApprovalMenuIndex());
     }
 
@@ -687,8 +767,13 @@ async function main() {
         try {
           const currentThreadId = chatSession.threadId;
           await threadLocalStorage.run(currentThreadId, async () => {
+            chatSession.cancelledThreads.delete(currentThreadId);
             chatSession.activeStreams.add(currentThreadId);
             chatSession.ensureNamedFromPrompt(inputText);
+
+            // Save checkpoint before adding the user message
+            snapshotManager.saveCheckpoint(currentThreadId, messages.length);
+
             messages.push(new HumanMessage(inputText));
             syncMessages();
             chatUI.scrollToBottom();
@@ -730,8 +815,10 @@ async function main() {
 
                 const nameHint = `\n\nUser's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.${bgInfo}${limitsInfo}`;
               
-                const msgsToSend = [new SystemMessage(rules + nameHint), ...messages];
-                const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
+                const activeRules = ruleGuardrail.getRules(memoryManager.C_max);
+                const msgsToSend = [new SystemMessage(activeRules + nameHint), ...messages];
+                const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, activeRules, messages);
+                syncMessages();
 
                 const finalMsgsToSend = optimizedMsgs.map((msg, idx) => {
                   if (idx === optimizedMsgs.length - 1 && msg instanceof HumanMessage) {
@@ -768,8 +855,12 @@ async function main() {
                 
                 for await (const chunk of stream) {
                   const threadExists = dbManager.listThreads().some(th => th.id === currentThreadId);
-                  if (!threadExists) {
+                  if (!threadExists || chatSession.cancelledThreads.has(currentThreadId)) {
                     isDone = true;
+                    aiMessage.content += '\n\n[Streaming terminated by user]';
+                    if (finalMessage) {
+                      finalMessage.content = aiMessage.content;
+                    }
                     break;
                   }
                   if (!finalMessage) finalMessage = chunk;
@@ -807,6 +898,8 @@ async function main() {
                   }
                 }
                 
+                if (isDone) break;
+
                 let finalContent = '';
                 const reasoning = finalMessage?.additional_kwargs?.reasoning_content;
                 if (reasoning) {
@@ -828,7 +921,7 @@ async function main() {
                     
                     const rawTrimmed = finalMessage.content.toString().trim();
                     try {
-                      JSON.parse(rawTrimmed);
+                      JSON.parse(sanitizeJsonString(rawTrimmed));
                       finalMessage.content = '';
                       aiMessage.content = '';
                     } catch {
@@ -836,7 +929,7 @@ async function main() {
                       const match = rawTrimmed.match(blockRegex);
                       if (match) {
                         try {
-                          JSON.parse(match[1].trim());
+                          JSON.parse(sanitizeJsonString(match[1].trim()));
                           finalMessage.content = '';
                           aiMessage.content = '';
                         } catch {}
@@ -880,6 +973,14 @@ async function main() {
                   else sessionEvents.emit('stream_update', chatSession.threadId);
                   
                   for (const call of finalMessage.tool_calls) {
+                    if (chatSession.cancelledThreads.has(currentThreadId)) {
+                      isDone = true;
+                      aiMessage.content += '\n\n[Tool execution terminated by user]';
+                      syncMessages();
+                      if (chatSession.isChatActive) render(true);
+                      else sessionEvents.emit('stream_update', currentThreadId);
+                      break;
+                    }
                     const tool = tools.find(t => t.name === call.name);
                     let toolResultStr = '';
                     if (tool) {
@@ -950,6 +1051,14 @@ async function main() {
           cleanup();
           phone.startListening();
           phone.pushView(createCommandPaletteView(phone, actions));
+          return;
+        } else if (key.ctrl && key.name === 'x') {
+          const currentThreadId = chatSession.threadId;
+          if (chatSession.activeStreams.has(currentThreadId)) {
+            chatSession.cancelledThreads.add(currentThreadId);
+            ui.warning("Streaming terminated by user.");
+            render(true);
+          }
           return;
         } else if (key.name === 'escape') {
           cleanup();
@@ -1095,6 +1204,14 @@ async function main() {
               }
             }
             if (lastHumanIdx >= 0) {
+              // Revert files to pre-message checkpoint
+              snapshotManager.restoreCheckpoint(chatSession.threadId, lastHumanIdx);
+              
+              // Clean up checkpoints for the removed turns
+              for (let idx = lastHumanIdx; idx < messages.length; idx++) {
+                snapshotManager.deleteCheckpoint(chatSession.threadId, idx);
+              }
+
               messages.splice(lastHumanIdx);
               syncMessages();
             }
@@ -2305,6 +2422,7 @@ async function main() {
                   label: chalk.red('Yes, Delete All Threads'),
                   action: async () => {
                     dbManager.deleteAllThreads();
+                    snapshotManager.clearAllSnapshots();
                     chatSession.clearAllThreadMessages();
                     chatSession.createFreshThread();
                     ui.success('Deleted all threads. Started a fresh chat.');
@@ -2351,6 +2469,7 @@ async function main() {
                      phone.active = false;
                      ui.clearScreen();
                      dbManager.deleteThread(t.id);
+                     snapshotManager.deleteThreadSnapshots(t.id);
                      chatSession.clearThreadMessages(t.id);
                      if (chatSession.threadId === t.id) {
                        chatSession.createFreshThread();

@@ -1,25 +1,44 @@
 import { BaseMessage, HumanMessage, SystemMessage, AIMessage, ToolMessage } from '@langchain/core/messages';
 import { trimMessages } from '@langchain/core/messages';
 import { ui } from '../cli/ui.js';
-import { Configurator } from '../cli/configurator.js';
+import { Configurator, OttoConfig } from '../cli/configurator.js';
 
 export class MemoryManager {
+  private config: OttoConfig | null = null;
+
+  public setConfig(newConfig: OttoConfig) {
+    this.config = newConfig;
+  }
+
   get C_max(): number {
     try {
-      const config = Configurator.loadConfig();
+      const config = this.config || Configurator.loadConfig();
       if (config) {
         const prov = config.defaults.primaryProvider;
         const model = Configurator.getActiveModel(config, prov as any);
+
+        let providerDefault = 64000;
+        if (prov === 'openai') providerDefault = 128000;
+        else if (prov === 'anthropic') providerDefault = 200000;
+        else if (prov === 'gemini') providerDefault = 128000;
+        else if (prov === 'mistral') providerDefault = 128000;
+        else if (prov === 'bedrock') providerDefault = 200000;
+        else if (prov === 'groq') providerDefault = 32768;
+        else if (prov === 'ollama') {
+          providerDefault = config.providers.ollama?.num_ctx || 8192;
+        }
+
         if (model) {
           const limits = config.modelLimits?.[model];
           if (limits && typeof limits.tpm === 'number' && limits.tpm > 0) {
             const safetyBuffer = Math.min(1000, Math.floor(limits.tpm * 0.1));
-            return Math.min(config.defaults.maxCtx || 64000, limits.tpm - safetyBuffer);
+            return Math.min(config.defaults.maxCtx || providerDefault, limits.tpm - safetyBuffer);
           }
         }
         if (typeof config.defaults.maxCtx === 'number') {
-          return config.defaults.maxCtx;
+          return Math.min(providerDefault, config.defaults.maxCtx);
         }
+        return providerDefault;
       }
     } catch {}
     return 64000;
@@ -51,10 +70,28 @@ export class MemoryManager {
   getBudgetStatsForMessages(messages: BaseMessage[], systemPrompt: string = ''): { max: number; filled: number; compressed: number } {
     const conversational = messages.filter(message => message._getType?.() !== 'system');
     const systemTokens = systemPrompt ? this.estimateTokens(systemPrompt) : 0;
-    const filled = conversational.reduce((acc, message) => {
-      const content = message?.content?.toString?.() ?? '';
-      return acc + this.estimateTokens(content);
-    }, systemTokens);
+    
+    const isSmall = this.C_max < 5000;
+    const limit = Math.min(this.Max_Msg_Tokens, Math.max(isSmall ? 200 : 1000, Math.floor(this.C_max * 0.5)));
+    const baseBudget = this.getChatBudget();
+    const summaryBudget = Math.min(this.SummaryBudget, Math.max(isSmall ? 50 : 400, Math.floor(baseBudget * 0.15)));
+    const workingBudget = Math.max(isSmall ? 200 : 1200, baseBudget - summaryBudget);
+
+    const reversed = [...conversational].reverse();
+    let accumulated = 0;
+    
+    for (const msg of reversed) {
+      const content = msg?.content?.toString?.() ?? '';
+      const tokens = this.estimateTokens(content);
+      const truncatedTokens = Math.min(tokens, limit);
+      if (accumulated + truncatedTokens <= workingBudget) {
+        accumulated += truncatedTokens;
+      } else {
+        break;
+      }
+    }
+    
+    const filled = systemTokens + accumulated;
 
     return {
       max: this.C_max,
@@ -74,7 +111,8 @@ export class MemoryManager {
 
   public perMessageTruncate(text: string): string {
     const tokens = this.estimateTokens(text);
-    const limit = Math.min(this.Max_Msg_Tokens, Math.max(1000, Math.floor(this.C_max * 0.5)));
+    const isSmall = this.C_max < 5000;
+    const limit = Math.min(this.Max_Msg_Tokens, Math.max(isSmall ? 200 : 1000, Math.floor(this.C_max * 0.5)));
     if (tokens > limit) {
       ui.alert(`Payload truncated. Original size: ~${tokens} tokens, limit: ${limit}`);
       const allowedChars = limit * 4;
@@ -84,7 +122,7 @@ export class MemoryManager {
     return text;
   }
 
-  public async optimizeContext(messages: BaseMessage[], systemPrompt: string): Promise<BaseMessage[]> {
+  public async optimizeContext(messages: BaseMessage[], systemPrompt: string, originalHistory?: BaseMessage[]): Promise<BaseMessage[]> {
     const conversationalMessages = messages.filter(message => message._getType() !== 'system');
 
     const normalizedMessages = conversationalMessages.map((message) => {
@@ -109,8 +147,9 @@ export class MemoryManager {
     });
 
     const baseBudget = this.getChatBudget();
-    const summaryBudget = Math.min(this.SummaryBudget, Math.max(400, Math.floor(baseBudget * 0.15)));
-    const workingBudget = Math.max(1200, baseBudget - summaryBudget);
+    const isSmall = this.C_max < 5000;
+    const summaryBudget = Math.min(this.SummaryBudget, Math.max(isSmall ? 50 : 400, Math.floor(baseBudget * 0.15)));
+    const workingBudget = Math.max(isSmall ? 200 : 1200, baseBudget - summaryBudget);
 
     const trimmed = await trimMessages(normalizedMessages, {
       maxTokens: workingBudget,
@@ -131,8 +170,45 @@ export class MemoryManager {
       }
     }
 
-    const summaryText = this.buildSummary(dropped);
-    this.lastSummary = summaryText;
+    let summaryText = '';
+    if (dropped.length > 0) {
+      if (originalHistory) {
+        // Collect old summary system messages from the start of history to merge them
+        const oldSummaries = originalHistory.filter(m => m._getType() === 'system');
+        const itemsToSummarize = [...oldSummaries, ...dropped];
+        summaryText = this.buildSummary(itemsToSummarize);
+        this.lastSummary = summaryText;
+
+        // Find where the first trimmed message starts in originalHistory
+        let firstTrimmedIndex = originalHistory.length;
+        if (trimmed.length > 0) {
+          const firstTrimmed = trimmed[0];
+          const idx = originalHistory.findIndex(m => m._getType() === firstTrimmed._getType() && m.content.toString() === firstTrimmed.content.toString());
+          if (idx !== -1) {
+            firstTrimmedIndex = idx;
+          }
+        }
+        
+        if (firstTrimmedIndex > 0) {
+          originalHistory.splice(0, firstTrimmedIndex);
+        }
+
+        if (summaryText) {
+          originalHistory.unshift(new SystemMessage(summaryText));
+        }
+      } else {
+        summaryText = this.buildSummary(dropped);
+        this.lastSummary = summaryText;
+      }
+    } else {
+      if (originalHistory) {
+        const existingSummary = originalHistory.find(m => m._getType() === 'system' && m.content.toString().startsWith('Conversation summary of earlier context:'));
+        if (existingSummary) {
+          summaryText = existingSummary.content.toString();
+          this.lastSummary = summaryText;
+        }
+      }
+    }
 
     const finalMessages = summaryText
       ? [new SystemMessage(systemPrompt), new SystemMessage(summaryText), ...trimmed.filter(m => m._getType() !== 'system')]
@@ -153,11 +229,30 @@ export class MemoryManager {
 
     for (const message of dropped) {
       const type = message._getType();
-      const content = message.content.toString().replace(/\s+/g, ' ').trim();
-      if (!content) continue;
+      const content = message.content.toString();
+      const cleanedContent = content.replace(/\s+/g, ' ').trim();
+      if (!cleanedContent) continue;
 
-      if (type === 'human') {
-        const short = this.shortenForSummary(content, 100);
+      if (type === 'system' && content.startsWith('Conversation summary of earlier context:')) {
+        const lines = content.split('\n');
+        for (const line of lines) {
+          const cleanLine = line.trim();
+          if (cleanLine.startsWith('- Earlier goals:')) {
+            const items = cleanLine.substring('- Earlier goals:'.length).split('|').map(s => s.trim()).filter(Boolean);
+            userGoals.push(...items);
+          } else if (cleanLine.startsWith('- Files touched:')) {
+            const items = cleanLine.substring('- Files touched:'.length).split(',').map(s => s.trim()).filter(Boolean);
+            files.push(...items);
+          } else if (cleanLine.startsWith('- Commands seen:')) {
+            const items = cleanLine.substring('- Commands seen:'.length).split('|').map(s => s.trim()).filter(Boolean);
+            commands.push(...items);
+          } else if (cleanLine.startsWith('- Recent outcomes:')) {
+            const items = cleanLine.substring('- Recent outcomes:'.length).split('|').map(s => s.trim()).filter(Boolean);
+            notes.push(...items);
+          }
+        }
+      } else if (type === 'human') {
+        const short = this.shortenForSummary(cleanedContent, 100);
         if (short) userGoals.push(short);
         this.collectFiles(content, files);
       } else if (type === 'ai') {

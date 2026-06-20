@@ -25,6 +25,7 @@ export class ChatSession {
   private hostname: string;
   public threadMessages = new Map<string, any[]>();
   public activeStreams = new Set<string>();
+  public cancelledThreads = new Set<string>();
   public isChatActive = false;
   public pendingApprovals: {
     threadId: string;

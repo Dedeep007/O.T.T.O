@@ -37,7 +37,7 @@ export class QuotaManager {
   }
 
   // Returns wait time in milliseconds if any limit is violated, or 0 if okay
-  public checkLimits(model: string, limits: { rpm?: number; rpd?: number; tpm?: number; tpd?: number; itpm?: number; otpm?: number }): number {
+  public checkLimits(model: string, limits: { rpm?: number; rpd?: number; tpm?: number; tpd?: number; itpm?: number; otpm?: number }, estimatedTokens: number = 0): number {
     this.cleanHistory(model);
     const records = this.getHistory(model);
     const now = Date.now();
@@ -91,29 +91,28 @@ export class QuotaManager {
       if (wait > maxWait) maxWait = wait;
     }
     // TPM
-    if (limits.tpm && tpmUsed >= limits.tpm) {
-      let accumulated = 0;
-      const sorted = [...recs1m].sort((a, b) => b.timestamp - a.timestamp);
-      let lastNeededTimestamp = now - 60000;
+    if (limits.tpm && (tpmUsed + estimatedTokens) >= limits.tpm) {
+      let accumulated = tpmUsed + estimatedTokens;
+      const sorted = [...recs1m].sort((a, b) => a.timestamp - b.timestamp);
+      let wait = 60000;
       for (const r of sorted) {
-        accumulated += r.inputTokens + r.outputTokens;
-        if (accumulated >= limits.tpm) {
-          lastNeededTimestamp = r.timestamp;
+        accumulated -= (r.inputTokens + r.outputTokens);
+        if (accumulated < limits.tpm) {
+          const elapsed = now - r.timestamp;
+          wait = Math.max(0, 60000 - elapsed + 100);
           break;
         }
       }
-      const elapsed = now - lastNeededTimestamp;
-      const wait = Math.max(0, 60000 - elapsed + 100);
       if (wait > maxWait) maxWait = wait;
     }
     // TPD
-    if (limits.tpd && tpdUsed >= limits.tpd) {
-      let accumulated = 0;
-      const sorted = [...recs1d].sort((a, b) => b.timestamp - a.timestamp);
+    if (limits.tpd && (tpdUsed + estimatedTokens) >= limits.tpd) {
+      let accumulated = tpdUsed + estimatedTokens;
+      const sorted = [...recs1d].sort((a, b) => a.timestamp - b.timestamp);
       let lastNeededTimestamp = now - 24 * 60 * 60 * 1000;
       for (const r of sorted) {
-        accumulated += r.inputTokens + r.outputTokens;
-        if (accumulated >= limits.tpd) {
+        accumulated -= (r.inputTokens + r.outputTokens);
+        if (accumulated < limits.tpd) {
           lastNeededTimestamp = r.timestamp;
           break;
         }
@@ -123,19 +122,18 @@ export class QuotaManager {
       if (wait > maxWait) maxWait = wait;
     }
     // ITPM
-    if (limits.itpm && itpmUsed >= limits.itpm) {
-      let accumulated = 0;
-      const sorted = [...recs1m].sort((a, b) => b.timestamp - a.timestamp);
-      let lastNeededTimestamp = now - 60000;
+    if (limits.itpm && (itpmUsed + estimatedTokens) >= limits.itpm) {
+      let accumulated = itpmUsed + estimatedTokens;
+      const sorted = [...recs1m].sort((a, b) => a.timestamp - b.timestamp);
+      let wait = 60000;
       for (const r of sorted) {
-        accumulated += r.inputTokens;
-        if (accumulated >= limits.itpm) {
-          lastNeededTimestamp = r.timestamp;
+        accumulated -= r.inputTokens;
+        if (accumulated < limits.itpm) {
+          const elapsed = now - r.timestamp;
+          wait = Math.max(0, 60000 - elapsed + 100);
           break;
         }
       }
-      const elapsed = now - lastNeededTimestamp;
-      const wait = Math.max(0, 60000 - elapsed + 100);
       if (wait > maxWait) maxWait = wait;
     }
     // OTPM
@@ -158,7 +156,7 @@ export class QuotaManager {
     return maxWait;
   }
 
-  public async enforceLimits(model: string, limits?: { rpm?: number; rpd?: number; tpm?: number; tpd?: number; itpm?: number; otpm?: number }): Promise<void> {
+  public async enforceLimits(model: string, limits?: { rpm?: number; rpd?: number; tpm?: number; tpd?: number; itpm?: number; otpm?: number }, estimatedTokens: number = 0): Promise<void> {
     if (!limits) return;
     const hasAnyLimit = limits.rpm || limits.rpd || limits.tpm || limits.tpd || limits.itpm || limits.otpm;
     if (!hasAnyLimit) return;
@@ -166,9 +164,27 @@ export class QuotaManager {
     const threadId = chatSession.threadId || 'default';
 
     while (true) {
-      const waitTime = this.checkLimits(model, limits);
+      let waitTime = this.checkLimits(model, limits, estimatedTokens);
       if (waitTime <= 0) break;
-      ui.warning(`Rate limit threshold approached for ${model}. Pausing execution for ${Math.ceil(waitTime / 1000)}s to remain within configured limits.`);
+
+      // Ensure at least 60 seconds pause for minute-level rate limit evasion
+      const now = Date.now();
+      const records = this.getHistory(model);
+      const recs1m = records.filter(r => r.timestamp > (now - 60000));
+      const tpmUsed = recs1m.reduce((acc, r) => acc + r.inputTokens + r.outputTokens, 0);
+      const itpmUsed = recs1m.reduce((acc, r) => acc + r.inputTokens, 0);
+      const otpmUsed = recs1m.reduce((acc, r) => acc + r.outputTokens, 0);
+
+      const isMinLimit = 
+        (limits.tpm && (tpmUsed + estimatedTokens) >= limits.tpm) ||
+        (limits.itpm && (itpmUsed + estimatedTokens) >= limits.itpm) ||
+        (limits.otpm && otpmUsed >= limits.otpm);
+
+      if (isMinLimit) {
+        waitTime = Math.max(waitTime, 60000);
+      }
+
+      ui.warning(`Rate limit threshold approached for ${model}. Pausing execution for ${Math.ceil(waitTime / 1000)}s to remain within configured limits.`, waitTime);
       
       let remaining = Math.ceil(waitTime / 1000);
       chatSession.agentStates.set(threadId, 'delaying');

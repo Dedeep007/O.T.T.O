@@ -164,3 +164,33 @@ export function formatWorkspaceChanges(before: Snapshot, after: Snapshot): strin
 
   return changes.join('\n\n');
 }
+
+export function restoreWorkspaceSnapshot(backup: Snapshot, root: string = process.cwd()) {
+  const current = captureWorkspaceSnapshot(root);
+  
+  // 1. Restore/create files from backup
+  for (const [relPath, content] of backup.entries()) {
+    const fullPath = path.join(root, relPath);
+    const dir = path.dirname(fullPath);
+    
+    // Ensure directory exists
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    
+    const currentContent = current.get(relPath);
+    if (currentContent !== content) {
+      fs.writeFileSync(fullPath, content, 'utf8');
+    }
+  }
+  
+  // 2. Delete files that are in current but not in backup
+  for (const relPath of current.keys()) {
+    if (!backup.has(relPath)) {
+      const fullPath = path.join(root, relPath);
+      try {
+        fs.unlinkSync(fullPath);
+      } catch {}
+    }
+  }
+}
