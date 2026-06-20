@@ -349,9 +349,26 @@ const launchOsApp = tool(
 const readBrowserAccessibility = tool(
   async ({ url }: { url: string }) => {
     try {
-      // Connect to the default browser or Chrome instance
-      // The path can be adjusted by the user in settings later. Using a standard default path for Windows for now.
-      await browserAutomation.connect('C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe');
+      const paths = [
+        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+        path.join(process.env.LOCALAPPDATA || '', 'Google\\Chrome\\Application\\chrome.exe'),
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        '/usr/bin/google-chrome',
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser'
+      ];
+      let chromePath = '';
+      for (const p of paths) {
+        if (p && fs.existsSync(p)) {
+          chromePath = p;
+          break;
+        }
+      }
+      if (!chromePath) {
+        throw new Error('Google Chrome / Chromium could not be located in standard paths. Please ensure Chrome is installed.');
+      }
+      await browserAutomation.connect(chromePath);
       const tree = await browserAutomation.getAccessibilityTree(url);
       await browserAutomation.close();
       return JSON.stringify(tree, null, 2);

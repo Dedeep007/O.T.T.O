@@ -26,11 +26,18 @@ export class ChatSession {
   public threadMessages = new Map<string, any[]>();
   public activeStreams = new Set<string>();
   public isChatActive = false;
-  public pendingApprovals: { threadId: string, cmd: string, commandStr: string, resolve: (choice: 'now' | 'always' | 'deny') => void }[] = [];
+  public pendingApprovals: {
+    threadId: string;
+    type: 'command' | 'app';
+    cmd: string;
+    commandStr: string;
+    resolve: (choice: 'now' | 'always' | 'deny') => void;
+  }[] = [];
   public pendingPlans = new Set<string>();
   public agentStates = new Map<string, 'thinking' | 'tools' | 'idle' | 'delaying'>();
   public delayMessages = new Map<string, string>();
   public planMenuIndices = new Map<string, number>();
+  public approvalMenuIndices = new Map<string, number>();
   private static readonly DEFAULT_THREAD_NAME = 'New Chat';
 
   constructor() {

@@ -158,33 +158,16 @@ export class Executor {
   }
 
   private async promptAction(cmd: string, fullCommand: string, executingThreadId: string): Promise<'now' | 'always' | 'deny'> {
-    // Only prompt inline if the chat is active and the executing thread is the one currently viewed
-    if (!chatSession.isChatActive || executingThreadId !== chatSession.threadId) {
-      return new Promise((resolve) => {
-        chatSession.pendingApprovals.push({
-          threadId: executingThreadId,
-          cmd,
-          commandStr: fullCommand,
-          resolve
-        });
-        sessionEvents.emit('pending_approval');
+    return new Promise((resolve) => {
+      chatSession.pendingApprovals.push({
+        threadId: executingThreadId,
+        type: 'command',
+        cmd,
+        commandStr: fullCommand,
+        resolve
       });
-    }
-    try {
-      sessionEvents.emit('prompt_start');
-      ui.warning(`The agent wants to execute: ${fullCommand}`);
-      const choice = await select({
-        message: 'Choose an action:',
-        choices: [
-          { name: 'Approve for now', value: 'now' },
-          { name: `Approve always (whitelist '${cmd}')`, value: 'always' },
-          { name: `Don't approve`, value: 'deny' }
-        ]
-      }) as 'now' | 'always' | 'deny';
-      return choice;
-    } finally {
-      sessionEvents.emit('prompt_end');
-    }
+      sessionEvents.emit('pending_approval');
+    });
   }
 
   clearAttempts() {

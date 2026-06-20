@@ -27,9 +27,6 @@ function getCharWidth(char: string): number {
   if (codePoint === 0x25B6) { // ▶ (black right-pointing triangle)
     return 2;
   }
-  if (codePoint === 0x270F) { // ✏ (pencil)
-    return 1;
-  }
   if (
     (codePoint >= 0x1F300 && codePoint <= 0x1F9FF) ||
     (codePoint >= 0x1F600 && codePoint <= 0x1F64F) ||
@@ -225,7 +222,9 @@ export class ChatUI {
     pendingPlan: boolean = false,
     planMenuIndex: number = 0,
     diffsExpanded: boolean = false,
-    delayMessage?: string
+    delayMessage?: string,
+    pendingApproval?: { type: 'command' | 'app', cmd: string, commandStr: string },
+    approvalMenuIndex: number = 0
   ) {
     // ── 1. Build the FULL content buffer ─────────────────────────────────────
     const lines: string[] = [];
@@ -415,14 +414,69 @@ export class ChatUI {
       push('');
     }
 
+    // ── Security approval menu (rendered above separator when pending) ───────
+    if (pendingApproval) {
+      const menuWidth = Math.min(this.W - 6, 70);
+      const border = chalk.hex('#FB7185'); // Rose / Coral Red color
+      const titleColor = chalk.bgHex('#4C0519').hex('#FDA4AF'); // Dark Rose bg, Light Rose text
+      const totalInnerWidth = menuWidth + 2;
+      
+      const boxRow = (styledContent: string, bgHex?: string) => {
+        const visLen = getStringWidth(styledContent);
+        const pad = ' '.repeat(Math.max(0, totalInnerWidth - visLen));
+        const inner = bgHex
+          ? chalk.bgHex(bgHex)(styledContent + pad)
+          : styledContent + pad;
+        return '  ' + border('|') + inner + border('|');
+      };
+
+      push('  ' + border('+' + '-'.repeat(totalInnerWidth) + '+'));
+      push(boxRow(titleColor.bold(' 🛡️  SECURITY APPROVAL REQUIRED '), '#4C0519'));
+      push('  ' + border('+' + '-'.repeat(totalInnerWidth) + '+'));
+      
+      const actionType = pendingApproval.type === 'app' ? 'launch application' : 'execute command';
+      const promptText = `The agent wants to ${actionType}:`;
+      push(boxRow(' ' + chalk.white(promptText)));
+      
+      // Wrap and display the full command/app path
+      const cmdStrWrapped = wrapText(pendingApproval.commandStr, totalInnerWidth - 4, 0);
+      cmdStrWrapped.forEach(line => {
+        push(boxRow('   ' + chalk.hex('#FDA4AF').bold(line.trim())));
+      });
+      
+      push('  ' + border('+' + '-'.repeat(totalInnerWidth) + '+'));
+
+      const menuItems = [
+        { label: 'Approve for now', color: chalk.hex('#4ADE80') },
+        { label: `Approve always (whitelist '${pendingApproval.cmd}')`, color: chalk.hex('#38BDF8') },
+        { label: 'Don\'t approve', color: chalk.hex('#F87171') },
+      ];
+
+      menuItems.forEach((item, idx) => {
+        const isSelected = idx === approvalMenuIndex;
+        const cursor = isSelected
+          ? border.bold(' > ')
+          : ' '.repeat(getStringWidth(' > '));
+        const cursorWidth = getStringWidth(cursor);
+        const paddedLabel = ansiPadEnd(item.label, totalInnerWidth - cursorWidth);
+        const label = isSelected
+          ? chalk.bgHex('#2E050E')(item.color.bold(paddedLabel))
+          : chalk.hex('#9CA3AF')(paddedLabel);
+        push('  ' + border('|') + cursor + label + border('|'));
+      });
+      
+      push('  ' + border('+' + '-'.repeat(totalInnerWidth) + '+'));
+      push('');
+    }
+
     // ── Plan approval menu (rendered above separator when pending) ──────────
     if (pendingPlan) {
       const menuWidth = Math.min(this.W - 6, 60);
       const border    = chalk.hex('#F5C400');
       const menuItems = [
-        { label: '\u2705  Approve \u2014 execute the plan',    color: chalk.hex('#4ADE80') },
-        { label: '\u270f\ufe0f   Edit \u2014 request changes first', color: chalk.hex('#FBBF24') },
-        { label: '\u274c  Cancel \u2014 do not proceed',       color: chalk.hex('#F87171') },
+        { label: '\u2705  Approve - execute the plan',    color: chalk.hex('#4ADE80') },
+        { label: '\u270f\ufe0f  Edit - request changes first', color: chalk.hex('#FBBF24') },
+        { label: '\u274c  Cancel - do not proceed',       color: chalk.hex('#F87171') },
       ];
 
       const totalInnerWidth = menuWidth + 2;
@@ -486,11 +540,8 @@ export class ChatUI {
       out += line + '\x1B[K\n';
     }
 
-    // Erase leftover rows from a previous taller render
-    const leftover = this.lastLineCount - visible.length;
-    for (let i = 0; i < leftover; i++) {
-      out += '\x1B[2K\n';
-    }
+    // Erase leftover rows from a previous taller render using Erase in Display (cursor to end of screen)
+    out += '\x1B[J';
     this.lastLineCount = visible.length;
 
     // ── 5. Prompt row ─────────────────────────────────────────────────────────
@@ -500,9 +551,13 @@ export class ChatUI {
       : '';
     let placeholder = '';
     if (currentInput.length === 0) {
-      placeholder = pendingPlan
-          ? chalk.hex('#F5C400')('\u2191\u2193 choose  \u21b5 confirm')
-          : this.MUTED('Type your message... (esc to menu)');
+      if (pendingApproval) {
+        placeholder = chalk.hex('#FB7185')('\u2191\u2193 choose  \u21b5 confirm');
+      } else if (pendingPlan) {
+        placeholder = chalk.hex('#F5C400')('\u2191\u2193 choose  \u21b5 confirm');
+      } else {
+        placeholder = this.MUTED('Type your message... (esc to menu)');
+      }
     } else if (/[@][^\s]*$/.test(currentInput)) {
       try {
         const match = currentInput.match(/@([^\s]*)$/);

@@ -71,7 +71,7 @@ function isToolCallFormat(obj: any): boolean {
   return obj && typeof obj === 'object' && 'name' in obj && ('args' in obj || 'arguments' in obj);
 }
 
-type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral';
+type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral' | 'bedrock';
 function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null {
   const trimmed = content.trim();
   if (!trimmed) return null;
@@ -376,11 +376,18 @@ async function main() {
     const setPlanMenuIndex = (val: number) => {
       chatSession.planMenuIndices.set(chatSession.threadId, val);
     };
+    const getPendingApproval = () => {
+      return chatSession.pendingApprovals.find(p => p.threadId === chatSession.threadId);
+    };
+    const getApprovalMenuIndex = () => chatSession.approvalMenuIndices.get(chatSession.threadId) ?? 0;
+    const setApprovalMenuIndex = (val: number) => {
+      chatSession.approvalMenuIndices.set(chatSession.threadId, val);
+    };
 
     const PLAN_MENU_OPTIONS = [
-      { label: '✅  Approve — execute the plan', inject: 'approved — please proceed with the plan exactly as described.' },
-      { label: '✏️   Edit — request changes first', inject: null },
-      { label: '❌  Cancel — do not proceed', inject: 'cancel — do not proceed with this plan.' },
+      { label: '✅  Approve - execute the plan', inject: 'approved - please proceed with the plan exactly as described.' },
+      { label: '✏️  Edit - request changes first', inject: null },
+      { label: '❌  Cancel - do not proceed', inject: 'cancel - do not proceed with this plan.' },
     ];
 
     const PLAN_BLOCK_RE = /<!--\s*PLAN_START\s*-->[\s\S]*?<!--\s*PLAN_END\s*-->/;
@@ -457,7 +464,7 @@ async function main() {
     function throttleRender(force = false) {
       if (isPrompting) return;
       const now = Date.now();
-      if (force || now - lastRenderTime >= 60) {
+      if (force || now - lastRenderTime >= 100) {
         lastRenderTime = now;
         render(force);
       }
@@ -483,7 +490,7 @@ async function main() {
         ctxUsed: stats.filled,
         ramMB,
         showContextBar: config.defaults.showContextBar !== false
-      }, model, isThinking, getPendingPlan(), getPlanMenuIndex(), diffsExpanded, delayMessage);
+      }, model, isThinking, getPendingPlan(), getPlanMenuIndex(), diffsExpanded, delayMessage, getPendingApproval(), getApprovalMenuIndex());
     }
 
 
@@ -546,49 +553,12 @@ async function main() {
       if (process.stdin.isTTY) process.stdin.setRawMode(true);
       process.stdin.resume(); // ensure stdin is flowing after phone.cleanup() may have paused it
 
-      const processPendingApprovals = async () => {
-        while (true) {
-          const idx = chatSession.pendingApprovals.findIndex(p => p.threadId === chatSession.threadId);
-          if (idx === -1) break;
-          
-          // Remove it from the pending list
-          const item = chatSession.pendingApprovals.splice(idx, 1)[0];
-          
-          // Prompt the user in-chat
-          try {
-            onPromptStart();
-            ui.warning(`The agent wants to execute: ${item.commandStr}`);
-            const choice = await select({
-              message: 'Choose an action:',
-              choices: [
-                { name: 'Approve for now', value: 'now' },
-                { name: `Approve always (whitelist '${item.cmd}')`, value: 'always' },
-                { name: `Don't approve`, value: 'deny' }
-              ]
-            }) as 'now' | 'always' | 'deny';
-            
-            if (choice === 'always') {
-              const currentConfig = await Configurator.init();
-              if (!currentConfig.security.allowedCommands.includes(item.cmd)) {
-                currentConfig.security.allowedCommands.push(item.cmd);
-              }
-              if (currentConfig.security.mode === 'ask') {
-                currentConfig.security.mode = 'approve';
-              }
-              Configurator.saveConfig(currentConfig);
-              config = currentConfig;
-              provider.setConfig(config);
-              phone.updateConfig(config);
-            }
-            
-            item.resolve(choice);
-          } catch (err) {
-            item.resolve('deny');
-          } finally {
-            onPromptEnd();
-          }
+      const onPendingApproval = () => {
+        if (chatSession.isChatActive) {
+          render(true);
         }
       };
+      sessionEvents.on('pending_approval', onPendingApproval);
 
       const onStreamUpdate = (id: string) => {
         if (id === chatSession.threadId && chatSession.isChatActive) {
@@ -623,6 +593,7 @@ async function main() {
           animationTimer = null;
         }
         sessionEvents.removeListener('stream_update', onStreamUpdate);
+        sessionEvents.removeListener('pending_approval', onPendingApproval);
         sessionEvents.removeListener('prompt_start', onPromptStart);
         sessionEvents.removeListener('prompt_end', onPromptEnd);
         process.stdout.write('\x1B[?1049l');
@@ -630,243 +601,250 @@ async function main() {
       };
 
       const runAgentLoop = async (inputText: string) => {
-        const currentThreadId = chatSession.threadId;
-        await threadLocalStorage.run(currentThreadId, async () => {
-          chatSession.activeStreams.add(currentThreadId);
-          chatSession.ensureNamedFromPrompt(inputText);
-          messages.push(new HumanMessage(inputText));
-          syncMessages();
-          chatUI.scrollToBottom();
-          chatSession.agentStates.set(currentThreadId, 'thinking');
-          if (chatSession.isChatActive && chatSession.threadId === currentThreadId) {
-            render(true);
-          } else {
-            sessionEvents.emit('stream_update', currentThreadId);
-          }
-
-          try {
-            let isDone = false;
-            const preferredName = Configurator.getUsername(config) || 'user';
-            
-            while (!isDone) {
-              const threadExists = dbManager.listThreads().some(th => th.id === currentThreadId);
-              if (!threadExists) {
-                isDone = true;
-                break;
-              }
-              const bgProcs = backgroundManager.getProcesses().filter(p => p.threadId === currentThreadId);
-              const bgInfo = bgProcs.length > 0
-                ? `\n\nActive background terminal processes running under O.T.T.O:\n${bgProcs.map(p => `- PID ${p.pid}: "${p.command}" (running for ${Math.round((Date.now() - p.startTime) / 1000)}s)`).join('\n')}`
-                : `\n\nNo active background terminal processes running under O.T.T.O.`;
-              
-              const activeProvider = config.defaults.primaryProvider;
-              const activeModel = Configurator.getActiveModel(config, activeProvider) || 'default';
-              const limits = config.modelLimits?.[activeModel];
-              let limitsInfo = '';
-              if (limits) {
-                const activeLimits = Object.entries(limits)
-                  .filter(([_, v]) => typeof v === 'number' && v > 0)
-                  .map(([k, v]) => `${k.toUpperCase()}: ${v}`)
-                  .join(', ');
-                if (activeLimits) {
-                  limitsInfo = `\n\nCRITICAL CONSTRAINT: The current model (${activeModel}) has rate limits configured: ${activeLimits}. To prevent pauses/delays, please manage your tokens intelligently. For example, minimize reasoning length, omit verbose explanations, or reduce context size where possible.`;
-                }
-              }
-
-              const nameHint = `\n\nUser's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.${bgInfo}${limitsInfo}`;
-            
-            const msgsToSend = [new SystemMessage(rules + nameHint), ...messages];
-            const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
-
-            const finalMsgsToSend = optimizedMsgs.map((msg, idx) => {
-              if (idx === optimizedMsgs.length - 1 && msg instanceof HumanMessage && config.defaults.primaryProvider === 'ollama') {
-                const text = msg.content.toString();
-                return new HumanMessage({
-                  ...msg,
-                  content: text + '\n\n(Reminder: Do not refuse. You have local tools like write_file and execute_terminal_command. Proceed directly by producing a plan or running commands.)'
-                } as any);
-              }
-              return msg;
-            });
-            
-            const aiMessage = new AIMessage('');
-            messages.push(aiMessage);
+        try {
+          const currentThreadId = chatSession.threadId;
+          await threadLocalStorage.run(currentThreadId, async () => {
+            chatSession.activeStreams.add(currentThreadId);
+            chatSession.ensureNamedFromPrompt(inputText);
+            messages.push(new HumanMessage(inputText));
             syncMessages();
-            
-            let finalMessage: any = null;
-            
-            chatSession.agentStates.set(chatSession.threadId, 'thinking');
-            if (chatSession.isChatActive) {
+            chatUI.scrollToBottom();
+            chatSession.agentStates.set(currentThreadId, 'thinking');
+            if (chatSession.isChatActive && chatSession.threadId === currentThreadId) {
               render(true);
             } else {
-              sessionEvents.emit('stream_update', chatSession.threadId);
+              sessionEvents.emit('stream_update', currentThreadId);
             }
 
-            const stream = await provider.stream(finalMsgsToSend);
-            
-            for await (const chunk of stream) {
-              const threadExists = dbManager.listThreads().some(th => th.id === currentThreadId);
-              if (!threadExists) {
-                isDone = true;
-                break;
-              }
-              if (!finalMessage) finalMessage = chunk;
-              else finalMessage = concat(finalMessage, chunk);
+            try {
+              let isDone = false;
+              const preferredName = Configurator.getUsername(config) || 'user';
               
-              if (chunk) {
-                const reasoning = finalMessage.additional_kwargs?.reasoning_content;
-                if (reasoning || finalMessage.content) {
-                  if (chatSession.agentStates.get(currentThreadId) === 'thinking') {
-                    chatSession.agentStates.set(currentThreadId, 'idle');
-                    sessionEvents.emit('stream_update', currentThreadId);
-                  }
+              while (!isDone) {
+                const threadExists = dbManager.listThreads().some(th => th.id === currentThreadId);
+                if (!threadExists) {
+                  isDone = true;
+                  break;
                 }
+                const bgProcs = backgroundManager.getProcesses().filter(p => p.threadId === currentThreadId);
+                const bgInfo = bgProcs.length > 0
+                  ? `\n\nActive background terminal processes running under O.T.T.O:\n${bgProcs.map(p => `- PID ${p.pid}: "${p.command}" (running for ${Math.round((Date.now() - p.startTime) / 1000)}s)`).join('\n')}`
+                  : `\n\nNo active background terminal processes running under O.T.T.O.`;
                 
-                let content = '';
-                if (reasoning) {
-                  content += `<think>\n${reasoning}`;
-                  if (finalMessage.content) {
-                    content += '\n</think>\n';
+                const activeProvider = config.defaults.primaryProvider;
+                const activeModel = Configurator.getActiveModel(config, activeProvider) || 'default';
+                const limits = config.modelLimits?.[activeModel];
+                let limitsInfo = '';
+                if (limits) {
+                  const activeLimits = Object.entries(limits)
+                    .filter(([_, v]) => typeof v === 'number' && v > 0)
+                    .map(([k, v]) => `${k.toUpperCase()}: ${v}`)
+                    .join(', ');
+                  if (activeLimits) {
+                    limitsInfo = `\n\nCRITICAL CONSTRAINT: The current model (${activeModel}) has rate limits configured: ${activeLimits}. To prevent pauses/delays, please manage your tokens intelligently. For example, minimize reasoning length, omit verbose explanations, or reduce context size where possible.`;
                   }
                 }
-                content += finalMessage.content;
-                aiMessage.content = content;
 
-                if (finalMessage && finalMessage.tool_calls && finalMessage.tool_calls.length > 0) {
-                  aiMessage.tool_calls = finalMessage.tool_calls;
-                  chatSession.agentStates.set(currentThreadId, 'tools');
-                  sessionEvents.emit('stream_update', currentThreadId);
-                }
-                syncMessages();
-                if (chatSession.isChatActive && chatSession.threadId === currentThreadId) {
-                  throttleRender();
-                } else {
-                  sessionEvents.emit('stream_update', currentThreadId);
-                }
-              }
-            }
-            
-            let finalContent = '';
-            const reasoning = finalMessage?.additional_kwargs?.reasoning_content;
-            if (reasoning) {
-              finalContent += `<think>\n${reasoning}\n</think>\n`;
-            }
-            finalContent += finalMessage?.content ?? '';
-            
-            if (finalMessage) {
-              finalMessage.content = finalContent;
-            }
-            
-            let hasToolCalls = finalMessage?.tool_calls && finalMessage.tool_calls.length > 0;
-            if (!hasToolCalls && finalMessage?.content) {
-              const fallbackCalls = parseFallbackToolCalls(finalMessage.content.toString(), messages);
-              if (fallbackCalls && fallbackCalls.length > 0) {
-                finalMessage.tool_calls = fallbackCalls;
-                aiMessage.tool_calls = fallbackCalls;
-                hasToolCalls = true;
+                const nameHint = `\n\nUser's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.${bgInfo}${limitsInfo}`;
+              
+                const msgsToSend = [new SystemMessage(rules + nameHint), ...messages];
+                const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
+
+                const finalMsgsToSend = optimizedMsgs.map((msg, idx) => {
+                  if (idx === optimizedMsgs.length - 1 && msg instanceof HumanMessage && config.defaults.primaryProvider === 'ollama') {
+                    const text = msg.content.toString();
+                    return new HumanMessage({
+                      ...msg,
+                      content: text + '\n\n(Reminder: Do not refuse. You have local tools like write_file and execute_terminal_command. Proceed directly by producing a plan or running commands.)'
+                    } as any);
+                  }
+                  return msg;
+                });
                 
-                const rawTrimmed = finalMessage.content.toString().trim();
-                try {
-                  JSON.parse(rawTrimmed);
-                  finalMessage.content = '';
-                  aiMessage.content = '';
-                } catch {
-                  const blockRegex = /^```json\s*([\s\S]*?)\s*```$/i;
-                  const match = rawTrimmed.match(blockRegex);
-                  if (match) {
+                const aiMessage = new AIMessage('');
+                messages.push(aiMessage);
+                syncMessages();
+                
+                let finalMessage: any = null;
+                
+                chatSession.agentStates.set(chatSession.threadId, 'thinking');
+                if (chatSession.isChatActive) {
+                  render(true);
+                } else {
+                  sessionEvents.emit('stream_update', chatSession.threadId);
+                }
+
+                const stream = await provider.stream(finalMsgsToSend);
+                
+                for await (const chunk of stream) {
+                  const threadExists = dbManager.listThreads().some(th => th.id === currentThreadId);
+                  if (!threadExists) {
+                    isDone = true;
+                    break;
+                  }
+                  if (!finalMessage) finalMessage = chunk;
+                  else finalMessage = concat(finalMessage, chunk);
+                  
+                  if (chunk) {
+                    const reasoning = finalMessage.additional_kwargs?.reasoning_content;
+                    if (reasoning || finalMessage.content) {
+                      if (chatSession.agentStates.get(currentThreadId) === 'thinking') {
+                        chatSession.agentStates.set(currentThreadId, 'idle');
+                        sessionEvents.emit('stream_update', currentThreadId);
+                      }
+                    }
+                    
+                    let content = '';
+                    if (reasoning) {
+                      content += `<think>\n${reasoning}`;
+                      if (finalMessage.content) {
+                        content += '\n</think>\n';
+                      }
+                    }
+                    content += finalMessage.content;
+                    aiMessage.content = content;
+
+                    if (finalMessage && finalMessage.tool_calls && finalMessage.tool_calls.length > 0) {
+                      aiMessage.tool_calls = finalMessage.tool_calls;
+                      chatSession.agentStates.set(currentThreadId, 'tools');
+                      sessionEvents.emit('stream_update', currentThreadId);
+                    }
+                    if (chatSession.isChatActive && chatSession.threadId === currentThreadId) {
+                      throttleRender();
+                    } else {
+                      sessionEvents.emit('stream_update', currentThreadId);
+                    }
+                  }
+                }
+                
+                let finalContent = '';
+                const reasoning = finalMessage?.additional_kwargs?.reasoning_content;
+                if (reasoning) {
+                  finalContent += `<think>\n${reasoning}\n</think>\n`;
+                }
+                finalContent += finalMessage?.content ?? '';
+                
+                if (finalMessage) {
+                  finalMessage.content = finalContent;
+                }
+                
+                let hasToolCalls = finalMessage?.tool_calls && finalMessage.tool_calls.length > 0;
+                if (!hasToolCalls && finalMessage?.content) {
+                  const fallbackCalls = parseFallbackToolCalls(finalMessage.content.toString(), messages);
+                  if (fallbackCalls && fallbackCalls.length > 0) {
+                    finalMessage.tool_calls = fallbackCalls;
+                    aiMessage.tool_calls = fallbackCalls;
+                    hasToolCalls = true;
+                    
+                    const rawTrimmed = finalMessage.content.toString().trim();
                     try {
-                      JSON.parse(match[1].trim());
+                      JSON.parse(rawTrimmed);
                       finalMessage.content = '';
                       aiMessage.content = '';
-                    } catch {}
+                    } catch {
+                      const blockRegex = /^```json\s*([\s\S]*?)\s*```$/i;
+                      const match = rawTrimmed.match(blockRegex);
+                      if (match) {
+                        try {
+                          JSON.parse(match[1].trim());
+                          finalMessage.content = '';
+                          aiMessage.content = '';
+                        } catch {}
+                      }
+                    }
                   }
                 }
-              }
-            }
-            
-            config = provider.getConfig();
-            phone.updateConfig(config);
-            
-            messages[messages.length - 1] = finalMessage;
-            lastStreamContentLength = 0;
-            syncMessages();
-            if (chatSession.isChatActive) {
-              render(true);
-            }
+                
+                config = provider.getConfig();
+                phone.updateConfig(config);
+                
+                messages[messages.length - 1] = finalMessage;
+                lastStreamContentLength = 0;
+                syncMessages();
+                if (chatSession.isChatActive) {
+                  render(true);
+                }
 
-            const responseText = String(finalMessage?.content ?? '');
-            const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
+                const responseText = String(finalMessage?.content ?? '');
+                const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
 
-            if (hasPlanBlock && !hasToolCalls) {
-              if (config.security.mode === 'full') {
-                setPendingPlan(false);
-                isDone = true;
-                setTimeout(() => {
-                  runAgentLoop('approved — please proceed with the plan exactly as described.');
-                }, 50);
-              } else {
-                setPendingPlan(true);
-                setPlanMenuIndex(0);
-                isDone = true;
-                chatSession.agentStates.set(chatSession.threadId, 'idle');
-                if (chatSession.isChatActive) render(true);
-                else sessionEvents.emit('stream_update', chatSession.threadId);
-              }
-            } else if (hasToolCalls) {
-              setPendingPlan(false);
-              chatSession.agentStates.set(chatSession.threadId, 'tools');
-              if (chatSession.isChatActive) render(true);
-              else sessionEvents.emit('stream_update', chatSession.threadId);
-              
-              for (const call of finalMessage.tool_calls) {
-                const tool = tools.find(t => t.name === call.name);
-                let toolResultStr = '';
-                if (tool) {
-                  try {
-                    const beforeSnapshot = call.name === 'execute_terminal_command' ? captureWorkspaceSnapshot() : null;
-                    const res = await (tool as any).invoke(call.args);
-                    const afterSnapshot = beforeSnapshot ? captureWorkspaceSnapshot() : null;
-                    const diffSummary = beforeSnapshot && afterSnapshot ? formatWorkspaceChanges(beforeSnapshot, afterSnapshot) : '';
-                    toolResultStr = formatToolResult(call.name, String(res), diffSummary, call.args);
-                  } catch (e: any) {
-                    toolResultStr = formatToolResult(call.name, `Error: ${e.message}`, '', call.args);
+                if (hasPlanBlock && !hasToolCalls) {
+                  if (config.security.mode === 'full') {
+                    setPendingPlan(false);
+                    isDone = true;
+                    setTimeout(() => {
+                      runAgentLoop('approved — please proceed with the plan exactly as described.');
+                    }, 50);
+                  } else {
+                    setPendingPlan(true);
+                    setPlanMenuIndex(0);
+                    isDone = true;
+                    chatSession.agentStates.set(chatSession.threadId, 'idle');
+                    if (chatSession.isChatActive) render(true);
+                    else sessionEvents.emit('stream_update', chatSession.threadId);
+                  }
+                } else if (hasToolCalls) {
+                  setPendingPlan(false);
+                  chatSession.agentStates.set(chatSession.threadId, 'tools');
+                  if (chatSession.isChatActive) render(true);
+                  else sessionEvents.emit('stream_update', chatSession.threadId);
+                  
+                  for (const call of finalMessage.tool_calls) {
+                    const tool = tools.find(t => t.name === call.name);
+                    let toolResultStr = '';
+                    if (tool) {
+                      try {
+                        const beforeSnapshot = call.name === 'execute_terminal_command' ? captureWorkspaceSnapshot() : null;
+                        const res = await (tool as any).invoke(call.args);
+                        const afterSnapshot = beforeSnapshot ? captureWorkspaceSnapshot() : null;
+                        const diffSummary = beforeSnapshot && afterSnapshot ? formatWorkspaceChanges(beforeSnapshot, afterSnapshot) : '';
+                        toolResultStr = formatToolResult(call.name, String(res), diffSummary, call.args);
+                      } catch (e: any) {
+                        toolResultStr = formatToolResult(call.name, `Error: ${e.message}`, '', call.args);
+                      }
+                    } else {
+                      toolResultStr = formatToolResult(call.name, `Error: Tool ${call.name} not found.`, '', call.args);
+                    }
+                    messages.push(new ToolMessage({ content: toolResultStr, tool_call_id: call.id, name: call.name }));
+                    syncMessages();
+                  }
+                  if (chatSession.isChatActive) {
+                    render(true);
+                  } else {
+                    sessionEvents.emit('stream_update', chatSession.threadId);
                   }
                 } else {
-                  toolResultStr = formatToolResult(call.name, `Error: Tool ${call.name} not found.`, '', call.args);
+                  setPendingPlan(false);
+                  isDone = true;
+                  chatSession.agentStates.set(chatSession.threadId, 'idle');
+                  if (chatSession.isChatActive) render(true);
+                  else sessionEvents.emit('stream_update', chatSession.threadId);
                 }
-                messages.push(new ToolMessage({ content: toolResultStr, tool_call_id: call.id, name: call.name }));
-                syncMessages();
               }
-              if (chatSession.isChatActive) {
-                render(true);
-              } else {
-                sessionEvents.emit('stream_update', chatSession.threadId);
-              }
-            } else {
-              setPendingPlan(false);
-              isDone = true;
-              chatSession.agentStates.set(chatSession.threadId, 'idle');
-              if (chatSession.isChatActive) render(true);
-              else sessionEvents.emit('stream_update', chatSession.threadId);
+              
+              chatSession.agentStates.set(currentThreadId, 'idle');
+              chatSession.activeStreams.delete(currentThreadId);
+              sessionEvents.emit('stream_update', currentThreadId);
+            } catch (error: any) {
+              chatSession.agentStates.set(currentThreadId, 'idle');
+              chatSession.activeStreams.delete(currentThreadId);
+              messages.push(new SystemMessage(formatChatError(error)));
+              syncMessages();
+              sessionEvents.emit('stream_update', currentThreadId);
             }
-          }
-          
-          chatSession.agentStates.set(currentThreadId, 'idle');
-          chatSession.activeStreams.delete(currentThreadId);
-          sessionEvents.emit('stream_update', currentThreadId);
+
+            if (chatSession.isChatActive && chatSession.threadId === currentThreadId) {
+              render(true);
+            }
+          });
         } catch (error: any) {
-          chatSession.agentStates.set(currentThreadId, 'idle');
-          chatSession.activeStreams.delete(currentThreadId);
+          chatSession.agentStates.set(chatSession.threadId, 'idle');
+          chatSession.activeStreams.delete(chatSession.threadId);
           messages.push(new SystemMessage(formatChatError(error)));
           syncMessages();
-          sessionEvents.emit('stream_update', currentThreadId);
-        }
-
-        if (chatSession.isChatActive && chatSession.threadId === currentThreadId) {
           render(true);
         }
-      });
-    };
+      };
 
       const onKeypress = async (str: string, key: any) => {
         if (key.ctrl && key.name === 'c') {
@@ -956,6 +934,47 @@ async function main() {
           return;
         } else if (key.name === 'return' || key.name === 'enter') {
           autocompleteState = null;
+          // ── SECURITY MENU SELECTION ───────────────────────────────────────
+          const pendingApp = getPendingApproval();
+          if (pendingApp) {
+            const choices = ['now', 'always', 'deny'] as const;
+            const choice = choices[getApprovalMenuIndex()];
+            
+            // Remove from queue
+            const idx = chatSession.pendingApprovals.indexOf(pendingApp);
+            if (idx !== -1) {
+              chatSession.pendingApprovals.splice(idx, 1);
+            }
+            setApprovalMenuIndex(0);
+
+            // Handle always whitelist
+            if (choice === 'always') {
+              try {
+                const currentConfig = await Configurator.init();
+                if (pendingApp.type === 'command') {
+                  if (!currentConfig.security.allowedCommands.includes(pendingApp.cmd)) {
+                    currentConfig.security.allowedCommands.push(pendingApp.cmd);
+                  }
+                } else {
+                  if (!currentConfig.security.allowedApps.includes(pendingApp.cmd)) {
+                    currentConfig.security.allowedApps.push(pendingApp.cmd);
+                  }
+                }
+                if (currentConfig.security.mode === 'ask') {
+                  currentConfig.security.mode = 'approve';
+                }
+                Configurator.saveConfig(currentConfig);
+                config = currentConfig;
+                provider.setConfig(config);
+                phone.updateConfig(config);
+              } catch (e) {}
+            }
+
+            pendingApp.resolve(choice);
+            render(true);
+            return;
+          }
+
           // ── PLAN MENU SELECTION ───────────────────────────────────────────
           if (getPendingPlan()) {
             const chosen = PLAN_MENU_OPTIONS[getPlanMenuIndex()];
@@ -1004,7 +1023,9 @@ async function main() {
           runAgentLoop(finalInputStr);
         } else if (key.name === 'up') {
           autocompleteState = null;
-          if (getPendingPlan()) {
+          if (getPendingApproval()) {
+            setApprovalMenuIndex((getApprovalMenuIndex() - 1 + 3) % 3);
+          } else if (getPendingPlan()) {
             setPlanMenuIndex((getPlanMenuIndex() - 1 + PLAN_MENU_OPTIONS.length) % PLAN_MENU_OPTIONS.length);
           } else {
             chatUI.scrollUp(3);
@@ -1012,7 +1033,9 @@ async function main() {
           render(getIsStreaming());
         } else if (key.name === 'down') {
           autocompleteState = null;
-          if (getPendingPlan()) {
+          if (getPendingApproval()) {
+            setApprovalMenuIndex((getApprovalMenuIndex() + 1) % 3);
+          } else if (getPendingPlan()) {
             setPlanMenuIndex((getPlanMenuIndex() + 1) % PLAN_MENU_OPTIONS.length);
           } else {
             chatUI.scrollDown(3);
@@ -1020,33 +1043,31 @@ async function main() {
           render(getIsStreaming());
         } else if (key.name === 'pageup') {
           autocompleteState = null;
-          if (!getPendingPlan()) chatUI.scrollUp(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
+          if (!getPendingPlan() && !getPendingApproval()) chatUI.scrollUp(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
           render(getIsStreaming());
         } else if (key.name === 'pagedown') {
           autocompleteState = null;
-          if (!getPendingPlan()) chatUI.scrollDown(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
+          if (!getPendingPlan() && !getPendingApproval()) chatUI.scrollDown(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
           render(getIsStreaming());
         } else if (key.name === 'end') {
           autocompleteState = null;
-          if (!getPendingPlan()) chatUI.scrollToBottom();
+          if (!getPendingPlan() && !getPendingApproval()) chatUI.scrollToBottom();
           render(getIsStreaming());
         } else if (key.name === 'backspace') {
           autocompleteState = null;
-          if (getIsStreaming()) return;
+          if (getIsStreaming() || getPendingApproval()) return;
           if (!getPendingPlan()) { currentInput = currentInput.slice(0, -1); render(); }
         } else if (str && !key.ctrl && !key.meta) {
           if (key.name === 'tab') return;
           autocompleteState = null;
-          if (getIsStreaming()) return;
+          if (getIsStreaming() || getPendingApproval()) return;
           if (!getPendingPlan()) { currentInput += str; render(); }
         }
       };
 
       process.stdin.on('keypress', onKeypress);
       render(getIsStreaming());
-      processPendingApprovals().then(() => {
-        render(getIsStreaming());
-      });
+      render(getIsStreaming());
     });
   };
 
@@ -1388,7 +1409,7 @@ async function main() {
 
 
   const createProviderModelView = (
-    providerName: 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral',
+    providerName: 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral' | 'bedrock',
     providerLabel: string,
     defaultModel: string,
     examples: string
@@ -1538,6 +1559,11 @@ async function main() {
         description: 'e.g. mistral-large-latest, open-mixtral-8x22b, codestral-latest',
         action: async () => phone.pushView(createProviderModelView('mistral', 'Mistral', 'mistral-large-latest', 'e.g. mistral-large-latest, open-mixtral-8x22b, codestral-latest'))
       },
+      {
+        label: `AWS Bedrock  ${Configurator.getActiveModel(config, 'bedrock') ? '-> ' + Configurator.getActiveModel(config, 'bedrock') : '(default: us.amazon.nova-pro-v1:0)'}`,
+        description: 'e.g. us.amazon.nova-pro-v1:0, us.anthropic.claude-3-5-sonnet-20241022-v2:0',
+        action: async () => phone.pushView(createProviderModelView('bedrock', 'AWS Bedrock', 'us.amazon.nova-pro-v1:0', 'e.g. us.amazon.nova-pro-v1:0, us.anthropic.claude-3-5-sonnet-20241022-v2:0'))
+      },
     ]
   });
 
@@ -1646,6 +1672,102 @@ async function main() {
     };
   };
 
+  const createBedrockSettingsView = (): PhoneView => {
+    const entry = config.providers.bedrock || {};
+    return {
+      id: 'bedrock_settings',
+      title: 'AWS Bedrock Config',
+      subtitle: 'Manage AWS region and credential settings',
+      renderBody: () => {
+        console.log(chalk.white.bold('  Current Configuration'));
+        console.log(`  Region:           ${chalk.hex('#56CFE1')(entry.region || 'us-east-1')}`);
+        console.log(`  Access Key ID:    ${chalk.hex('#56CFE1')(entry.accessKeyId ? maskApiKey(entry.accessKeyId) : '(using AWS env/IAM)')}`);
+        console.log(`  Secret Key:       ${chalk.hex('#56CFE1')(entry.secretAccessKey ? '********' : '(using AWS env/IAM)')}`);
+        console.log(`  Session Token:    ${chalk.hex('#56CFE1')(entry.sessionToken ? '********' : '(none)')}`);
+        console.log('');
+      },
+      options: [
+        {
+          label: 'Set AWS Region',
+          action: async () => {
+            phone.active = false;
+            ui.clearScreen();
+            const val = await promptWithEscape(`Enter AWS Region:`, entry.region || 'us-east-1');
+            if (val !== null && val.trim()) {
+              if (!config.providers.bedrock) config.providers.bedrock = {};
+              config.providers.bedrock.region = val.trim();
+              Configurator.saveConfig(config);
+              phone.updateConfig(config);
+              ui.success(`Region updated to ${val.trim()}`);
+              await new Promise(r => setTimeout(r, 900));
+            }
+            phone.active = true;
+            phone.goBack();
+            phone.pushView(createBedrockSettingsView());
+          }
+        },
+        {
+          label: 'Set AWS Access Key ID',
+          action: async () => {
+            phone.active = false;
+            ui.clearScreen();
+            const val = await promptWithEscape(`Enter Access Key ID:`, entry.accessKeyId || '');
+            if (val !== null) {
+              if (!config.providers.bedrock) config.providers.bedrock = {};
+              config.providers.bedrock.accessKeyId = val.trim() || undefined;
+              Configurator.saveConfig(config);
+              phone.updateConfig(config);
+              ui.success('Access Key ID updated.');
+              await new Promise(r => setTimeout(r, 900));
+            }
+            phone.active = true;
+            phone.goBack();
+            phone.pushView(createBedrockSettingsView());
+          }
+        },
+        {
+          label: 'Set AWS Secret Access Key',
+          action: async () => {
+            phone.active = false;
+            ui.clearScreen();
+            const val = await promptWithEscape(`Enter Secret Access Key:`, entry.secretAccessKey || '');
+            if (val !== null) {
+              if (!config.providers.bedrock) config.providers.bedrock = {};
+              config.providers.bedrock.secretAccessKey = val.trim() || undefined;
+              Configurator.saveConfig(config);
+              phone.updateConfig(config);
+              ui.success('Secret Access Key updated.');
+              await new Promise(r => setTimeout(r, 900));
+            }
+            phone.active = true;
+            phone.goBack();
+            phone.pushView(createBedrockSettingsView());
+          }
+        },
+        {
+          label: 'Set AWS Session Token',
+          action: async () => {
+            phone.active = false;
+            ui.clearScreen();
+            const val = await promptWithEscape(`Enter Session Token:`, entry.sessionToken || '');
+            if (val !== null) {
+              if (!config.providers.bedrock) config.providers.bedrock = {};
+              config.providers.bedrock.sessionToken = val.trim() || undefined;
+              Configurator.saveConfig(config);
+              phone.updateConfig(config);
+              ui.success('Session Token updated.');
+              await new Promise(r => setTimeout(r, 900));
+            }
+            phone.active = true;
+            phone.goBack();
+            phone.pushView(createBedrockSettingsView());
+          }
+        },
+        { label: 'Go Back', action: () => phone.goBack() }
+      ]
+    };
+  };
+
   const createApiEditView = (): PhoneView => ({
     id: 'api_keys',
     title: 'API Settings',
@@ -1675,6 +1797,11 @@ async function main() {
         label: `Mistral  ${Configurator.getApiKeys(config, 'mistral').length} key(s)`,
         description: Configurator.getActiveApiKey(config, 'mistral') ? `active: ${maskApiKey(Configurator.getActiveApiKey(config, 'mistral')!)}` : 'no key',
         action: async () => phone.pushView(createProviderApiKeyView('mistral', 'Mistral'))
+      },
+      {
+        label: 'AWS Bedrock Credentials',
+        description: config.providers.bedrock?.region ? `region: ${config.providers.bedrock.region}` : 'Not configured (uses env/IAM by default)',
+        action: async () => phone.pushView(createBedrockSettingsView())
       },
       { label: 'Go Back', action: () => phone.goBack() }
     ]
@@ -1915,6 +2042,18 @@ async function main() {
           provider.setConfig(config);
           phone.updateConfig(config);
           ui.success('Switched to Mistral.');
+          await new Promise(r => setTimeout(r, 1000));
+          phone.goBack(); phone.pushView(createProviderView());
+        }
+      },
+      {
+        label: `AWS Bedrock  ${config.defaults.primaryProvider === 'bedrock' ? '[active]' : ''}`,
+        description: Configurator.getActiveModel(config, 'bedrock') ? `model: ${Configurator.getActiveModel(config, 'bedrock')}` : 'model: us.amazon.nova-pro-v1:0 (default)',
+        action: async () => {
+          config = Configurator.updatePrimaryProvider('bedrock') || config;
+          provider.setConfig(config);
+          phone.updateConfig(config);
+          ui.success('Switched to AWS Bedrock.');
           await new Promise(r => setTimeout(r, 1000));
           phone.goBack(); phone.pushView(createProviderView());
         }
@@ -2321,12 +2460,14 @@ async function main() {
     { label: 'API Keys: Anthropic Keys', action: () => phone.pushView(createProviderApiKeyView('anthropic', 'Anthropic')) },
     { label: 'API Keys: Gemini Keys', action: () => phone.pushView(createProviderApiKeyView('gemini', 'Gemini')) },
     { label: 'API Keys: Mistral Keys', action: () => phone.pushView(createProviderApiKeyView('mistral', 'Mistral')) },
+    { label: 'API Keys: AWS Bedrock Credentials', action: () => phone.pushView(createBedrockSettingsView()) },
     { label: 'Models: Groq Model Variants', action: () => phone.pushView(createProviderModelView('groq', 'Groq', 'qwen-qwq-32b', 'e.g. qwen-qwq-32b')) },
     { label: 'Models: OpenAI Model Variants', action: () => phone.pushView(createProviderModelView('openai', 'OpenAI', 'gpt-4o', 'e.g. gpt-4o')) },
     { label: 'Models: Anthropic Model Variants', action: () => phone.pushView(createProviderModelView('anthropic', 'Anthropic', 'claude-3-5-sonnet-20241022', 'e.g. claude-3-5-sonnet-20241022')) },
     { label: 'Models: Gemini Model Variants', action: () => phone.pushView(createProviderModelView('gemini', 'Gemini', 'gemini-1.5-pro', 'e.g. gemini-1.5-pro')) },
     { label: 'Models: Ollama Model Variants', action: () => phone.pushView(createProviderModelView('ollama', 'Ollama', 'llama3', 'e.g. llama3')) },
-    { label: 'Models: Mistral Model Variants', action: () => phone.pushView(createProviderModelView('mistral', 'Mistral', 'mistral-large-latest', 'e.g. mistral-large-latest')) }
+    { label: 'Models: Mistral Model Variants', action: () => phone.pushView(createProviderModelView('mistral', 'Mistral', 'mistral-large-latest', 'e.g. mistral-large-latest')) },
+    { label: 'Models: AWS Bedrock Model Variants', action: () => phone.pushView(createProviderModelView('bedrock', 'AWS Bedrock', 'us.amazon.nova-pro-v1:0', 'e.g. us.amazon.nova-pro-v1:0')) }
   ];
 
   phone.registerCtrlKHandler(() => {
@@ -2340,6 +2481,18 @@ async function main() {
   phone.startListening();
   phone.render();
 }
+
+process.on('uncaughtException', (error) => {
+  try {
+    fs.appendFileSync('otto-errors.log', `Uncaught Exception: ${error?.stack || error}\n`);
+  } catch {}
+});
+
+process.on('unhandledRejection', (reason) => {
+  try {
+    fs.appendFileSync('otto-errors.log', `Unhandled Rejection: ${reason instanceof Error ? reason.stack : reason}\n`);
+  } catch {}
+});
 
 main().catch(err => {
   ui.error(err.message);

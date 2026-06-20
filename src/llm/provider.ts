@@ -4,6 +4,7 @@ import { ChatAnthropic } from '@langchain/anthropic';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { ChatOllama } from '@langchain/ollama';
 import { ChatMistralAI } from '@langchain/mistralai';
+import { ChatBedrockConverse } from '@langchain/aws';
 import { OttoConfig } from '../cli/configurator.js';
 import { Configurator } from '../cli/configurator.js';
 import { quotaManager } from './quota.js';
@@ -13,7 +14,7 @@ import { tools } from './tools.js';
 import { concat } from '@langchain/core/utils/stream';
 import { executor } from '../security/executor.js';
 
-type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral';
+type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral' | 'bedrock';
 
 function sanitizeJsonString(jsonStr: string): string {
   let result = '';
@@ -421,6 +422,26 @@ export class ProviderEngine {
 
         this.primaryModel = rawModel;
         ui.info(`Switched to Ollama - ${model}`);
+      } else if (providerName === 'bedrock') {
+        const entry = this.config.providers.bedrock;
+        const model = entry?.activeModel ?? entry?.model ?? 'us.amazon.nova-pro-v1:0';
+        const region = entry?.region ?? process.env.AWS_REGION ?? 'us-east-1';
+        const accessKeyId = entry?.accessKeyId ?? process.env.AWS_ACCESS_KEY_ID;
+        const secretAccessKey = entry?.secretAccessKey ?? process.env.AWS_SECRET_ACCESS_KEY;
+        const sessionToken = entry?.sessionToken ?? process.env.AWS_SESSION_TOKEN;
+
+        const credentials = accessKeyId && secretAccessKey
+          ? { accessKeyId, secretAccessKey, sessionToken }
+          : undefined;
+
+        this.primaryModel = new ChatBedrockConverse({
+          region,
+          credentials,
+          model,
+          temperature: 0,
+          maxRetries: 0
+        }).bindTools(tools) as any;
+        ui.info(`Switched to AWS Bedrock - ${model} (${region})`);
       } else {
         ui.warning(`Provider ${providerName} is not fully configured or supported yet.`);
         this.primaryModel = null;
@@ -456,7 +477,9 @@ export class ProviderEngine {
 
   private tryFallback(attempt: number): boolean {
     const providerName = this.config.defaults.primaryProvider as ProviderName;
-    if (providerName === 'ollama') return false;
+    if (providerName === 'ollama' || providerName === 'bedrock') return false;
+
+    const rotatableProvider = providerName as 'groq' | 'openai' | 'anthropic' | 'gemini' | 'mistral';
 
     const rotateKeyFirst = attempt % 2 === 1;
     const actions = rotateKeyFirst
@@ -464,16 +487,16 @@ export class ProviderEngine {
       : ['model', 'key'] as const;
 
     for (const action of actions) {
-      const beforeKey = Configurator.getActiveApiKey(this.config, providerName);
-      const beforeModel = Configurator.getActiveModel(this.config, providerName);
+      const beforeKey = Configurator.getActiveApiKey(this.config, rotatableProvider);
+      const beforeModel = Configurator.getActiveModel(this.config, rotatableProvider);
       const nextConfig = action === 'key'
-        ? Configurator.rotateApiKey(providerName)
-        : Configurator.rotateModelVariant(providerName);
+        ? Configurator.rotateApiKey(rotatableProvider)
+        : Configurator.rotateModelVariant(rotatableProvider);
 
       if (!nextConfig) continue;
 
-      const nextKey = Configurator.getActiveApiKey(nextConfig, providerName);
-      const nextModel = Configurator.getActiveModel(nextConfig, providerName);
+      const nextKey = Configurator.getActiveApiKey(nextConfig, rotatableProvider);
+      const nextModel = Configurator.getActiveModel(nextConfig, rotatableProvider);
       if (beforeKey === nextKey && beforeModel === nextModel) continue;
 
       this.setConfig(nextConfig);

@@ -43,9 +43,6 @@ function getCharWidth(char) {
   if (codePoint === 9654) {
     return 2;
   }
-  if (codePoint === 9999) {
-    return 1;
-  }
   if (codePoint >= 127744 && codePoint <= 129535 || codePoint >= 128512 && codePoint <= 128591 || codePoint >= 128640 && codePoint <= 128767 || codePoint >= 9728 && codePoint <= 10175 || codePoint >= 19968 && codePoint <= 40959 || codePoint >= 44032 && codePoint <= 55203 || codePoint >= 65280 && codePoint <= 65519) {
     return 2;
   }
@@ -191,7 +188,7 @@ var init_chat = __esm({
       isAtBottom() {
         return this.scrollOffset === 0;
       }
-      render(messages, currentInput, telemetry, model, isThinking = false, pendingPlan = false, planMenuIndex = 0, diffsExpanded = false, delayMessage) {
+      render(messages, currentInput, telemetry, model, isThinking = false, pendingPlan = false, planMenuIndex = 0, diffsExpanded = false, delayMessage, pendingApproval, approvalMenuIndex = 0) {
         const lines = [];
         const push = (line = "") => lines.push(line);
         push(this.DIM("-".repeat(this.W)));
@@ -329,13 +326,51 @@ var init_chat = __esm({
           push("  " + import_chalk9.default.hex("#A78BFA")(`thinking${dots}`));
           push("");
         }
+        if (pendingApproval) {
+          const menuWidth = Math.min(this.W - 6, 70);
+          const border = import_chalk9.default.hex("#FB7185");
+          const titleColor = import_chalk9.default.bgHex("#4C0519").hex("#FDA4AF");
+          const totalInnerWidth = menuWidth + 2;
+          const boxRow = (styledContent, bgHex) => {
+            const visLen = getStringWidth(styledContent);
+            const pad = " ".repeat(Math.max(0, totalInnerWidth - visLen));
+            const inner = bgHex ? import_chalk9.default.bgHex(bgHex)(styledContent + pad) : styledContent + pad;
+            return "  " + border("|") + inner + border("|");
+          };
+          push("  " + border("+" + "-".repeat(totalInnerWidth) + "+"));
+          push(boxRow(titleColor.bold(" \u{1F6E1}\uFE0F  SECURITY APPROVAL REQUIRED "), "#4C0519"));
+          push("  " + border("+" + "-".repeat(totalInnerWidth) + "+"));
+          const actionType = pendingApproval.type === "app" ? "launch application" : "execute command";
+          const promptText = `The agent wants to ${actionType}:`;
+          push(boxRow(" " + import_chalk9.default.white(promptText)));
+          const cmdStrWrapped = wrapText(pendingApproval.commandStr, totalInnerWidth - 4, 0);
+          cmdStrWrapped.forEach((line) => {
+            push(boxRow("   " + import_chalk9.default.hex("#FDA4AF").bold(line.trim())));
+          });
+          push("  " + border("+" + "-".repeat(totalInnerWidth) + "+"));
+          const menuItems = [
+            { label: "Approve for now", color: import_chalk9.default.hex("#4ADE80") },
+            { label: `Approve always (whitelist '${pendingApproval.cmd}')`, color: import_chalk9.default.hex("#38BDF8") },
+            { label: "Don't approve", color: import_chalk9.default.hex("#F87171") }
+          ];
+          menuItems.forEach((item, idx) => {
+            const isSelected = idx === approvalMenuIndex;
+            const cursor = isSelected ? border.bold(" > ") : " ".repeat(getStringWidth(" > "));
+            const cursorWidth = getStringWidth(cursor);
+            const paddedLabel = ansiPadEnd(item.label, totalInnerWidth - cursorWidth);
+            const label = isSelected ? import_chalk9.default.bgHex("#2E050E")(item.color.bold(paddedLabel)) : import_chalk9.default.hex("#9CA3AF")(paddedLabel);
+            push("  " + border("|") + cursor + label + border("|"));
+          });
+          push("  " + border("+" + "-".repeat(totalInnerWidth) + "+"));
+          push("");
+        }
         if (pendingPlan) {
           const menuWidth = Math.min(this.W - 6, 60);
           const border = import_chalk9.default.hex("#F5C400");
           const menuItems = [
-            { label: "\u2705  Approve \u2014 execute the plan", color: import_chalk9.default.hex("#4ADE80") },
-            { label: "\u270F\uFE0F   Edit \u2014 request changes first", color: import_chalk9.default.hex("#FBBF24") },
-            { label: "\u274C  Cancel \u2014 do not proceed", color: import_chalk9.default.hex("#F87171") }
+            { label: "\u2705  Approve - execute the plan", color: import_chalk9.default.hex("#4ADE80") },
+            { label: "\u270F\uFE0F  Edit - request changes first", color: import_chalk9.default.hex("#FBBF24") },
+            { label: "\u274C  Cancel - do not proceed", color: import_chalk9.default.hex("#F87171") }
           ];
           const totalInnerWidth = menuWidth + 2;
           push("  " + border("\u2500".repeat(totalInnerWidth + 2)));
@@ -377,16 +412,19 @@ var init_chat = __esm({
         for (const line of visible) {
           out += line + "\x1B[K\n";
         }
-        const leftover = this.lastLineCount - visible.length;
-        for (let i = 0; i < leftover; i++) {
-          out += "\x1B[2K\n";
-        }
+        out += "\x1B[J";
         this.lastLineCount = visible.length;
         const promptPrefix = "  " + this.BRAND(">") + " ";
         const scrollHint = linesBelow > 0 ? this.MUTED("  [scrolled \u2014 End to return]") : "";
         let placeholder = "";
         if (currentInput.length === 0) {
-          placeholder = pendingPlan ? import_chalk9.default.hex("#F5C400")("\u2191\u2193 choose  \u21B5 confirm") : this.MUTED("Type your message... (esc to menu)");
+          if (pendingApproval) {
+            placeholder = import_chalk9.default.hex("#FB7185")("\u2191\u2193 choose  \u21B5 confirm");
+          } else if (pendingPlan) {
+            placeholder = import_chalk9.default.hex("#F5C400")("\u2191\u2193 choose  \u21B5 confirm");
+          } else {
+            placeholder = this.MUTED("Type your message... (esc to menu)");
+          }
         } else if (/[@][^\s]*$/.test(currentInput)) {
           try {
             const match = currentInput.match(/@([^\s]*)$/);
@@ -525,7 +563,7 @@ function getPrimaryApiKey(entry) {
 var Configurator = {
   normalizeConfig: (config2) => {
     const next = JSON.parse(JSON.stringify(config2));
-    ["groq", "openai", "anthropic", "ollama", "gemini", "mistral"].forEach((provider) => {
+    ["groq", "openai", "anthropic", "ollama", "gemini", "mistral", "bedrock"].forEach((provider) => {
       const entry = getProviderEntry(next, provider);
       if (!entry) return;
       entry.models = normalizeModels(entry.models);
@@ -577,7 +615,8 @@ var Configurator = {
         { name: "Anthropic", value: "anthropic" },
         { name: "Gemini", value: "gemini" },
         { name: "Ollama (Local)", value: "ollama" },
-        { name: "Mistral AI", value: "mistral" }
+        { name: "Mistral AI", value: "mistral" },
+        { name: "AWS Bedrock", value: "bedrock" }
       ]
     });
     const providers = {};
@@ -605,6 +644,19 @@ var Configurator = {
       const apiKey = await (0, import_prompts.input)({ message: "Enter your Mistral API Key:" });
       const model = await (0, import_prompts.input)({ message: "Enter Mistral Model (e.g. mistral-large-latest):", default: "mistral-large-latest" });
       providers.mistral = { apiKey, model };
+    } else if (primaryProvider === "bedrock") {
+      const region = await (0, import_prompts.input)({ message: "Enter AWS Region:", default: "us-east-1" });
+      const model = await (0, import_prompts.input)({ message: "Enter Bedrock Model ID (e.g. us.amazon.nova-pro-v1:0):", default: "us.amazon.nova-pro-v1:0" });
+      const accessKeyId = await (0, import_prompts.input)({ message: "Enter AWS Access Key ID (leave empty to use env/IAM):" });
+      const secretAccessKey = accessKeyId ? await (0, import_prompts.input)({ message: "Enter AWS Secret Access Key:" }) : "";
+      const sessionToken = accessKeyId && secretAccessKey ? await (0, import_prompts.input)({ message: "Enter AWS Session Token (optional):" }) : "";
+      providers.bedrock = {
+        region,
+        model,
+        accessKeyId: accessKeyId || void 0,
+        secretAccessKey: secretAccessKey || void 0,
+        sessionToken: sessionToken || void 0
+      };
     }
     const securityMode = await (0, import_prompts.select)({
       message: "Select Security Mode:",
@@ -1137,6 +1189,7 @@ var ChatSession = class _ChatSession {
   agentStates = /* @__PURE__ */ new Map();
   delayMessages = /* @__PURE__ */ new Map();
   planMenuIndices = /* @__PURE__ */ new Map();
+  approvalMenuIndices = /* @__PURE__ */ new Map();
   static DEFAULT_THREAD_NAME = "New Chat";
   constructor() {
     this.username = import_os3.default.userInfo().username;
@@ -1312,6 +1365,7 @@ var import_anthropic = require("@langchain/anthropic");
 var import_google_genai = require("@langchain/google-genai");
 var import_ollama = require("@langchain/ollama");
 var import_mistralai = require("@langchain/mistralai");
+var import_aws = require("@langchain/aws");
 
 // src/llm/quota.ts
 var QuotaManager = class {
@@ -16017,7 +16071,6 @@ var import_os4 = __toESM(require("os"), 1);
 // src/security/executor.ts
 var import_child_process = require("child_process");
 var import_shell_quote = require("shell-quote");
-var import_prompts2 = require("@inquirer/prompts");
 
 // src/security/background.ts
 var import_tree_kill = __toESM(require("tree-kill"), 1);
@@ -16214,32 +16267,16 @@ ${out}`;
     }
   }
   async promptAction(cmd, fullCommand, executingThreadId) {
-    if (!chatSession.isChatActive || executingThreadId !== chatSession.threadId) {
-      return new Promise((resolve) => {
-        chatSession.pendingApprovals.push({
-          threadId: executingThreadId,
-          cmd,
-          commandStr: fullCommand,
-          resolve
-        });
-        sessionEvents.emit("pending_approval");
+    return new Promise((resolve) => {
+      chatSession.pendingApprovals.push({
+        threadId: executingThreadId,
+        type: "command",
+        cmd,
+        commandStr: fullCommand,
+        resolve
       });
-    }
-    try {
-      sessionEvents.emit("prompt_start");
-      ui.warning(`The agent wants to execute: ${fullCommand}`);
-      const choice = await (0, import_prompts2.select)({
-        message: "Choose an action:",
-        choices: [
-          { name: "Approve for now", value: "now" },
-          { name: `Approve always (whitelist '${cmd}')`, value: "always" },
-          { name: `Don't approve`, value: "deny" }
-        ]
-      });
-      return choice;
-    } finally {
-      sessionEvents.emit("prompt_end");
-    }
+      sessionEvents.emit("pending_approval");
+    });
   }
   clearAttempts() {
     this.lastCommands.clear();
@@ -16252,9 +16289,23 @@ var import_open = __toESM(require("open"), 1);
 var OSController = class {
   async launchApp(appNameOrPath) {
     const config2 = await Configurator.init();
-    if (!config2.security.allowedApps.includes(appNameOrPath) && config2.security.mode !== "full") {
-      ui.error(`App ${appNameOrPath} is not in the allowedApps whitelist. Execution blocked.`);
-      throw new Error(`Unwhitelisted app: ${appNameOrPath}`);
+    const isWhitelisted = config2.security.allowedApps.includes(appNameOrPath);
+    if (config2.security.mode === "ask" || config2.security.mode === "approve" && !isWhitelisted) {
+      const choice = await this.promptAction(appNameOrPath);
+      if (choice === "deny") {
+        throw new Error(`App launch denied by user: ${appNameOrPath}`);
+      }
+      if (choice === "always") {
+        if (!isWhitelisted) {
+          config2.security.allowedApps.push(appNameOrPath);
+        }
+        if (config2.security.mode === "ask") {
+          config2.security.mode = "approve";
+        }
+        Configurator.saveConfig(config2);
+      }
+    } else if (config2.security.mode === "full") {
+      ui.warning(`[Full Access Mode] Launching ${appNameOrPath} autonomously.`);
     }
     try {
       await (0, import_open.default)(appNameOrPath);
@@ -16263,6 +16314,22 @@ var OSController = class {
       ui.error(`Failed to launch app: ${e.message}`);
       throw e;
     }
+  }
+  async promptAction(appNameOrPath) {
+    if (!chatSession.isChatActive) {
+      return "deny";
+    }
+    const executingThreadId = chatSession.threadId || "default";
+    return new Promise((resolve) => {
+      chatSession.pendingApprovals.push({
+        threadId: executingThreadId,
+        type: "app",
+        cmd: appNameOrPath,
+        commandStr: appNameOrPath,
+        resolve
+      });
+      sessionEvents.emit("pending_approval");
+    });
   }
 };
 var osController = new OSController();
@@ -16747,7 +16814,26 @@ var launchOsApp = (0, import_tools.tool)(
 var readBrowserAccessibility = (0, import_tools.tool)(
   async ({ url: url2 }) => {
     try {
-      await browserAutomation.connect("C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe");
+      const paths = [
+        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+        "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+        import_path4.default.join(process.env.LOCALAPPDATA || "", "Google\\Chrome\\Application\\chrome.exe"),
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser"
+      ];
+      let chromePath = "";
+      for (const p of paths) {
+        if (p && import_fs3.default.existsSync(p)) {
+          chromePath = p;
+          break;
+        }
+      }
+      if (!chromePath) {
+        throw new Error("Google Chrome / Chromium could not be located in standard paths. Please ensure Chrome is installed.");
+      }
+      await browserAutomation.connect(chromePath);
       const tree = await browserAutomation.getAccessibilityTree(url2);
       await browserAutomation.close();
       return JSON.stringify(tree, null, 2);
@@ -17170,6 +17256,22 @@ var ProviderEngine = class {
         };
         this.primaryModel = rawModel;
         ui.info(`Switched to Ollama - ${model}`);
+      } else if (providerName === "bedrock") {
+        const entry = this.config.providers.bedrock;
+        const model = entry?.activeModel ?? entry?.model ?? "us.amazon.nova-pro-v1:0";
+        const region = entry?.region ?? process.env.AWS_REGION ?? "us-east-1";
+        const accessKeyId = entry?.accessKeyId ?? process.env.AWS_ACCESS_KEY_ID;
+        const secretAccessKey = entry?.secretAccessKey ?? process.env.AWS_SECRET_ACCESS_KEY;
+        const sessionToken = entry?.sessionToken ?? process.env.AWS_SESSION_TOKEN;
+        const credentials = accessKeyId && secretAccessKey ? { accessKeyId, secretAccessKey, sessionToken } : void 0;
+        this.primaryModel = new import_aws.ChatBedrockConverse({
+          region,
+          credentials,
+          model,
+          temperature: 0,
+          maxRetries: 0
+        }).bindTools(tools);
+        ui.info(`Switched to AWS Bedrock - ${model} (${region})`);
       } else {
         ui.warning(`Provider ${providerName} is not fully configured or supported yet.`);
         this.primaryModel = null;
@@ -17192,16 +17294,17 @@ var ProviderEngine = class {
   }
   tryFallback(attempt) {
     const providerName = this.config.defaults.primaryProvider;
-    if (providerName === "ollama") return false;
+    if (providerName === "ollama" || providerName === "bedrock") return false;
+    const rotatableProvider = providerName;
     const rotateKeyFirst = attempt % 2 === 1;
     const actions = rotateKeyFirst ? ["key", "model"] : ["model", "key"];
     for (const action of actions) {
-      const beforeKey = Configurator.getActiveApiKey(this.config, providerName);
-      const beforeModel = Configurator.getActiveModel(this.config, providerName);
-      const nextConfig = action === "key" ? Configurator.rotateApiKey(providerName) : Configurator.rotateModelVariant(providerName);
+      const beforeKey = Configurator.getActiveApiKey(this.config, rotatableProvider);
+      const beforeModel = Configurator.getActiveModel(this.config, rotatableProvider);
+      const nextConfig = action === "key" ? Configurator.rotateApiKey(rotatableProvider) : Configurator.rotateModelVariant(rotatableProvider);
       if (!nextConfig) continue;
-      const nextKey = Configurator.getActiveApiKey(nextConfig, providerName);
-      const nextModel = Configurator.getActiveModel(nextConfig, providerName);
+      const nextKey = Configurator.getActiveApiKey(nextConfig, rotatableProvider);
+      const nextModel = Configurator.getActiveModel(nextConfig, rotatableProvider);
       if (beforeKey === nextKey && beforeModel === nextModel) continue;
       this.setConfig(nextConfig);
       ui.warning(`Rate limit hit. Rotated ${action === "key" ? "API key" : "model"} and retrying.`);
@@ -17504,7 +17607,7 @@ var memoryManager = new MemoryManager();
 var import_fs4 = __toESM(require("fs"), 1);
 var import_path5 = __toESM(require("path"), 1);
 var import_os6 = __toESM(require("os"), 1);
-var import_prompts3 = require("@inquirer/prompts");
+var import_prompts2 = require("@inquirer/prompts");
 var RuleGuardrail = class {
   rulesPath;
   constructor() {
@@ -17571,7 +17674,7 @@ Execute approved plans step-by-step. Run verification tests after editing. Auton
     console.log(currentRules);
     console.log(ui.accent("--- Proposed Rules ---"));
     console.log(newRulesContent);
-    const approved = await (0, import_prompts3.select)({
+    const approved = await (0, import_prompts2.select)({
       message: "Do you authorize this permanent change to the System Directives?",
       choices: [
         { name: "Approve", value: true },
@@ -17888,7 +17991,7 @@ var PhoneOS = class {
 var import_chalk4 = __toESM(require("chalk"), 1);
 var import_fs5 = __toESM(require("fs"), 1);
 var import_path6 = __toESM(require("path"), 1);
-var import_prompts4 = require("@inquirer/prompts");
+var import_prompts3 = require("@inquirer/prompts");
 
 // src/cli/prompt.ts
 var readline2 = __toESM(require("readline"), 1);
@@ -18025,7 +18128,7 @@ function createTaskBoardView(phone) {
                 action: async () => {
                   phone.active = false;
                   ui.clearScreen();
-                  const act = await (0, import_prompts4.select)({
+                  const act = await (0, import_prompts3.select)({
                     message: `Action for "${t.title}":`,
                     choices: [
                       { name: "Move to TODO", value: "TODO" },
@@ -18960,7 +19063,7 @@ var import_fs9 = __toESM(require("fs"), 1);
 var import_path10 = __toESM(require("path"), 1);
 var import_messages4 = require("@langchain/core/messages");
 var import_stream2 = require("@langchain/core/utils/stream");
-var import_prompts5 = require("@inquirer/prompts");
+var import_prompts4 = require("@inquirer/prompts");
 var import_chalk10 = __toESM(require("chalk"), 1);
 var import_meta2 = {};
 var require3 = (0, import_module2.createRequire)(import_meta2.url);
@@ -19267,10 +19370,17 @@ async function main() {
     const setPlanMenuIndex = (val) => {
       chatSession.planMenuIndices.set(chatSession.threadId, val);
     };
+    const getPendingApproval = () => {
+      return chatSession.pendingApprovals.find((p) => p.threadId === chatSession.threadId);
+    };
+    const getApprovalMenuIndex = () => chatSession.approvalMenuIndices.get(chatSession.threadId) ?? 0;
+    const setApprovalMenuIndex = (val) => {
+      chatSession.approvalMenuIndices.set(chatSession.threadId, val);
+    };
     const PLAN_MENU_OPTIONS = [
-      { label: "\u2705  Approve \u2014 execute the plan", inject: "approved \u2014 please proceed with the plan exactly as described." },
-      { label: "\u270F\uFE0F   Edit \u2014 request changes first", inject: null },
-      { label: "\u274C  Cancel \u2014 do not proceed", inject: "cancel \u2014 do not proceed with this plan." }
+      { label: "\u2705  Approve - execute the plan", inject: "approved - please proceed with the plan exactly as described." },
+      { label: "\u270F\uFE0F  Edit - request changes first", inject: null },
+      { label: "\u274C  Cancel - do not proceed", inject: "cancel - do not proceed with this plan." }
     ];
     const PLAN_BLOCK_RE = /<!--\s*PLAN_START\s*-->[\s\S]*?<!--\s*PLAN_END\s*-->/;
     const getRenderMessages = () => {
@@ -19335,7 +19445,7 @@ async function main() {
     function throttleRender(force = false) {
       if (isPrompting) return;
       const now = Date.now();
-      if (force || now - lastRenderTime >= 60) {
+      if (force || now - lastRenderTime >= 100) {
         lastRenderTime = now;
         render(force);
       }
@@ -19357,7 +19467,7 @@ async function main() {
         ctxUsed: stats.filled,
         ramMB,
         showContextBar: config2.defaults.showContextBar !== false
-      }, model, isThinking, getPendingPlan(), getPlanMenuIndex(), diffsExpanded, delayMessage);
+      }, model, isThinking, getPendingPlan(), getPlanMenuIndex(), diffsExpanded, delayMessage, getPendingApproval(), getApprovalMenuIndex());
     }
     const formatToolResult = (toolName, result, diffSummary, args2) => {
       const sections = [`**Tool call: ${toolName}**`];
@@ -19412,43 +19522,12 @@ ${outputContent}
       readline3.emitKeypressEvents(process.stdin);
       if (process.stdin.isTTY) process.stdin.setRawMode(true);
       process.stdin.resume();
-      const processPendingApprovals = async () => {
-        while (true) {
-          const idx = chatSession.pendingApprovals.findIndex((p) => p.threadId === chatSession.threadId);
-          if (idx === -1) break;
-          const item = chatSession.pendingApprovals.splice(idx, 1)[0];
-          try {
-            onPromptStart();
-            ui.warning(`The agent wants to execute: ${item.commandStr}`);
-            const choice = await (0, import_prompts5.select)({
-              message: "Choose an action:",
-              choices: [
-                { name: "Approve for now", value: "now" },
-                { name: `Approve always (whitelist '${item.cmd}')`, value: "always" },
-                { name: `Don't approve`, value: "deny" }
-              ]
-            });
-            if (choice === "always") {
-              const currentConfig = await Configurator.init();
-              if (!currentConfig.security.allowedCommands.includes(item.cmd)) {
-                currentConfig.security.allowedCommands.push(item.cmd);
-              }
-              if (currentConfig.security.mode === "ask") {
-                currentConfig.security.mode = "approve";
-              }
-              Configurator.saveConfig(currentConfig);
-              config2 = currentConfig;
-              provider.setConfig(config2);
-              phone.updateConfig(config2);
-            }
-            item.resolve(choice);
-          } catch (err) {
-            item.resolve("deny");
-          } finally {
-            onPromptEnd();
-          }
+      const onPendingApproval = () => {
+        if (chatSession.isChatActive) {
+          render(true);
         }
       };
+      sessionEvents.on("pending_approval", onPendingApproval);
       const onStreamUpdate = (id) => {
         if (id === chatSession.threadId && chatSession.isChatActive) {
           render(true);
@@ -19478,232 +19557,240 @@ ${outputContent}
           animationTimer = null;
         }
         sessionEvents.removeListener("stream_update", onStreamUpdate);
+        sessionEvents.removeListener("pending_approval", onPendingApproval);
         sessionEvents.removeListener("prompt_start", onPromptStart);
         sessionEvents.removeListener("prompt_end", onPromptEnd);
         process.stdout.write("\x1B[?1049l");
         process.stdin.removeListener("keypress", onKeypress);
       };
       const runAgentLoop = async (inputText) => {
-        const currentThreadId = chatSession.threadId;
-        await threadLocalStorage.run(currentThreadId, async () => {
-          chatSession.activeStreams.add(currentThreadId);
-          chatSession.ensureNamedFromPrompt(inputText);
-          messages.push(new import_messages4.HumanMessage(inputText));
-          syncMessages();
-          chatUI.scrollToBottom();
-          chatSession.agentStates.set(currentThreadId, "thinking");
-          if (chatSession.isChatActive && chatSession.threadId === currentThreadId) {
-            render(true);
-          } else {
-            sessionEvents.emit("stream_update", currentThreadId);
-          }
-          try {
-            let isDone = false;
-            const preferredName = Configurator.getUsername(config2) || "user";
-            while (!isDone) {
-              const threadExists = dbManager.listThreads().some((th) => th.id === currentThreadId);
-              if (!threadExists) {
-                isDone = true;
-                break;
-              }
-              const bgProcs = backgroundManager.getProcesses().filter((p) => p.threadId === currentThreadId);
-              const bgInfo = bgProcs.length > 0 ? `
+        try {
+          const currentThreadId = chatSession.threadId;
+          await threadLocalStorage.run(currentThreadId, async () => {
+            chatSession.activeStreams.add(currentThreadId);
+            chatSession.ensureNamedFromPrompt(inputText);
+            messages.push(new import_messages4.HumanMessage(inputText));
+            syncMessages();
+            chatUI.scrollToBottom();
+            chatSession.agentStates.set(currentThreadId, "thinking");
+            if (chatSession.isChatActive && chatSession.threadId === currentThreadId) {
+              render(true);
+            } else {
+              sessionEvents.emit("stream_update", currentThreadId);
+            }
+            try {
+              let isDone = false;
+              const preferredName = Configurator.getUsername(config2) || "user";
+              while (!isDone) {
+                const threadExists = dbManager.listThreads().some((th) => th.id === currentThreadId);
+                if (!threadExists) {
+                  isDone = true;
+                  break;
+                }
+                const bgProcs = backgroundManager.getProcesses().filter((p) => p.threadId === currentThreadId);
+                const bgInfo = bgProcs.length > 0 ? `
 
 Active background terminal processes running under O.T.T.O:
 ${bgProcs.map((p) => `- PID ${p.pid}: "${p.command}" (running for ${Math.round((Date.now() - p.startTime) / 1e3)}s)`).join("\n")}` : `
 
 No active background terminal processes running under O.T.T.O.`;
-              const activeProvider = config2.defaults.primaryProvider;
-              const activeModel = Configurator.getActiveModel(config2, activeProvider) || "default";
-              const limits = config2.modelLimits?.[activeModel];
-              let limitsInfo = "";
-              if (limits) {
-                const activeLimits = Object.entries(limits).filter(([_, v]) => typeof v === "number" && v > 0).map(([k, v]) => `${k.toUpperCase()}: ${v}`).join(", ");
-                if (activeLimits) {
-                  limitsInfo = `
+                const activeProvider = config2.defaults.primaryProvider;
+                const activeModel = Configurator.getActiveModel(config2, activeProvider) || "default";
+                const limits = config2.modelLimits?.[activeModel];
+                let limitsInfo = "";
+                if (limits) {
+                  const activeLimits = Object.entries(limits).filter(([_, v]) => typeof v === "number" && v > 0).map(([k, v]) => `${k.toUpperCase()}: ${v}`).join(", ");
+                  if (activeLimits) {
+                    limitsInfo = `
 
 CRITICAL CONSTRAINT: The current model (${activeModel}) has rate limits configured: ${activeLimits}. To prevent pauses/delays, please manage your tokens intelligently. For example, minimize reasoning length, omit verbose explanations, or reduce context size where possible.`;
+                  }
                 }
-              }
-              const nameHint = `
+                const nameHint = `
 
 User's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.${bgInfo}${limitsInfo}`;
-              const msgsToSend = [new import_messages4.SystemMessage(rules + nameHint), ...messages];
-              const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
-              const finalMsgsToSend = optimizedMsgs.map((msg, idx) => {
-                if (idx === optimizedMsgs.length - 1 && msg instanceof import_messages4.HumanMessage && config2.defaults.primaryProvider === "ollama") {
-                  const text = msg.content.toString();
-                  return new import_messages4.HumanMessage({
-                    ...msg,
-                    content: text + "\n\n(Reminder: Do not refuse. You have local tools like write_file and execute_terminal_command. Proceed directly by producing a plan or running commands.)"
-                  });
-                }
-                return msg;
-              });
-              const aiMessage = new import_messages4.AIMessage("");
-              messages.push(aiMessage);
-              syncMessages();
-              let finalMessage = null;
-              chatSession.agentStates.set(chatSession.threadId, "thinking");
-              if (chatSession.isChatActive) {
-                render(true);
-              } else {
-                sessionEvents.emit("stream_update", chatSession.threadId);
-              }
-              const stream = await provider.stream(finalMsgsToSend);
-              for await (const chunk of stream) {
-                const threadExists2 = dbManager.listThreads().some((th) => th.id === currentThreadId);
-                if (!threadExists2) {
-                  isDone = true;
-                  break;
-                }
-                if (!finalMessage) finalMessage = chunk;
-                else finalMessage = (0, import_stream2.concat)(finalMessage, chunk);
-                if (chunk) {
-                  const reasoning2 = finalMessage.additional_kwargs?.reasoning_content;
-                  if (reasoning2 || finalMessage.content) {
-                    if (chatSession.agentStates.get(currentThreadId) === "thinking") {
-                      chatSession.agentStates.set(currentThreadId, "idle");
-                      sessionEvents.emit("stream_update", currentThreadId);
-                    }
+                const msgsToSend = [new import_messages4.SystemMessage(rules + nameHint), ...messages];
+                const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, rules);
+                const finalMsgsToSend = optimizedMsgs.map((msg, idx) => {
+                  if (idx === optimizedMsgs.length - 1 && msg instanceof import_messages4.HumanMessage && config2.defaults.primaryProvider === "ollama") {
+                    const text = msg.content.toString();
+                    return new import_messages4.HumanMessage({
+                      ...msg,
+                      content: text + "\n\n(Reminder: Do not refuse. You have local tools like write_file and execute_terminal_command. Proceed directly by producing a plan or running commands.)"
+                    });
                   }
-                  let content = "";
-                  if (reasoning2) {
-                    content += `<think>
-${reasoning2}`;
-                    if (finalMessage.content) {
-                      content += "\n</think>\n";
-                    }
-                  }
-                  content += finalMessage.content;
-                  aiMessage.content = content;
-                  if (finalMessage && finalMessage.tool_calls && finalMessage.tool_calls.length > 0) {
-                    aiMessage.tool_calls = finalMessage.tool_calls;
-                    chatSession.agentStates.set(currentThreadId, "tools");
-                    sessionEvents.emit("stream_update", currentThreadId);
-                  }
-                  syncMessages();
-                  if (chatSession.isChatActive && chatSession.threadId === currentThreadId) {
-                    throttleRender();
-                  } else {
-                    sessionEvents.emit("stream_update", currentThreadId);
-                  }
-                }
-              }
-              let finalContent = "";
-              const reasoning = finalMessage?.additional_kwargs?.reasoning_content;
-              if (reasoning) {
-                finalContent += `<think>
-${reasoning}
-</think>
-`;
-              }
-              finalContent += finalMessage?.content ?? "";
-              if (finalMessage) {
-                finalMessage.content = finalContent;
-              }
-              let hasToolCalls = finalMessage?.tool_calls && finalMessage.tool_calls.length > 0;
-              if (!hasToolCalls && finalMessage?.content) {
-                const fallbackCalls = parseFallbackToolCalls2(finalMessage.content.toString(), messages);
-                if (fallbackCalls && fallbackCalls.length > 0) {
-                  finalMessage.tool_calls = fallbackCalls;
-                  aiMessage.tool_calls = fallbackCalls;
-                  hasToolCalls = true;
-                  const rawTrimmed = finalMessage.content.toString().trim();
-                  try {
-                    JSON.parse(rawTrimmed);
-                    finalMessage.content = "";
-                    aiMessage.content = "";
-                  } catch {
-                    const blockRegex = /^```json\s*([\s\S]*?)\s*```$/i;
-                    const match = rawTrimmed.match(blockRegex);
-                    if (match) {
-                      try {
-                        JSON.parse(match[1].trim());
-                        finalMessage.content = "";
-                        aiMessage.content = "";
-                      } catch {
-                      }
-                    }
-                  }
-                }
-              }
-              config2 = provider.getConfig();
-              phone.updateConfig(config2);
-              messages[messages.length - 1] = finalMessage;
-              lastStreamContentLength = 0;
-              syncMessages();
-              if (chatSession.isChatActive) {
-                render(true);
-              }
-              const responseText = String(finalMessage?.content ?? "");
-              const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
-              if (hasPlanBlock && !hasToolCalls) {
-                if (config2.security.mode === "full") {
-                  setPendingPlan(false);
-                  isDone = true;
-                  setTimeout(() => {
-                    runAgentLoop("approved \u2014 please proceed with the plan exactly as described.");
-                  }, 50);
-                } else {
-                  setPendingPlan(true);
-                  setPlanMenuIndex(0);
-                  isDone = true;
-                  chatSession.agentStates.set(chatSession.threadId, "idle");
-                  if (chatSession.isChatActive) render(true);
-                  else sessionEvents.emit("stream_update", chatSession.threadId);
-                }
-              } else if (hasToolCalls) {
-                setPendingPlan(false);
-                chatSession.agentStates.set(chatSession.threadId, "tools");
-                if (chatSession.isChatActive) render(true);
-                else sessionEvents.emit("stream_update", chatSession.threadId);
-                for (const call of finalMessage.tool_calls) {
-                  const tool2 = tools.find((t) => t.name === call.name);
-                  let toolResultStr = "";
-                  if (tool2) {
-                    try {
-                      const beforeSnapshot = call.name === "execute_terminal_command" ? captureWorkspaceSnapshot() : null;
-                      const res = await tool2.invoke(call.args);
-                      const afterSnapshot = beforeSnapshot ? captureWorkspaceSnapshot() : null;
-                      const diffSummary = beforeSnapshot && afterSnapshot ? formatWorkspaceChanges(beforeSnapshot, afterSnapshot) : "";
-                      toolResultStr = formatToolResult(call.name, String(res), diffSummary, call.args);
-                    } catch (e) {
-                      toolResultStr = formatToolResult(call.name, `Error: ${e.message}`, "", call.args);
-                    }
-                  } else {
-                    toolResultStr = formatToolResult(call.name, `Error: Tool ${call.name} not found.`, "", call.args);
-                  }
-                  messages.push(new import_messages4.ToolMessage({ content: toolResultStr, tool_call_id: call.id, name: call.name }));
-                  syncMessages();
-                }
+                  return msg;
+                });
+                const aiMessage = new import_messages4.AIMessage("");
+                messages.push(aiMessage);
+                syncMessages();
+                let finalMessage = null;
+                chatSession.agentStates.set(chatSession.threadId, "thinking");
                 if (chatSession.isChatActive) {
                   render(true);
                 } else {
                   sessionEvents.emit("stream_update", chatSession.threadId);
                 }
-              } else {
-                setPendingPlan(false);
-                isDone = true;
-                chatSession.agentStates.set(chatSession.threadId, "idle");
-                if (chatSession.isChatActive) render(true);
-                else sessionEvents.emit("stream_update", chatSession.threadId);
+                const stream = await provider.stream(finalMsgsToSend);
+                for await (const chunk of stream) {
+                  const threadExists2 = dbManager.listThreads().some((th) => th.id === currentThreadId);
+                  if (!threadExists2) {
+                    isDone = true;
+                    break;
+                  }
+                  if (!finalMessage) finalMessage = chunk;
+                  else finalMessage = (0, import_stream2.concat)(finalMessage, chunk);
+                  if (chunk) {
+                    const reasoning2 = finalMessage.additional_kwargs?.reasoning_content;
+                    if (reasoning2 || finalMessage.content) {
+                      if (chatSession.agentStates.get(currentThreadId) === "thinking") {
+                        chatSession.agentStates.set(currentThreadId, "idle");
+                        sessionEvents.emit("stream_update", currentThreadId);
+                      }
+                    }
+                    let content = "";
+                    if (reasoning2) {
+                      content += `<think>
+${reasoning2}`;
+                      if (finalMessage.content) {
+                        content += "\n</think>\n";
+                      }
+                    }
+                    content += finalMessage.content;
+                    aiMessage.content = content;
+                    if (finalMessage && finalMessage.tool_calls && finalMessage.tool_calls.length > 0) {
+                      aiMessage.tool_calls = finalMessage.tool_calls;
+                      chatSession.agentStates.set(currentThreadId, "tools");
+                      sessionEvents.emit("stream_update", currentThreadId);
+                    }
+                    if (chatSession.isChatActive && chatSession.threadId === currentThreadId) {
+                      throttleRender();
+                    } else {
+                      sessionEvents.emit("stream_update", currentThreadId);
+                    }
+                  }
+                }
+                let finalContent = "";
+                const reasoning = finalMessage?.additional_kwargs?.reasoning_content;
+                if (reasoning) {
+                  finalContent += `<think>
+${reasoning}
+</think>
+`;
+                }
+                finalContent += finalMessage?.content ?? "";
+                if (finalMessage) {
+                  finalMessage.content = finalContent;
+                }
+                let hasToolCalls = finalMessage?.tool_calls && finalMessage.tool_calls.length > 0;
+                if (!hasToolCalls && finalMessage?.content) {
+                  const fallbackCalls = parseFallbackToolCalls2(finalMessage.content.toString(), messages);
+                  if (fallbackCalls && fallbackCalls.length > 0) {
+                    finalMessage.tool_calls = fallbackCalls;
+                    aiMessage.tool_calls = fallbackCalls;
+                    hasToolCalls = true;
+                    const rawTrimmed = finalMessage.content.toString().trim();
+                    try {
+                      JSON.parse(rawTrimmed);
+                      finalMessage.content = "";
+                      aiMessage.content = "";
+                    } catch {
+                      const blockRegex = /^```json\s*([\s\S]*?)\s*```$/i;
+                      const match = rawTrimmed.match(blockRegex);
+                      if (match) {
+                        try {
+                          JSON.parse(match[1].trim());
+                          finalMessage.content = "";
+                          aiMessage.content = "";
+                        } catch {
+                        }
+                      }
+                    }
+                  }
+                }
+                config2 = provider.getConfig();
+                phone.updateConfig(config2);
+                messages[messages.length - 1] = finalMessage;
+                lastStreamContentLength = 0;
+                syncMessages();
+                if (chatSession.isChatActive) {
+                  render(true);
+                }
+                const responseText = String(finalMessage?.content ?? "");
+                const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
+                if (hasPlanBlock && !hasToolCalls) {
+                  if (config2.security.mode === "full") {
+                    setPendingPlan(false);
+                    isDone = true;
+                    setTimeout(() => {
+                      runAgentLoop("approved \u2014 please proceed with the plan exactly as described.");
+                    }, 50);
+                  } else {
+                    setPendingPlan(true);
+                    setPlanMenuIndex(0);
+                    isDone = true;
+                    chatSession.agentStates.set(chatSession.threadId, "idle");
+                    if (chatSession.isChatActive) render(true);
+                    else sessionEvents.emit("stream_update", chatSession.threadId);
+                  }
+                } else if (hasToolCalls) {
+                  setPendingPlan(false);
+                  chatSession.agentStates.set(chatSession.threadId, "tools");
+                  if (chatSession.isChatActive) render(true);
+                  else sessionEvents.emit("stream_update", chatSession.threadId);
+                  for (const call of finalMessage.tool_calls) {
+                    const tool2 = tools.find((t) => t.name === call.name);
+                    let toolResultStr = "";
+                    if (tool2) {
+                      try {
+                        const beforeSnapshot = call.name === "execute_terminal_command" ? captureWorkspaceSnapshot() : null;
+                        const res = await tool2.invoke(call.args);
+                        const afterSnapshot = beforeSnapshot ? captureWorkspaceSnapshot() : null;
+                        const diffSummary = beforeSnapshot && afterSnapshot ? formatWorkspaceChanges(beforeSnapshot, afterSnapshot) : "";
+                        toolResultStr = formatToolResult(call.name, String(res), diffSummary, call.args);
+                      } catch (e) {
+                        toolResultStr = formatToolResult(call.name, `Error: ${e.message}`, "", call.args);
+                      }
+                    } else {
+                      toolResultStr = formatToolResult(call.name, `Error: Tool ${call.name} not found.`, "", call.args);
+                    }
+                    messages.push(new import_messages4.ToolMessage({ content: toolResultStr, tool_call_id: call.id, name: call.name }));
+                    syncMessages();
+                  }
+                  if (chatSession.isChatActive) {
+                    render(true);
+                  } else {
+                    sessionEvents.emit("stream_update", chatSession.threadId);
+                  }
+                } else {
+                  setPendingPlan(false);
+                  isDone = true;
+                  chatSession.agentStates.set(chatSession.threadId, "idle");
+                  if (chatSession.isChatActive) render(true);
+                  else sessionEvents.emit("stream_update", chatSession.threadId);
+                }
               }
+              chatSession.agentStates.set(currentThreadId, "idle");
+              chatSession.activeStreams.delete(currentThreadId);
+              sessionEvents.emit("stream_update", currentThreadId);
+            } catch (error51) {
+              chatSession.agentStates.set(currentThreadId, "idle");
+              chatSession.activeStreams.delete(currentThreadId);
+              messages.push(new import_messages4.SystemMessage(formatChatError(error51)));
+              syncMessages();
+              sessionEvents.emit("stream_update", currentThreadId);
             }
-            chatSession.agentStates.set(currentThreadId, "idle");
-            chatSession.activeStreams.delete(currentThreadId);
-            sessionEvents.emit("stream_update", currentThreadId);
-          } catch (error51) {
-            chatSession.agentStates.set(currentThreadId, "idle");
-            chatSession.activeStreams.delete(currentThreadId);
-            messages.push(new import_messages4.SystemMessage(formatChatError(error51)));
-            syncMessages();
-            sessionEvents.emit("stream_update", currentThreadId);
-          }
-          if (chatSession.isChatActive && chatSession.threadId === currentThreadId) {
-            render(true);
-          }
-        });
+            if (chatSession.isChatActive && chatSession.threadId === currentThreadId) {
+              render(true);
+            }
+          });
+        } catch (error51) {
+          chatSession.agentStates.set(chatSession.threadId, "idle");
+          chatSession.activeStreams.delete(chatSession.threadId);
+          messages.push(new import_messages4.SystemMessage(formatChatError(error51)));
+          syncMessages();
+          render(true);
+        }
       };
       const onKeypress = async (str, key) => {
         if (key.ctrl && key.name === "c") {
@@ -19783,6 +19870,41 @@ ${reasoning}
           return;
         } else if (key.name === "return" || key.name === "enter") {
           autocompleteState = null;
+          const pendingApp = getPendingApproval();
+          if (pendingApp) {
+            const choices = ["now", "always", "deny"];
+            const choice = choices[getApprovalMenuIndex()];
+            const idx = chatSession.pendingApprovals.indexOf(pendingApp);
+            if (idx !== -1) {
+              chatSession.pendingApprovals.splice(idx, 1);
+            }
+            setApprovalMenuIndex(0);
+            if (choice === "always") {
+              try {
+                const currentConfig = await Configurator.init();
+                if (pendingApp.type === "command") {
+                  if (!currentConfig.security.allowedCommands.includes(pendingApp.cmd)) {
+                    currentConfig.security.allowedCommands.push(pendingApp.cmd);
+                  }
+                } else {
+                  if (!currentConfig.security.allowedApps.includes(pendingApp.cmd)) {
+                    currentConfig.security.allowedApps.push(pendingApp.cmd);
+                  }
+                }
+                if (currentConfig.security.mode === "ask") {
+                  currentConfig.security.mode = "approve";
+                }
+                Configurator.saveConfig(currentConfig);
+                config2 = currentConfig;
+                provider.setConfig(config2);
+                phone.updateConfig(config2);
+              } catch (e) {
+              }
+            }
+            pendingApp.resolve(choice);
+            render(true);
+            return;
+          }
           if (getPendingPlan()) {
             const chosen = PLAN_MENU_OPTIONS[getPlanMenuIndex()];
             if (chosen.inject !== null) {
@@ -19824,7 +19946,9 @@ ${reasoning}
           runAgentLoop(finalInputStr);
         } else if (key.name === "up") {
           autocompleteState = null;
-          if (getPendingPlan()) {
+          if (getPendingApproval()) {
+            setApprovalMenuIndex((getApprovalMenuIndex() - 1 + 3) % 3);
+          } else if (getPendingPlan()) {
             setPlanMenuIndex((getPlanMenuIndex() - 1 + PLAN_MENU_OPTIONS.length) % PLAN_MENU_OPTIONS.length);
           } else {
             chatUI.scrollUp(3);
@@ -19832,7 +19956,9 @@ ${reasoning}
           render(getIsStreaming());
         } else if (key.name === "down") {
           autocompleteState = null;
-          if (getPendingPlan()) {
+          if (getPendingApproval()) {
+            setApprovalMenuIndex((getApprovalMenuIndex() + 1) % 3);
+          } else if (getPendingPlan()) {
             setPlanMenuIndex((getPlanMenuIndex() + 1) % PLAN_MENU_OPTIONS.length);
           } else {
             chatUI.scrollDown(3);
@@ -19840,19 +19966,19 @@ ${reasoning}
           render(getIsStreaming());
         } else if (key.name === "pageup") {
           autocompleteState = null;
-          if (!getPendingPlan()) chatUI.scrollUp(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
+          if (!getPendingPlan() && !getPendingApproval()) chatUI.scrollUp(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
           render(getIsStreaming());
         } else if (key.name === "pagedown") {
           autocompleteState = null;
-          if (!getPendingPlan()) chatUI.scrollDown(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
+          if (!getPendingPlan() && !getPendingApproval()) chatUI.scrollDown(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
           render(getIsStreaming());
         } else if (key.name === "end") {
           autocompleteState = null;
-          if (!getPendingPlan()) chatUI.scrollToBottom();
+          if (!getPendingPlan() && !getPendingApproval()) chatUI.scrollToBottom();
           render(getIsStreaming());
         } else if (key.name === "backspace") {
           autocompleteState = null;
-          if (getIsStreaming()) return;
+          if (getIsStreaming() || getPendingApproval()) return;
           if (!getPendingPlan()) {
             currentInput = currentInput.slice(0, -1);
             render();
@@ -19860,7 +19986,7 @@ ${reasoning}
         } else if (str && !key.ctrl && !key.meta) {
           if (key.name === "tab") return;
           autocompleteState = null;
-          if (getIsStreaming()) return;
+          if (getIsStreaming() || getPendingApproval()) return;
           if (!getPendingPlan()) {
             currentInput += str;
             render();
@@ -19869,9 +19995,7 @@ ${reasoning}
       };
       process.stdin.on("keypress", onKeypress);
       render(getIsStreaming());
-      processPendingApprovals().then(() => {
-        render(getIsStreaming());
-      });
+      render(getIsStreaming());
     });
   };
   const createProfileView = () => {
@@ -20355,6 +20479,11 @@ ${reasoning}
         label: `Mistral  ${Configurator.getActiveModel(config2, "mistral") ? "-> " + Configurator.getActiveModel(config2, "mistral") : "(default: mistral-large-latest)"}`,
         description: "e.g. mistral-large-latest, open-mixtral-8x22b, codestral-latest",
         action: async () => phone.pushView(createProviderModelView("mistral", "Mistral", "mistral-large-latest", "e.g. mistral-large-latest, open-mixtral-8x22b, codestral-latest"))
+      },
+      {
+        label: `AWS Bedrock  ${Configurator.getActiveModel(config2, "bedrock") ? "-> " + Configurator.getActiveModel(config2, "bedrock") : "(default: us.amazon.nova-pro-v1:0)"}`,
+        description: "e.g. us.amazon.nova-pro-v1:0, us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+        action: async () => phone.pushView(createProviderModelView("bedrock", "AWS Bedrock", "us.amazon.nova-pro-v1:0", "e.g. us.amazon.nova-pro-v1:0, us.anthropic.claude-3-5-sonnet-20241022-v2:0"))
       }
     ]
   });
@@ -20457,6 +20586,101 @@ ${reasoning}
       ]
     };
   };
+  const createBedrockSettingsView = () => {
+    const entry = config2.providers.bedrock || {};
+    return {
+      id: "bedrock_settings",
+      title: "AWS Bedrock Config",
+      subtitle: "Manage AWS region and credential settings",
+      renderBody: () => {
+        console.log(import_chalk10.default.white.bold("  Current Configuration"));
+        console.log(`  Region:           ${import_chalk10.default.hex("#56CFE1")(entry.region || "us-east-1")}`);
+        console.log(`  Access Key ID:    ${import_chalk10.default.hex("#56CFE1")(entry.accessKeyId ? maskApiKey(entry.accessKeyId) : "(using AWS env/IAM)")}`);
+        console.log(`  Secret Key:       ${import_chalk10.default.hex("#56CFE1")(entry.secretAccessKey ? "********" : "(using AWS env/IAM)")}`);
+        console.log(`  Session Token:    ${import_chalk10.default.hex("#56CFE1")(entry.sessionToken ? "********" : "(none)")}`);
+        console.log("");
+      },
+      options: [
+        {
+          label: "Set AWS Region",
+          action: async () => {
+            phone.active = false;
+            ui.clearScreen();
+            const val = await promptWithEscape(`Enter AWS Region:`, entry.region || "us-east-1");
+            if (val !== null && val.trim()) {
+              if (!config2.providers.bedrock) config2.providers.bedrock = {};
+              config2.providers.bedrock.region = val.trim();
+              Configurator.saveConfig(config2);
+              phone.updateConfig(config2);
+              ui.success(`Region updated to ${val.trim()}`);
+              await new Promise((r) => setTimeout(r, 900));
+            }
+            phone.active = true;
+            phone.goBack();
+            phone.pushView(createBedrockSettingsView());
+          }
+        },
+        {
+          label: "Set AWS Access Key ID",
+          action: async () => {
+            phone.active = false;
+            ui.clearScreen();
+            const val = await promptWithEscape(`Enter Access Key ID:`, entry.accessKeyId || "");
+            if (val !== null) {
+              if (!config2.providers.bedrock) config2.providers.bedrock = {};
+              config2.providers.bedrock.accessKeyId = val.trim() || void 0;
+              Configurator.saveConfig(config2);
+              phone.updateConfig(config2);
+              ui.success("Access Key ID updated.");
+              await new Promise((r) => setTimeout(r, 900));
+            }
+            phone.active = true;
+            phone.goBack();
+            phone.pushView(createBedrockSettingsView());
+          }
+        },
+        {
+          label: "Set AWS Secret Access Key",
+          action: async () => {
+            phone.active = false;
+            ui.clearScreen();
+            const val = await promptWithEscape(`Enter Secret Access Key:`, entry.secretAccessKey || "");
+            if (val !== null) {
+              if (!config2.providers.bedrock) config2.providers.bedrock = {};
+              config2.providers.bedrock.secretAccessKey = val.trim() || void 0;
+              Configurator.saveConfig(config2);
+              phone.updateConfig(config2);
+              ui.success("Secret Access Key updated.");
+              await new Promise((r) => setTimeout(r, 900));
+            }
+            phone.active = true;
+            phone.goBack();
+            phone.pushView(createBedrockSettingsView());
+          }
+        },
+        {
+          label: "Set AWS Session Token",
+          action: async () => {
+            phone.active = false;
+            ui.clearScreen();
+            const val = await promptWithEscape(`Enter Session Token:`, entry.sessionToken || "");
+            if (val !== null) {
+              if (!config2.providers.bedrock) config2.providers.bedrock = {};
+              config2.providers.bedrock.sessionToken = val.trim() || void 0;
+              Configurator.saveConfig(config2);
+              phone.updateConfig(config2);
+              ui.success("Session Token updated.");
+              await new Promise((r) => setTimeout(r, 900));
+            }
+            phone.active = true;
+            phone.goBack();
+            phone.pushView(createBedrockSettingsView());
+          }
+        },
+        { label: "Go Back", action: () => phone.goBack() }
+      ]
+    };
+  };
   const createApiEditView = () => ({
     id: "api_keys",
     title: "API Settings",
@@ -20486,6 +20710,11 @@ ${reasoning}
         label: `Mistral  ${Configurator.getApiKeys(config2, "mistral").length} key(s)`,
         description: Configurator.getActiveApiKey(config2, "mistral") ? `active: ${maskApiKey(Configurator.getActiveApiKey(config2, "mistral"))}` : "no key",
         action: async () => phone.pushView(createProviderApiKeyView("mistral", "Mistral"))
+      },
+      {
+        label: "AWS Bedrock Credentials",
+        description: config2.providers.bedrock?.region ? `region: ${config2.providers.bedrock.region}` : "Not configured (uses env/IAM by default)",
+        action: async () => phone.pushView(createBedrockSettingsView())
       },
       { label: "Go Back", action: () => phone.goBack() }
     ]
@@ -20739,6 +20968,19 @@ ${reasoning}
           phone.pushView(createProviderView());
         }
       },
+      {
+        label: `AWS Bedrock  ${config2.defaults.primaryProvider === "bedrock" ? "[active]" : ""}`,
+        description: Configurator.getActiveModel(config2, "bedrock") ? `model: ${Configurator.getActiveModel(config2, "bedrock")}` : "model: us.amazon.nova-pro-v1:0 (default)",
+        action: async () => {
+          config2 = Configurator.updatePrimaryProvider("bedrock") || config2;
+          provider.setConfig(config2);
+          phone.updateConfig(config2);
+          ui.success("Switched to AWS Bedrock.");
+          await new Promise((r) => setTimeout(r, 1e3));
+          phone.goBack();
+          phone.pushView(createProviderView());
+        }
+      },
       { label: "Go Back", action: () => phone.goBack() }
     ]
   });
@@ -20810,7 +21052,7 @@ ${reasoning}
           action: async () => {
             phone.active = false;
             ui.clearScreen();
-            const approved = await (0, import_prompts5.confirm)({
+            const approved = await (0, import_prompts4.confirm)({
               message: "Delete all saved threads?",
               default: false
             });
@@ -20897,7 +21139,7 @@ ${reasoning}
           action: async () => {
             phone.active = false;
             ui.clearScreen();
-            const confirmKill = await (0, import_prompts5.confirm)({ message: `Kill process ${p.pid} (${p.command})?`, default: false });
+            const confirmKill = await (0, import_prompts4.confirm)({ message: `Kill process ${p.pid} (${p.command})?`, default: false });
             if (confirmKill) {
               try {
                 await backgroundManager.killProcess(p.pid);
@@ -21115,12 +21357,14 @@ ${reasoning}
     { label: "API Keys: Anthropic Keys", action: () => phone.pushView(createProviderApiKeyView("anthropic", "Anthropic")) },
     { label: "API Keys: Gemini Keys", action: () => phone.pushView(createProviderApiKeyView("gemini", "Gemini")) },
     { label: "API Keys: Mistral Keys", action: () => phone.pushView(createProviderApiKeyView("mistral", "Mistral")) },
+    { label: "API Keys: AWS Bedrock Credentials", action: () => phone.pushView(createBedrockSettingsView()) },
     { label: "Models: Groq Model Variants", action: () => phone.pushView(createProviderModelView("groq", "Groq", "qwen-qwq-32b", "e.g. qwen-qwq-32b")) },
     { label: "Models: OpenAI Model Variants", action: () => phone.pushView(createProviderModelView("openai", "OpenAI", "gpt-4o", "e.g. gpt-4o")) },
     { label: "Models: Anthropic Model Variants", action: () => phone.pushView(createProviderModelView("anthropic", "Anthropic", "claude-3-5-sonnet-20241022", "e.g. claude-3-5-sonnet-20241022")) },
     { label: "Models: Gemini Model Variants", action: () => phone.pushView(createProviderModelView("gemini", "Gemini", "gemini-1.5-pro", "e.g. gemini-1.5-pro")) },
     { label: "Models: Ollama Model Variants", action: () => phone.pushView(createProviderModelView("ollama", "Ollama", "llama3", "e.g. llama3")) },
-    { label: "Models: Mistral Model Variants", action: () => phone.pushView(createProviderModelView("mistral", "Mistral", "mistral-large-latest", "e.g. mistral-large-latest")) }
+    { label: "Models: Mistral Model Variants", action: () => phone.pushView(createProviderModelView("mistral", "Mistral", "mistral-large-latest", "e.g. mistral-large-latest")) },
+    { label: "Models: AWS Bedrock Model Variants", action: () => phone.pushView(createProviderModelView("bedrock", "AWS Bedrock", "us.amazon.nova-pro-v1:0", "e.g. us.amazon.nova-pro-v1:0")) }
   ];
   phone.registerCtrlKHandler(() => {
     const currentView = phone.history[phone.history.length - 1];
@@ -21131,6 +21375,20 @@ ${reasoning}
   phone.startListening();
   phone.render();
 }
+process.on("uncaughtException", (error51) => {
+  try {
+    import_fs9.default.appendFileSync("otto-errors.log", `Uncaught Exception: ${error51?.stack || error51}
+`);
+  } catch {
+  }
+});
+process.on("unhandledRejection", (reason) => {
+  try {
+    import_fs9.default.appendFileSync("otto-errors.log", `Unhandled Rejection: ${reason instanceof Error ? reason.stack : reason}
+`);
+  } catch {
+  }
+});
 main().catch((err) => {
   ui.error(err.message);
   process.exit(1);
