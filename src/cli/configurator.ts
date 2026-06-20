@@ -12,7 +12,7 @@ export interface OttoConfig {
     ollama?:   { baseUrl: string; model?: string; models?: string[]; activeModel?: string; num_ctx: number };
     gemini?:   { apiKey: string; apiKeys?: string[]; activeApiKey?: string; model?: string; models?: string[]; activeModel?: string };
     mistral?:  { apiKey: string; apiKeys?: string[]; activeApiKey?: string; model?: string; models?: string[]; activeModel?: string };
-    bedrock?:  { accessKeyId?: string; secretAccessKey?: string; sessionToken?: string; region?: string; model?: string; models?: string[]; activeModel?: string; apiKey?: string; apiKeys?: string[]; activeApiKey?: string };
+    bedrock?:  { accessKeyId?: string; secretAccessKey?: string; sessionToken?: string; region?: string; model?: string; models?: string[]; activeModel?: string; apiKey?: string; apiKeys?: string[]; activeApiKey?: string; useChatBedrock?: boolean };
   };
   defaults: {
     primaryProvider: 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral' | 'bedrock';

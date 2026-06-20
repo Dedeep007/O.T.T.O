@@ -40,7 +40,7 @@ export function createTaskBoardView(phone: PhoneOS): PhoneView {
 
       const W = 22; // Column width
       const formatCol = (title: string, color: any, items: Task[]) => {
-        let str = color.bold(` ╭─ ${title.padEnd(W - 4, ' ')} ╮\n`);
+        let str = color.bold(` ┌─ ${title.padEnd(W - 4, ' ')} ┐\n`);
         if (items.length === 0) {
           const paddedEmpty = 'Empty'.padEnd(W - 4, ' ');
           str += color(` │ `) + chalk.dim(paddedEmpty) + color(` │\n`);
@@ -50,7 +50,7 @@ export function createTaskBoardView(phone: PhoneOS): PhoneView {
           const paddedText = ('● ' + truncTitle).padEnd(W - 4, ' ');
           str += color(` │ `) + chalk.white(paddedText) + color(` │\n`);
         });
-        str += color(` ╰${'─'.repeat(W - 2)}╯`);
+        str += color(` └${'─'.repeat(W - 2)}┘`);
         return str.split('\n');
       };
 

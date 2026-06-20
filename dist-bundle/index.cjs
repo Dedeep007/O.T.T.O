@@ -5,9 +5,6 @@ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __esm = (fn, res) => function __init() {
-  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
-};
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
@@ -28,435 +25,15 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
   mod
 ));
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-// src/cli/chat.ts
-var chat_exports = {};
-__export(chat_exports, {
-  ChatUI: () => ChatUI
+// src/index.tsx
+var index_exports = {};
+__export(index_exports, {
+  RootController: () => RootController,
+  rootController: () => rootController
 });
-function stripAnsi(str) {
-  return str.replace(/\x1B\[[0-9;]*m/g, "");
-}
-function getCharWidth(char) {
-  const codePoint = char.codePointAt(0);
-  if (!codePoint) return 0;
-  if (codePoint === 9654) {
-    return 2;
-  }
-  if (codePoint >= 127744 && codePoint <= 129535 || codePoint >= 128512 && codePoint <= 128591 || codePoint >= 128640 && codePoint <= 128767 || codePoint >= 9728 && codePoint <= 10175 || codePoint >= 19968 && codePoint <= 40959 || codePoint >= 44032 && codePoint <= 55203 || codePoint >= 65280 && codePoint <= 65519) {
-    return 2;
-  }
-  if (codePoint === 65039 || codePoint === 65038) {
-    return 0;
-  }
-  return 1;
-}
-function getStringWidth(str) {
-  const stripped = stripAnsi(str);
-  let width = 0;
-  for (const char of stripped) {
-    width += getCharWidth(char);
-  }
-  return width;
-}
-function ansiPadEnd(str, targetWidth, padChar = " ") {
-  const currentWidth = getStringWidth(str);
-  const padLen = Math.max(0, targetWidth - currentWidth);
-  return str + padChar.repeat(padLen);
-}
-function padVisible(str, width) {
-  return str + " ".repeat(Math.max(0, width - getStringWidth(str)));
-}
-function wrapText(text, maxWidth, indent) {
-  const words = text.split(" ");
-  const lines = [];
-  let currentLine = "";
-  words.forEach((word) => {
-    if (stripAnsi(currentLine + word).length > maxWidth - indent) {
-      lines.push(" ".repeat(indent) + currentLine.trim());
-      currentLine = word + " ";
-    } else {
-      currentLine += word + " ";
-    }
-  });
-  if (currentLine) lines.push(" ".repeat(indent) + currentLine.trim());
-  return lines;
-}
-function renderDiffBlock(codeStr, diffWidth, isExpanded) {
-  let output = "\n";
-  const bar = (bg) => import_chalk9.default.bgHex(bg)("  ");
-  const row = (bg, fg, text) => import_chalk9.default.bgHex(bg).hex(fg)(padVisible(` ${text}`, diffWidth - 2));
-  const allLines = codeStr.split("\n");
-  const total = allLines.length;
-  let toRender = allLines;
-  if (!isExpanded && total > 15) {
-    const top = allLines.slice(0, 7);
-    const bottom = allLines.slice(total - 3);
-    toRender = [...top, `... (${total - 10} hidden lines) [Press Ctrl+E to Expand] ...`, ...bottom];
-  }
-  toRender.forEach((line) => {
-    if (line.startsWith("+++") || line.startsWith("---")) {
-      output += import_chalk9.default.bgHex("#1E293B").hex("#CBD5E1")(padVisible(` ${line}`, diffWidth)) + "\n";
-    } else if (line.startsWith("@@")) {
-      output += import_chalk9.default.bgHex("#0C4A6E").hex("#67E8F9")(padVisible(` ${line}`, diffWidth)) + "\n";
-    } else if (line.startsWith("+")) {
-      output += bar("#22C55E") + row("#14532D", "#BBF7D0", line) + "\n";
-    } else if (line.startsWith("-")) {
-      output += bar("#EF4444") + row("#7F1D1D", "#FECACA", line) + "\n";
-    } else if (line.startsWith("... (")) {
-      output += import_chalk9.default.bgHex("#374151").hex("#FBBF24")(padVisible(` ${line}`, diffWidth)) + "\n";
-    } else {
-      output += import_chalk9.default.bgHex("#0F172A").hex("#94A3B8")(padVisible(` ${line}`, diffWidth)) + "\n";
-    }
-  });
-  return output + "\n";
-}
-function renderMarkdownWithOttoStyles(content, width, diffsExpanded) {
-  content = content.replace(/\r/g, "");
-  const diffWidth = Math.max(48, Math.min(width, 96));
-  const placeholders = [];
-  const withPlaceholders = content.replace(
-    /```([a-zA-Z0-9_.-]*)\n([\s\S]*?)(?:```|$)/g,
-    (_match, lang, codeStr) => {
-      if (lang === "diff") {
-        const rendered = renderDiffBlock(codeStr, diffWidth, diffsExpanded);
-        const key = `\0DIFF${placeholders.length}\0`;
-        placeholders.push(rendered);
-        return key;
-      } else {
-        let output = "\n";
-        const lines = codeStr.replace(/\n$/, "").split("\n");
-        lines.forEach((line) => {
-          output += import_chalk9.default.bgHex("#0F172A").hex("#CBD5E1")(padVisible(` ${line}`, diffWidth)) + "\n";
-        });
-        const key = `\0DIFF${placeholders.length}\0`;
-        placeholders.push(output + "\n");
-        return key;
-      }
-    }
-  );
-  class CustomRenderer extends import_marked_terminal2.default {
-  }
-  import_marked2.marked.setOptions({
-    renderer: new CustomRenderer({
-      width,
-      reflowText: true,
-      codespan: import_chalk9.default.hex("#F5C400"),
-      strong: import_chalk9.default.white.bold,
-      em: import_chalk9.default.italic
-    })
-  });
-  const parsed = import_marked2.marked.parse(withPlaceholders);
-  return parsed.replace(/\u0000DIFF(\d+)\u0000/g, (_m, idx) => placeholders[Number(idx)]);
-}
-var import_chalk9, import_marked2, import_marked_terminal2, import_fs8, import_path9, ChatUI;
-var init_chat = __esm({
-  "src/cli/chat.ts"() {
-    "use strict";
-    import_chalk9 = __toESM(require("chalk"), 1);
-    import_marked2 = require("marked");
-    import_marked_terminal2 = __toESM(require("marked-terminal"), 1);
-    import_fs8 = __toESM(require("fs"), 1);
-    import_path9 = __toESM(require("path"), 1);
-    ChatUI = class {
-      W = 72;
-      lastLineCount = 0;
-      // ── Internal scroller state ───────────────────────────────────────────────
-      // scrollOffset = 0  → show bottom (most recent) of content
-      // scrollOffset = N  → show content N lines above the bottom
-      scrollOffset = 0;
-      totalContentLines = 0;
-      BRAND = import_chalk9.default.hex("#F5C400");
-      DIM = import_chalk9.default.hex("#374151");
-      MUTED = import_chalk9.default.hex("#6B7280");
-      AI_TAG = this.BRAND.bold;
-      /** Scroll up (toward older messages) by n lines */
-      scrollUp(n = 3) {
-        const viewH = Math.max(1, (process.stdout.rows || 24) - 1);
-        const max = Math.max(0, this.totalContentLines - viewH);
-        this.scrollOffset = Math.min(this.scrollOffset + n, max);
-      }
-      /** Scroll down (toward newer messages) by n lines */
-      scrollDown(n = 3) {
-        this.scrollOffset = Math.max(0, this.scrollOffset - n);
-      }
-      /** Snap to the very bottom (newest content) */
-      scrollToBottom() {
-        this.scrollOffset = 0;
-      }
-      /** True when the viewport is already pinned to the bottom */
-      isAtBottom() {
-        return this.scrollOffset === 0;
-      }
-      render(messages, currentInput, telemetry, model, isThinking = false, pendingPlan = false, planMenuIndex = 0, diffsExpanded = false, delayMessage, pendingApproval, approvalMenuIndex = 0) {
-        const lines = [];
-        const push = (line = "") => lines.push(line);
-        push(this.DIM("-".repeat(this.W)));
-        const leftHeader = "  " + this.BRAND("OTTO") + "  ";
-        const ctxPercent = telemetry.ctxMax > 0 ? Math.round(Math.min(telemetry.ctxUsed / telemetry.ctxMax, 1) * 100) : 0;
-        const ctxSummary = telemetry.showContextBar ? `ctx: ${telemetry.ctxUsed}/${telemetry.ctxMax} (${ctxPercent}%)` : "ctx: hidden";
-        const rightHeader = this.MUTED(`${ctxSummary}  |  ram: ${telemetry.ramMB}mb  |  ${model}`) + "  ";
-        const spaces = Math.max(0, this.W - stripAnsi(leftHeader).length - stripAnsi(rightHeader).length);
-        push(leftHeader + " ".repeat(spaces) + rightHeader);
-        push(this.DIM("-".repeat(this.W)));
-        push("");
-        messages.forEach((msg) => {
-          if (msg.role === "system") {
-            push("  " + import_chalk9.default.bgHex("#374151").white(" SYSTEM ") + " " + this.MUTED(msg.content));
-            push("");
-            return;
-          }
-          if (msg.role === "tool") {
-            push("  " + import_chalk9.default.bgHex("#1F2937").white.bold(" TOOL "));
-            const rendered = renderMarkdownWithOttoStyles(msg.content, this.W - 4, diffsExpanded);
-            rendered.trim().split("\n").forEach((line) => push("  " + line));
-            push("");
-            return;
-          }
-          const header = msg.role === "user" ? "  " + import_chalk9.default.bgHex("#374151").white.bold(" YOU ") : this.AI_TAG("  O.T.T.O");
-          push(header);
-          let rawContent = msg.content;
-          const thinkMatch = rawContent.match(/<think>([\s\S]*?)(?:<\/think>|$)/);
-          if (thinkMatch) {
-            const thinkStr = thinkMatch[1].trim();
-            rawContent = rawContent.replace(/<think>[\s\S]*?(?:<\/think>|$)/, "").trim();
-            const thinkLines = thinkStr.split("\n");
-            const total = thinkLines.length;
-            if (!diffsExpanded) {
-              push("  " + import_chalk9.default.hex("#A78BFA")(`\u{1F9E0}  Reasoning Process (${total} lines) [Press Ctrl+E to Expand]`));
-              push("");
-            } else {
-              push("  " + this.MUTED("|-- ") + import_chalk9.default.hex("#A78BFA")("Reasoning Process"));
-              thinkLines.forEach((line) => {
-                const formattedLine = line.trim().replace(/^(#{1,6})\s+(.*)$/g, (_m, _p1, p2) => import_chalk9.default.white.bold(p2)).replace(/^(\d+\.)\s+(.*)$/g, (_m, p1, p2) => import_chalk9.default.white.bold(p1) + " " + p2).replace(/^([*-])\s+(.*)$/g, (_m, p1, p2) => import_chalk9.default.white.bold(p1) + " " + p2).replace(/\*\*(.*?)\*\*/g, (_m, p1) => import_chalk9.default.white.bold(p1)).replace(/\*(.*?)\*/g, (_m, p1) => import_chalk9.default.white.italic(p1)).replace(/`(.*?)`/g, (_m, p1) => import_chalk9.default.hex("#F5C400")(p1));
-                const wrapped = wrapText(formattedLine, this.W - 5, 0);
-                wrapped.forEach((wl) => push("  " + this.MUTED("| ") + this.MUTED(wl)));
-              });
-              push("  " + this.MUTED("`--"));
-              push("");
-            }
-            if (msg.content.includes("<think>") && !msg.content.includes("</think>")) {
-              push("  " + import_chalk9.default.hex("#A78BFA")("  \u{1F9E0}  Thinking..."));
-              push("");
-            }
-          }
-          if (rawContent.trim()) {
-            if (msg.role === "user") {
-              const wrappedLines = wrapText(rawContent, this.W, 2);
-              wrappedLines.forEach((line) => push(import_chalk9.default.white(line)));
-            } else {
-              const PLAN_RE = /<!--\s*PLAN_START\s*-->([\s\S]*?)<!--\s*PLAN_END\s*-->/;
-              const planMatch = rawContent.match(PLAN_RE);
-              if (planMatch) {
-                const beforePlan = rawContent.slice(0, rawContent.indexOf("<!-- PLAN_START")).trim();
-                if (beforePlan) {
-                  const rendered = renderMarkdownWithOttoStyles(beforePlan, this.W - 4, diffsExpanded);
-                  rendered.trim().split("\n").forEach((line) => push("  " + line));
-                  push("");
-                }
-                const planContent = planMatch[1].trim();
-                const planWidth = Math.min(this.W - 6, 86);
-                const boxBorder = import_chalk9.default.hex("#F5C400");
-                const stepColor = import_chalk9.default.hex("#22D3EE");
-                const fileColor = import_chalk9.default.hex("#86EFAC");
-                const boxRow = (styledContent, bgHex) => {
-                  const visLen = getStringWidth(styledContent);
-                  const pad = " ".repeat(Math.max(0, planWidth - visLen));
-                  const inner = bgHex ? import_chalk9.default.bgHex(bgHex)(styledContent + pad) : styledContent + pad;
-                  return "  " + boxBorder("\u2551") + inner + boxBorder("\u2551");
-                };
-                push("  " + boxBorder("\u2554" + "\u2550".repeat(planWidth) + "\u2557"));
-                push(boxRow(import_chalk9.default.hex("#F5C400").bold(" \u{1F4CB} IMPLEMENTATION PLAN "), "#1a1200"));
-                push("  " + boxBorder("\u2560" + "\u2550".repeat(planWidth) + "\u2563"));
-                planContent.split("\n").forEach((line) => {
-                  const stripped = line.trim();
-                  if (!stripped || stripped.startsWith("##")) return;
-                  let styledText;
-                  if (/^\d+\./.test(stripped)) {
-                    styledText = stepColor(" " + stripped);
-                  } else if (stripped.startsWith("- `") || stripped.startsWith("- \\`")) {
-                    styledText = " " + fileColor(stripped);
-                  } else if (/^\*\*/.test(stripped)) {
-                    styledText = " " + import_chalk9.default.white.bold(stripped.replace(/\*\*/g, ""));
-                  } else {
-                    styledText = " " + import_chalk9.default.hex("#D1D5DB")(stripped);
-                  }
-                  const visibleText = stripAnsi(styledText);
-                  if (visibleText.length <= planWidth) {
-                    push(boxRow(styledText));
-                  } else {
-                    wrapText(visibleText.trim(), planWidth - 2, 0).forEach((wl) => {
-                      push(boxRow(" " + import_chalk9.default.hex("#D1D5DB")(wl.trim())));
-                    });
-                  }
-                });
-                push("  " + boxBorder("\u2560" + "\u2550".repeat(planWidth) + "\u2563"));
-                const footerText = import_chalk9.default.hex("#4ADE80").bold(" \u2705 y to approve") + import_chalk9.default.hex("#6B7280")("  |  ") + import_chalk9.default.hex("#F87171").bold("\u274C n to cancel");
-                push(boxRow(footerText, "#0c1a0c"));
-                push("  " + boxBorder("\u255A" + "\u2550".repeat(planWidth) + "\u255D"));
-                push("");
-                const afterPlan = rawContent.slice(rawContent.indexOf("<!-- PLAN_END -->") + "<!-- PLAN_END -->".length).trim();
-                if (afterPlan) {
-                  const rendered = renderMarkdownWithOttoStyles(afterPlan, this.W - 4, diffsExpanded);
-                  rendered.trim().split("\n").forEach((line) => push("  " + line));
-                }
-              } else {
-                let processedContent = rawContent;
-                processedContent = processedContent.replace(/^[*\s]*\u25cf\s*([A-Za-z_]+)\(([^)]*)\)/gm, (_match, tool2, args) => {
-                  return import_chalk9.default.dim("/- ") + import_chalk9.default.white.bold(tool2) + import_chalk9.default.dim("(" + args + ")");
-                });
-                processedContent = processedContent.replace(/^[*\s]*\u2514\s*(.*)/gm, (_match, details) => {
-                  return import_chalk9.default.dim("\\- " + details);
-                });
-                const rendered = renderMarkdownWithOttoStyles(processedContent, this.W - 4, diffsExpanded);
-                rendered.trim().split("\n").forEach((line) => push("  " + line));
-              }
-            }
-          }
-          push("");
-        });
-        if (delayMessage) {
-          const dots = ".".repeat(Math.floor(Date.now() / 350) % 3 + 1);
-          push(this.AI_TAG("  O.T.T.O"));
-          push("  " + import_chalk9.default.hex("#FBBF24")(`${delayMessage}${dots}`));
-          push("");
-        } else if (isThinking) {
-          const dots = ".".repeat(Math.floor(Date.now() / 350) % 3 + 1);
-          push(this.AI_TAG("  O.T.T.O"));
-          push("  " + import_chalk9.default.hex("#A78BFA")(`thinking${dots}`));
-          push("");
-        }
-        if (pendingApproval) {
-          const menuWidth = Math.min(this.W - 6, 70);
-          const border = import_chalk9.default.hex("#FB7185");
-          const titleColor = import_chalk9.default.bgHex("#4C0519").hex("#FDA4AF");
-          const totalInnerWidth = menuWidth + 2;
-          const boxRow = (styledContent, bgHex) => {
-            const visLen = getStringWidth(styledContent);
-            const pad = " ".repeat(Math.max(0, totalInnerWidth - visLen));
-            const inner = bgHex ? import_chalk9.default.bgHex(bgHex)(styledContent + pad) : styledContent + pad;
-            return "  " + border("|") + inner + border("|");
-          };
-          push("  " + border("+" + "-".repeat(totalInnerWidth) + "+"));
-          push(boxRow(titleColor.bold(" \u{1F6E1}\uFE0F  SECURITY APPROVAL REQUIRED "), "#4C0519"));
-          push("  " + border("+" + "-".repeat(totalInnerWidth) + "+"));
-          const actionType = pendingApproval.type === "app" ? "launch application" : "execute command";
-          const promptText = `The agent wants to ${actionType}:`;
-          push(boxRow(" " + import_chalk9.default.white(promptText)));
-          const cmdStrWrapped = wrapText(pendingApproval.commandStr, totalInnerWidth - 4, 0);
-          cmdStrWrapped.forEach((line) => {
-            push(boxRow("   " + import_chalk9.default.hex("#FDA4AF").bold(line.trim())));
-          });
-          push("  " + border("+" + "-".repeat(totalInnerWidth) + "+"));
-          const menuItems = [
-            { label: "Approve for now", color: import_chalk9.default.hex("#4ADE80") },
-            { label: `Approve always (whitelist '${pendingApproval.cmd}')`, color: import_chalk9.default.hex("#38BDF8") },
-            { label: "Don't approve", color: import_chalk9.default.hex("#F87171") }
-          ];
-          menuItems.forEach((item, idx) => {
-            const isSelected = idx === approvalMenuIndex;
-            const cursor = isSelected ? border.bold(" > ") : " ".repeat(getStringWidth(" > "));
-            const cursorWidth = getStringWidth(cursor);
-            const paddedLabel = ansiPadEnd(item.label, totalInnerWidth - cursorWidth);
-            const label = isSelected ? import_chalk9.default.bgHex("#2E050E")(item.color.bold(paddedLabel)) : import_chalk9.default.hex("#9CA3AF")(paddedLabel);
-            push("  " + border("|") + cursor + label + border("|"));
-          });
-          push("  " + border("+" + "-".repeat(totalInnerWidth) + "+"));
-          push("");
-        }
-        if (pendingPlan) {
-          const menuWidth = Math.min(this.W - 6, 60);
-          const border = import_chalk9.default.hex("#F5C400");
-          const menuItems = [
-            { label: "\u2705  Approve - execute the plan", color: import_chalk9.default.hex("#4ADE80") },
-            { label: "\u270F\uFE0F  Edit - request changes first", color: import_chalk9.default.hex("#FBBF24") },
-            { label: "\u274C  Cancel - do not proceed", color: import_chalk9.default.hex("#F87171") }
-          ];
-          const totalInnerWidth = menuWidth + 2;
-          push("  " + border("\u2500".repeat(totalInnerWidth + 2)));
-          menuItems.forEach((item, idx) => {
-            const isSelected = idx === planMenuIndex;
-            const cursor = isSelected ? import_chalk9.default.hex("#F5C400").bold(" \u25B6 ") : " ".repeat(getStringWidth(" \u25B6 "));
-            const cursorWidth = getStringWidth(cursor);
-            const paddedLabel = ansiPadEnd(item.label, totalInnerWidth - cursorWidth);
-            const label = isSelected ? import_chalk9.default.bgHex("#1a1200")(item.color.bold(paddedLabel)) : import_chalk9.default.hex("#6B7280")(paddedLabel);
-            push("  " + border("\u2502") + cursor + label + border("\u2502"));
-          });
-          push("  " + border("\u2500".repeat(totalInnerWidth + 2)));
-          push("");
-        }
-        push(this.DIM("-".repeat(this.W)));
-        if (this.totalContentLines > 0 && this.scrollOffset > 0) {
-          const deltaLines = lines.length - this.totalContentLines;
-          if (deltaLines > 0) {
-            this.scrollOffset += deltaLines;
-          }
-        }
-        this.totalContentLines = lines.length;
-        const viewH = Math.max(1, (process.stdout.rows || 24) - 1);
-        const maxOffset = Math.max(0, lines.length - viewH);
-        this.scrollOffset = Math.min(this.scrollOffset, maxOffset);
-        const viewStart = maxOffset - this.scrollOffset;
-        const visible = lines.slice(viewStart, viewStart + viewH);
-        const linesAbove = viewStart;
-        const linesBelow = this.scrollOffset;
-        if (linesAbove > 0 && visible.length > 0) {
-          visible[0] = this.MUTED(
-            `  \u2191 ${linesAbove} line${linesAbove !== 1 ? "s" : ""} above` + import_chalk9.default.hex("#4B5563")("  (\u2191/\u2193 scroll  PgUp/PgDn page  End to snap)")
-          );
-        }
-        if (linesBelow > 0 && visible.length > 1) {
-          visible[visible.length - 1] = this.MUTED(`  \u2193 ${linesBelow} line${linesBelow !== 1 ? "s" : ""} below`);
-        }
-        let out = "\x1B[?25l\x1B[H";
-        for (const line of visible) {
-          out += line + "\x1B[K\n";
-        }
-        out += "\x1B[J";
-        this.lastLineCount = visible.length;
-        const promptPrefix = "  " + this.BRAND(">") + " ";
-        const scrollHint = linesBelow > 0 ? this.MUTED("  [scrolled \u2014 End to return]") : "";
-        let placeholder = "";
-        if (currentInput.length === 0) {
-          if (pendingApproval) {
-            placeholder = import_chalk9.default.hex("#FB7185")("\u2191\u2193 choose  \u21B5 confirm");
-          } else if (pendingPlan) {
-            placeholder = import_chalk9.default.hex("#F5C400")("\u2191\u2193 choose  \u21B5 confirm");
-          } else {
-            placeholder = this.MUTED("Type your message... (esc to menu)");
-          }
-        } else if (/[@][^\s]*$/.test(currentInput)) {
-          try {
-            const match = currentInput.match(/@([^\s]*)$/);
-            const prefix = match ? match[1] : "";
-            let dir = ".";
-            let filePrefix = prefix;
-            if (prefix.includes("/") || prefix.includes("\\")) {
-              const normalized = prefix.replace(/\\/g, "/");
-              const lastSlash = normalized.lastIndexOf("/");
-              dir = prefix.slice(0, lastSlash);
-              filePrefix = prefix.slice(lastSlash + 1);
-            }
-            const fullDir = import_path9.default.resolve(process.cwd(), dir);
-            if (import_fs8.default.existsSync(fullDir) && import_fs8.default.statSync(fullDir).isDirectory()) {
-              const entries = import_fs8.default.readdirSync(fullDir, { withFileTypes: true }).filter((e) => {
-                if (e.name.startsWith(".") && !filePrefix.startsWith(".")) return false;
-                if (e.name === "node_modules") return false;
-                return e.name.toLowerCase().startsWith(filePrefix.toLowerCase());
-              }).map((e) => e.isDirectory() ? e.name + "/" : e.name);
-              if (entries.length > 0) {
-                placeholder = this.MUTED("  [Press Tab to cycle: " + entries.slice(0, 5).join(", ") + (entries.length > 5 ? "..." : "") + "]");
-              }
-            }
-          } catch (e) {
-          }
-        }
-        out += "\x1B[2K\r" + promptPrefix + import_chalk9.default.white(currentInput) + placeholder + scrollHint + "\x1B[?25h";
-        process.stdout.write(out);
-      }
-    };
-  }
-});
+module.exports = __toCommonJS(index_exports);
 
 // src/cli/configurator.ts
 var import_fs = __toESM(require("fs"), 1);
@@ -484,6 +61,8 @@ import_marked.marked.setOptions({
 });
 var ui = {
   accent: import_chalk.default.yellow,
+  tuiActive: false,
+  onTuiMessage: null,
   clearScreen: () => {
     process.stdout.write("\x1B[0;0H\x1B[J");
   },
@@ -520,19 +99,39 @@ var ui = {
     console.log(import_chalk.default.yellow.bold("\u2514" + "\u2500".repeat(width - 2) + "\u2518"));
   },
   alert: (text) => {
-    console.log(import_chalk.default.yellow(`[!] ${text}`));
+    if (ui.tuiActive) {
+      if (ui.onTuiMessage) ui.onTuiMessage("alert", text);
+    } else {
+      console.log(import_chalk.default.yellow(`[!] ${text}`));
+    }
   },
   warning: (text) => {
-    console.log(import_chalk.default.yellow.inverse(` WARNING `) + import_chalk.default.yellow(` ${text}`));
+    if (ui.tuiActive) {
+      if (ui.onTuiMessage) ui.onTuiMessage("warning", text);
+    } else {
+      console.log(import_chalk.default.yellow.inverse(` WARNING `) + import_chalk.default.yellow(` ${text}`));
+    }
   },
   info: (text) => {
-    console.log(import_chalk.default.blue(`[i] ${text}`));
+    if (ui.tuiActive) {
+      if (ui.onTuiMessage) ui.onTuiMessage("info", text);
+    } else {
+      console.log(import_chalk.default.blue(`[i] ${text}`));
+    }
   },
   success: (text) => {
-    console.log(import_chalk.default.green(`[\u2713] ${text}`));
+    if (ui.tuiActive) {
+      if (ui.onTuiMessage) ui.onTuiMessage("success", text);
+    } else {
+      console.log(import_chalk.default.green(`[\u2713] ${text}`));
+    }
   },
   error: (text) => {
-    console.log(import_chalk.default.red.bold(`[X] ERROR: `) + import_chalk.default.red(text));
+    if (ui.tuiActive) {
+      if (ui.onTuiMessage) ui.onTuiMessage("error", text);
+    } else {
+      console.log(import_chalk.default.red.bold(`[X] ERROR: `) + import_chalk.default.red(text));
+    }
   },
   renderMarkdown: (markdownString) => {
     const rendered = import_marked.marked.parse(markdownString);
@@ -1366,6 +965,7 @@ var import_google_genai = require("@langchain/google-genai");
 var import_ollama = require("@langchain/ollama");
 var import_mistralai = require("@langchain/mistralai");
 var import_aws = require("@langchain/aws");
+var import_bedrock = require("@langchain/community/chat_models/bedrock");
 
 // src/llm/quota.ts
 var QuotaManager = class {
@@ -16919,6 +16519,7 @@ function parseFallbackToolCalls(content, messages) {
   const trimmed = content.trim();
   if (!trimmed) return null;
   const foundCalls = [];
+  const parsedBlockIndexes = /* @__PURE__ */ new Set();
   const addIfValid = (obj) => {
     if (obj && typeof obj === "object") {
       if (obj.name && (obj.arguments || obj.args)) {
@@ -16944,11 +16545,9 @@ function parseFallbackToolCalls(content, messages) {
       } else {
         addIfValid(parsed);
       }
-      return foundCalls.length > 0 ? foundCalls : null;
     }
   } catch {
   }
-  let hasJsonToolCallBlock = false;
   const jsonBlockRegex = /```json\s*([\s\S]*?)\s*```/g;
   let match;
   while ((match = jsonBlockRegex.exec(trimmed)) !== null) {
@@ -16956,18 +16555,20 @@ function parseFallbackToolCalls(content, messages) {
       const sanitized = sanitizeJsonString(match[1].trim());
       const parsed = JSON.parse(sanitized);
       if (isToolCallFormat(parsed)) {
-        hasJsonToolCallBlock = true;
+        let matched = false;
         if (Array.isArray(parsed)) {
-          parsed.forEach(addIfValid);
+          parsed.forEach((item) => {
+            if (addIfValid(item)) matched = true;
+          });
         } else {
-          addIfValid(parsed);
+          if (addIfValid(parsed)) matched = true;
+        }
+        if (matched) {
+          parsedBlockIndexes.add(match.index);
         }
       }
     } catch {
     }
-  }
-  if (hasJsonToolCallBlock) {
-    return foundCalls.length > 0 ? foundCalls : null;
   }
   let inString = false;
   let escapeNext = false;
@@ -17005,11 +16606,14 @@ function parseFallbackToolCalls(content, messages) {
       }
     }
   }
-  if (foundCalls.length > 0) return foundCalls;
   const blockRegex = /```([a-zA-Z0-9_-]*)\s*([\s\S]*?)\s*```/g;
   let blockMatch;
   let lastIdx = 0;
   while ((blockMatch = blockRegex.exec(trimmed)) !== null) {
+    if (parsedBlockIndexes.has(blockMatch.index)) {
+      lastIdx = blockRegex.lastIndex;
+      continue;
+    }
     const lang = (blockMatch[1] || "").toLowerCase();
     const code = blockMatch[2].trim();
     const preText = trimmed.substring(lastIdx, blockMatch.index).trim();
@@ -17151,7 +16755,29 @@ function parseFallbackToolCalls(content, messages) {
       }
     }
   }
-  return foundCalls.length > 0 ? foundCalls : null;
+  if (foundCalls.length > 0) {
+    const seen = /* @__PURE__ */ new Set();
+    const deduplicated = [];
+    for (const call of foundCalls) {
+      let key = "";
+      if (call.name === "write_file") {
+        const filePath = (call.args?.filePath || "").replace(/\\/g, "/").toLowerCase();
+        const content2 = (call.args?.content || "").trim();
+        key = `write_file:${filePath}:${content2}`;
+      } else if (call.name === "execute_terminal_command") {
+        const command = (call.args?.command || "").trim();
+        key = `execute_terminal_command:${command}`;
+      } else {
+        key = `${call.name}:${JSON.stringify(call.args)}`;
+      }
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduplicated.push(call);
+      }
+    }
+    return deduplicated.length > 0 ? deduplicated : null;
+  }
+  return null;
 }
 var ProviderEngine = class {
   config;
@@ -17264,14 +16890,26 @@ var ProviderEngine = class {
         const secretAccessKey = entry?.secretAccessKey ?? process.env.AWS_SECRET_ACCESS_KEY;
         const sessionToken = entry?.sessionToken ?? process.env.AWS_SESSION_TOKEN;
         const credentials = accessKeyId && secretAccessKey ? { accessKeyId, secretAccessKey, sessionToken } : void 0;
-        this.primaryModel = new import_aws.ChatBedrockConverse({
-          region,
-          credentials,
-          model,
-          temperature: 0,
-          maxRetries: 0
-        }).bindTools(tools);
-        ui.info(`Switched to AWS Bedrock - ${model} (${region})`);
+        const useChatBedrock = !!entry?.useChatBedrock;
+        if (useChatBedrock) {
+          this.primaryModel = new import_bedrock.BedrockChat({
+            region,
+            credentials,
+            model,
+            temperature: 0,
+            maxRetries: 0
+          }).bindTools(tools);
+          ui.info(`Switched to AWS Bedrock (ChatBedrock) - ${model} (${region})`);
+        } else {
+          this.primaryModel = new import_aws.ChatBedrockConverse({
+            region,
+            credentials,
+            model,
+            temperature: 0,
+            maxRetries: 0
+          }).bindTools(tools);
+          ui.info(`Switched to AWS Bedrock (Converse API) - ${model} (${region})`);
+        }
       } else {
         ui.warning(`Provider ${providerName} is not fully configured or supported yet.`);
         this.primaryModel = null;
@@ -17637,20 +17275,25 @@ SECTION A \u2014 CODING RULES (always apply)
 3. DISCOVER LAYOUT: Use list_files to explore directory structure before making assumptions.
 4. CONCISE RESPONSES: Summarize actions in 1-2 sentences. Do not dump code blocks into chat; the TUI diff shows them automatically.
 5. PROACTIVE & AUTONOMOUS: Proactively run compile/test commands (e.g., npm run build, npx tsc, npm test) via execute_terminal_command to verify changes. If they fail, inspect stderr/logs and fix errors autonomously.
-6. WINDOWS COMPATIBILITY: Run PowerShell compatible commands. Do not use Linux utilities (like touch).
-7. BACKGROUND RUNS: For servers/watchers, always set background: true. Read logs/status after 2-3 seconds to verify startup.
-8. PARALLEL TOOLS: Proactively call multiple tools in parallel in a single turn if operations are independent.
-9. ZERO RESISTANCE: Resolve implementation details directly without asking for confirmation unless severely ambiguous.
-10. ACTUAL TOOL CALLS: You MUST invoke tools programmatically. Do not simulate tool outputs in your text response. If you cannot use native tool calling, output a valid JSON code block containing the tool calls: \`\`\`json
+6. TOOL COMPATIBILITY: Prioritize using native Node.js APIs or workspace-provided tools rather than executing shell commands where possible to maximize performance and reliability.
+7. WINDOWS COMPATIBILITY: Run PowerShell compatible commands. Do not use Linux utilities (like touch).
+8. BACKGROUND RUNS: For servers/watchers, always set background: true. Read logs/status after 2-3 seconds to verify startup.
+9. PARALLEL TOOLS: Proactively call multiple tools in parallel in a single turn if operations are independent.
+10. ZERO RESISTANCE: Resolve implementation details directly without asking for confirmation unless severely ambiguous.
+11. ACTUAL TOOL CALLS: You MUST invoke tools programmatically. Do not simulate tool outputs in your text response. If you cannot use native tool calling, output a valid JSON code block containing the tool calls: \`\`\`json
 [{"name": "tool_name", "args": {...}}]
 \`\`\`.
-11. NO REFUSALS: Do not refuse tasks or output capability refusals (e.g. 'I'm sorry, but I can't assist', 'as an AI language model'). You have access to local terminal execution via execute_terminal_command. You CAN run scripts, install packages, train models, compile code, and inspect systems natively. Always proceed by writing code and executing it.
+12. NO REFUSALS: Do not refuse tasks or output capability refusals (e.g. 'I'm sorry, but I can't assist', 'as an AI language model'). You have access to local terminal execution via execute_terminal_command. You CAN run scripts, install packages, train models, compile code, and inspect systems natively. Always proceed by writing code and executing it.
 
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-SECTION B \u2014 PLANNING MODE (always apply for code/file edits)
+SECTION B \u2014 PLANNING MODE (Judgement & Gating)
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-Before creating, writing, or modifying any code or files, you MUST produce an implementation plan first. Do not directly output code blocks or write files without an approved plan.
-Produce a plan using this exact format:
+1. WHEN TO PLAN: Before performing significant, multi-file code modifications, complex refactoring, or creating new components/files, you MUST produce an implementation plan first.
+2. WHEN NOT TO PLAN: Do not produce a plan or block the conversation if the user's request is:
+   - Investigatory or diagnostic in nature (e.g., 'search for X', 'explain how Y works', 'check git status').
+   - A minor tweak, single-line alignment, simple code formatting, or a trivial syntax fix.
+   - A direct follow-up or minor correction to a plan that was already approved.
+3. HOW TO PLAN: Produce a plan using this exact format:
 <!-- PLAN_START -->
 ## \u{1F4CB} Implementation Plan
 **Summary:** One sentence goal.
@@ -17660,6 +17303,7 @@ Produce a plan using this exact format:
 1. Step description
 <!-- PLAN_END -->
 Stop immediately after outputting the plan. Wait for user approval (y/n) before execution.
+4. RESPECT CANCELLATIONS: If the user cancels the plan (e.g. typing "cancel", "no", or selecting "Cancel - do not proceed" option), you MUST respect it. Stop attempting to execute or re-propose that plan. Acknowledge the cancellation clearly, describe what you are stopping, and ask the user for new instructions or next steps instead of looping.
 
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
 SECTION C \u2014 EXECUTION & VERIFICATION
@@ -17693,10 +17337,12 @@ Execute approved plans step-by-step. Run verification tests after editing. Auton
 };
 var ruleGuardrail = new RuleGuardrail();
 
-// src/cli/nav.ts
-var readline = __toESM(require("readline"), 1);
+// src/cli/nav.tsx
+var import_react = require("react");
+var import_ink = require("ink");
 var import_chalk2 = __toESM(require("chalk"), 1);
 var import_module = require("module");
+var import_jsx_runtime = require("react/jsx-runtime");
 var import_meta = {};
 var require2 = (0, import_module.createRequire)(import_meta.url);
 var pkg = require2("../../package.json");
@@ -17713,136 +17359,88 @@ var PhoneOS = class {
   cursor = 0;
   active = false;
   config;
-  firstRender = true;
-  lastRenderLines = 0;
   listening = false;
+  notification = "";
+  notificationTimeout;
   ctrlKHandler;
+  listeners = [];
   constructor(c2) {
     this.config = c2;
-    process.stdout.on("resize", () => {
-      if (this.active) {
-        this.firstRender = true;
-        this.render();
-      }
-    });
+  }
+  showNotification(msg) {
+    this.notification = msg;
+    if (this.notificationTimeout) {
+      clearTimeout(this.notificationTimeout);
+    }
+    this.notify();
+    this.notificationTimeout = setTimeout(() => {
+      this.notification = "";
+      this.notify();
+    }, 2e3);
+  }
+  subscribe(listener) {
+    this.listeners.push(listener);
+    return () => {
+      this.listeners = this.listeners.filter((l) => l !== listener);
+    };
+  }
+  notify() {
+    this.listeners.forEach((l) => l());
   }
   updateConfig(c2) {
     this.config = c2;
+    this.notify();
   }
   registerCtrlKHandler(handler) {
     this.ctrlKHandler = handler;
   }
-  onKey = async (_, key) => {
-    try {
-      const fs11 = await import("fs");
-      fs11.appendFileSync("C:\\Users\\dedeep vasireddy\\keypresses.log", `onKey: active=${this.active} key=${JSON.stringify(key)}
-`);
-    } catch {
-    }
-    if (!this.active) return;
-    if (key.ctrl && key.name === "c") {
-      this.cleanup();
-      process.exit(0);
-    }
-    if (key.ctrl && key.name === "k") {
-      if (this.ctrlKHandler) {
-        this.ctrlKHandler();
-      }
-      return;
-    }
-    const view = this.history[this.history.length - 1];
-    if (key.name === "up") {
-      this.cursor = this.cursor > 0 ? this.cursor - 1 : view.options.length - 1;
-      this.render();
-    } else if (key.name === "down") {
-      this.cursor = this.cursor < view.options.length - 1 ? this.cursor + 1 : 0;
-      this.render();
-    } else if (key.name === "left" || key.name === "escape" || key.name === "backspace") {
-      this.goBack();
-    } else if (key.name === "right") {
-      if (this.forward.length) {
-        this.history.push(this.forward.pop());
-        this.cursor = 0;
-        this.render();
-      } else {
-        this.select();
-      }
-    } else if (key.name === "return" || key.name === "enter") {
-      this.select();
-    }
-  };
+  getCtrlKHandler() {
+    return this.ctrlKHandler;
+  }
   goBack() {
     if (this.history.length > 1) {
       this.forward.push(this.history.pop());
       this.cursor = 0;
       const prev = this.history[this.history.length - 1];
       if (prev.onBack) prev.onBack();
-      this.render();
+      this.notify();
     }
   }
   async select() {
     const view = this.history[this.history.length - 1];
-    if (!view.options.length) return;
+    if (!view || !view.options.length) return;
     const opt = view.options[this.cursor];
-    this.cleanup();
+    this.active = false;
+    this.listening = false;
+    this.notify();
     await opt.action();
     this.forward = [];
-    if (!this.listening) {
-      this.startListening();
-      this.render();
-    }
+    this.active = true;
+    this.listening = true;
+    this.notify();
   }
   pushView(view) {
     this.history.push(view);
     this.cursor = 0;
-    this.firstRender = true;
-    if (this.active) this.render();
+    this.notify();
   }
   startListening() {
-    if (this.listening) {
-      this.active = true;
-      return;
-    }
     this.active = true;
     this.listening = true;
-    readline.emitKeypressEvents(process.stdin);
-    if (process.stdin.isTTY) process.stdin.setRawMode(true);
-    process.stdin.resume();
-    process.stdin.on("keypress", this.onKey);
+    this.notify();
   }
   cleanup() {
     this.active = false;
     this.listening = false;
-    if (process.stdin.isTTY) process.stdin.setRawMode(false);
-    process.stdin.removeListener("keypress", this.onKey);
+    this.notify();
   }
-  // ─── Render ──────────────────────────────────────────────────────
   render() {
-    let out = "";
-    const writeOrig = process.stdout.write;
-    const logOrig = console.log;
-    const captureWrite = (chunk) => {
-      out += chunk;
-      return true;
-    };
-    const captureLog = (...args) => {
-      out += args.join(" ") + "\n";
-    };
-    process.stdout.write = captureWrite;
-    console.log = captureLog;
-    try {
-      this._renderInternal();
-    } finally {
-      process.stdout.write = writeOrig;
-      console.log = logOrig;
-    }
-    const lines = out.split("\n");
-    let frameStr = "";
-    frameStr = "\x1B[2J\x1B[3J\x1B[H" + out;
-    process.stdout.write(frameStr);
+    this.notify();
   }
-  _renderInternal() {
+  drawToString() {
     const view = this.history[this.history.length - 1];
+    if (!view) return "";
+    let out = "";
     const stats = memoryManager.getBudgetStatsForMessages(chatSession.getMessages());
     const ratio = stats.max > 0 ? Math.min(stats.filled / stats.max, 1) : 0;
     const pct = Math.round(ratio * 100);
@@ -17863,7 +17461,7 @@ var PhoneOS = class {
     const BOLD = import_chalk2.default.bold;
     const BG_HL = import_chalk2.default.bgHex("#374151");
     const hLine = GOLD("\u2550".repeat(W));
-    process.stdout.write(GOLD(" \u2554") + hLine + GOLD("\u2557\n"));
+    out += GOLD(" \u2554") + hLine + GOLD("\u2557\n");
     const isOllama = prov === "ollama";
     const isLocal = isOllama && !!providerConfig?.baseUrl;
     const dot = hasKey || isLocal ? GREEN("\u25CF") : RED("\u25CF");
@@ -17906,43 +17504,51 @@ var PhoneOS = class {
     const midSpace = Math.max(0, W - leftLen - rightTotLen);
     const content = leftStr + " ".repeat(midSpace) + rightStr;
     const spaces = Math.max(0, W - vlen(content));
-    process.stdout.write(GOLD(" \u2551") + content + " ".repeat(spaces) + GOLD("\u2551\n"));
-    process.stdout.write(GOLD(" \u255A") + hLine + GOLD("\u255D\n"));
+    out += GOLD(" \u2551") + content + " ".repeat(spaces) + GOLD("\u2551\n");
+    out += GOLD(" \u255A") + hLine + GOLD("\u255D\n");
     if (this.history.length > 1) {
       const crumbs = this.history.map(
         (v, i) => i === this.history.length - 1 ? WHITE.bold(v.title) : MUTED(v.title)
       ).join(MUTED(" \u203A "));
-      console.log("  " + crumbs);
+      out += "  " + crumbs + "\n";
+    }
+    if (this.notification) {
+      out += "  " + import_chalk2.default.bgHex("#1F2937").hex("#10B981").bold(`  \u2713 ${this.notification}  `) + "\n";
     }
     let hasBody = false;
     if (chatSession.pendingApprovals && chatSession.pendingApprovals.length > 0) {
-      console.log("  " + RED.bold(`[!] Pending Approvals: ${chatSession.pendingApprovals.length} command(s) waiting for your permission!`));
+      out += "  " + RED.bold(`[!] Pending Approvals: ${chatSession.pendingApprovals.length} command(s) waiting for your permission!`) + "\n";
       for (const p of chatSession.pendingApprovals) {
-        console.log("      " + CYAN(p.cmd) + MUTED(` (Thread: ${p.threadId})`));
+        out += "      " + CYAN(p.cmd) + MUTED(` (Thread: ${p.threadId})`) + "\n";
       }
-      console.log("");
+      out += "\n";
       hasBody = true;
     }
     if (view.subtitle) {
-      console.log("  " + BOLD(WHITE(view.subtitle)));
+      out += "  " + BOLD(WHITE(view.subtitle)) + "\n";
       hasBody = true;
     }
+    let bodyLineCount = 0;
     if (view.renderBody) {
-      const lines = [];
+      const bodyLines = [];
       const orig = console.log;
-      console.log = (...a) => a.join(" ").split("\n").forEach((l) => lines.push(l));
+      console.log = (...a) => a.join(" ").split("\n").forEach((l) => bodyLines.push(l));
       try {
         view.renderBody();
       } finally {
         console.log = orig;
       }
-      for (const l of lines) process.stdout.write(l + "\n");
+      bodyLineCount = bodyLines.length;
+      for (const l of bodyLines) out += l + "\n";
       hasBody = true;
     }
     const hBoxLine = GOLD("\u2550".repeat(W));
-    process.stdout.write(GOLD(" \u2554") + hBoxLine + GOLD("\u2557\n"));
+    out += GOLD(" \u2554") + hBoxLine + GOLD("\u2557\n");
     const LABEL_COL_WIDTH = 28;
-    const MAX_OPTIONS = 10;
+    const rows = process.stdout.rows || 24;
+    const nonMenuHeight = 3 + (this.history.length > 1 ? 2 : 0) + (chatSession.pendingApprovals && chatSession.pendingApprovals.length > 0 ? 6 + chatSession.pendingApprovals.length * 2 : 0) + (view.subtitle ? 1 : 0) + bodyLineCount + 2;
+    const maxMenuOptions = Math.max(3, rows - nonMenuHeight - 3);
+    const MAX_OPTIONS = Math.min(10, maxMenuOptions);
     let startIdx = 0;
     let endIdx = view.options.length;
     if (view.options.length > MAX_OPTIONS) {
@@ -17956,7 +17562,7 @@ var PhoneOS = class {
     const printIndicator = (char) => {
       const padLeft = Math.floor((W - 1) / 2);
       const padRight = Math.max(0, W - 1 - padLeft);
-      process.stdout.write(GOLD(" \u2551") + " ".repeat(padLeft) + MUTED(char) + " ".repeat(padRight) + GOLD("\u2551\n"));
+      out += GOLD(" \u2551") + " ".repeat(padLeft) + MUTED(char) + " ".repeat(padRight) + GOLD("\u2551\n");
     };
     if (startIdx > 0) printIndicator("\u25B2");
     const visibleOptions = view.options.slice(startIdx, endIdx);
@@ -17973,40 +17579,647 @@ var PhoneOS = class {
       const space2 = Math.max(0, W - rawLen - space1 - descLen);
       const rowAnsi = prefix + " ".repeat(space1) + descStr + " ".repeat(space2);
       const coloredRow = isSel ? BG_HL(rowAnsi) : rowAnsi;
-      process.stdout.write(GOLD(" \u2551") + coloredRow + GOLD("\u2551\n"));
+      out += GOLD(" \u2551") + coloredRow + GOLD("\u2551\n");
     });
     if (endIdx < view.options.length) printIndicator("\u25BC");
-    process.stdout.write(GOLD(" \u255A") + hBoxLine + GOLD("\u255D\n"));
+    out += GOLD(" \u255A") + hBoxLine + GOLD("\u255D\n");
     if (chatSession.pendingApprovals && chatSession.pendingApprovals.length > 0) {
       const uniqueThreads = Array.from(new Set(chatSession.pendingApprovals.map((p) => p.threadId)));
       const threadList = uniqueThreads.map((id) => import_chalk2.default.hex("#22D3EE").bold(id)).join(", ");
-      process.stdout.write("\n");
-      process.stdout.write("  " + import_chalk2.default.hex("#EF4444").bold("\u26A0\uFE0F  PENDING APPROVAL: ") + import_chalk2.default.white(`Agent needs command approval in thread(s): ${threadList}`) + "\n");
-      process.stdout.write('     Please choose "Enter Chat" or select the corresponding thread to approve.\n');
+      out += "\n";
+      out += "  " + import_chalk2.default.hex("#EF4444").bold("\u26A0\uFE0F  PENDING APPROVAL: ") + import_chalk2.default.white(`Agent needs command approval in thread(s): ${threadList}`) + "\n";
+      out += '     Please choose "Enter Chat" or select the corresponding thread to approve.\n';
     }
+    return out;
   }
 };
+function PhoneOSInput({ phone, exit }) {
+  (0, import_ink.useInput)((input2, key) => {
+    if (!phone.active) return;
+    if (key.ctrl && input2 === "c") {
+      process.stdout.write("\x1B[?1049l");
+      exit();
+      process.exit(0);
+    }
+    if (key.ctrl && input2 === "k") {
+      const handler = phone.getCtrlKHandler();
+      if (handler) {
+        handler();
+      }
+      return;
+    }
+    const view = phone.history[phone.history.length - 1];
+    if (!view) return;
+    if (key.upArrow) {
+      phone.cursor = phone.cursor > 0 ? phone.cursor - 1 : view.options.length - 1;
+      phone.render();
+    } else if (key.downArrow) {
+      phone.cursor = phone.cursor < view.options.length - 1 ? phone.cursor + 1 : 0;
+      phone.render();
+    } else if (key.leftArrow || key.escape || key.backspace || key.delete || input2 === "\x7F" || input2 === "\b") {
+      phone.goBack();
+    } else if (key.rightArrow) {
+      if (phone.forward.length > 0) {
+        phone.history.push(phone.forward.pop());
+        phone.cursor = 0;
+        phone.render();
+      } else {
+        phone.select();
+      }
+    } else if (key.return) {
+      phone.select();
+    }
+  });
+  return null;
+}
+function PhoneOSApp({ phone }) {
+  const [, forceUpdate] = (0, import_react.useState)(0);
+  const { exit } = (0, import_ink.useApp)();
+  (0, import_react.useEffect)(() => {
+    return phone.subscribe(() => {
+      forceUpdate((prev) => prev + 1);
+    });
+  }, [phone]);
+  (0, import_react.useEffect)(() => {
+    const handleResize = () => {
+      const view = phone.history[phone.history.length - 1];
+      if (view && view.onResize) {
+        view.onResize();
+      }
+      phone.render();
+    };
+    process.stdout.on("resize", handleResize);
+    return () => {
+      process.stdout.off("resize", handleResize);
+    };
+  }, [phone]);
+  const isTTY = !!(process.stdin && process.stdin.isTTY);
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_ink.Box, { flexDirection: "column", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_ink.Text, { children: phone.drawToString() }),
+    isTTY && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(PhoneOSInput, { phone, exit })
+  ] });
+}
 
-// src/cli/views/taskBoard.ts
-var import_chalk4 = __toESM(require("chalk"), 1);
+// src/cli/chat.tsx
+var import_react2 = require("react");
+var import_ink2 = require("ink");
+var import_chalk3 = __toESM(require("chalk"), 1);
+var import_marked2 = require("marked");
+var import_marked_terminal2 = __toESM(require("marked-terminal"), 1);
 var import_fs5 = __toESM(require("fs"), 1);
 var import_path6 = __toESM(require("path"), 1);
+var import_jsx_runtime2 = require("react/jsx-runtime");
+function stripAnsi(str) {
+  return str.replace(/\x1B\[[0-9;]*m/g, "");
+}
+function getCharWidth(char) {
+  const codePoint = char.codePointAt(0);
+  if (!codePoint) return 0;
+  if (codePoint === 9654) {
+    return 2;
+  }
+  if (codePoint >= 127744 && codePoint <= 129535 || codePoint >= 128512 && codePoint <= 128591 || codePoint >= 128640 && codePoint <= 128767 || codePoint >= 9728 && codePoint <= 10175 || codePoint >= 19968 && codePoint <= 40959 || codePoint >= 44032 && codePoint <= 55203 || codePoint >= 65280 && codePoint <= 65519) {
+    return 2;
+  }
+  if (codePoint === 65039 || codePoint === 65038) {
+    return 0;
+  }
+  return 1;
+}
+function getStringWidth(str) {
+  const stripped = stripAnsi(str);
+  let width = 0;
+  for (const char of stripped) {
+    width += getCharWidth(char);
+  }
+  return width;
+}
+function ansiPadEnd(str, targetWidth, padChar = " ") {
+  const currentWidth = getStringWidth(str);
+  const padLen = Math.max(0, targetWidth - currentWidth);
+  return str + padChar.repeat(padLen);
+}
+function padVisible(str, width) {
+  return str + " ".repeat(Math.max(0, width - getStringWidth(str)));
+}
+function wrapText(text, maxWidth, indent) {
+  const words = text.split(" ");
+  const lines = [];
+  let currentLine = "";
+  words.forEach((word) => {
+    if (stripAnsi(currentLine + word).length > maxWidth - indent) {
+      lines.push(" ".repeat(indent) + currentLine.trim());
+      currentLine = word + " ";
+    } else {
+      currentLine += word + " ";
+    }
+  });
+  if (currentLine) lines.push(" ".repeat(indent) + currentLine.trim());
+  return lines;
+}
+function renderDiffBlock(codeStr, diffWidth, isExpanded) {
+  let output = "\n";
+  const bar = (bg) => import_chalk3.default.bgHex(bg)("  ");
+  const row = (bg, fg, text) => import_chalk3.default.bgHex(bg).hex(fg)(padVisible(` ${text}`, diffWidth - 2));
+  const allLines = codeStr.split("\n");
+  const total = allLines.length;
+  let toRender = allLines;
+  if (!isExpanded && total > 15) {
+    const top = allLines.slice(0, 7);
+    const bottom = allLines.slice(total - 3);
+    toRender = [...top, `... (${total - 10} hidden lines) [Press Ctrl+E to Expand] ...`, ...bottom];
+  }
+  toRender.forEach((line) => {
+    if (line.startsWith("+++") || line.startsWith("---")) {
+      output += import_chalk3.default.bgHex("#1E293B").hex("#CBD5E1")(padVisible(` ${line}`, diffWidth)) + "\n";
+    } else if (line.startsWith("@@")) {
+      output += import_chalk3.default.bgHex("#0C4A6E").hex("#67E8F9")(padVisible(` ${line}`, diffWidth)) + "\n";
+    } else if (line.startsWith("+")) {
+      output += bar("#22C55E") + row("#14532D", "#BBF7D0", line) + "\n";
+    } else if (line.startsWith("-")) {
+      output += bar("#EF4444") + row("#7F1D1D", "#FECACA", line) + "\n";
+    } else if (line.startsWith("... (")) {
+      output += import_chalk3.default.bgHex("#374151").hex("#FBBF24")(padVisible(` ${line}`, diffWidth)) + "\n";
+    } else {
+      output += import_chalk3.default.bgHex("#0F172A").hex("#94A3B8")(padVisible(` ${line}`, diffWidth)) + "\n";
+    }
+  });
+  return output + "\n";
+}
+function renderMarkdownWithOttoStyles(content, width, diffsExpanded) {
+  content = content.replace(/\r/g, "");
+  const diffWidth = Math.max(48, Math.min(width, 96));
+  const placeholders = [];
+  const withPlaceholders = content.replace(
+    /```([a-zA-Z0-9_.-]*)\n([\s\S]*?)(?:```|$)/g,
+    (_match, lang, codeStr) => {
+      if (lang === "diff") {
+        const rendered = renderDiffBlock(codeStr, diffWidth, diffsExpanded);
+        const key = `\0DIFF${placeholders.length}\0`;
+        placeholders.push(rendered);
+        return key;
+      } else {
+        let output = "\n";
+        const lines = codeStr.replace(/\n$/, "").split("\n");
+        lines.forEach((line) => {
+          output += import_chalk3.default.bgHex("#0F172A").hex("#CBD5E1")(padVisible(` ${line}`, diffWidth)) + "\n";
+        });
+        const key = `\0DIFF${placeholders.length}\0`;
+        placeholders.push(output + "\n");
+        return key;
+      }
+    }
+  );
+  class CustomRenderer extends import_marked_terminal2.default {
+  }
+  import_marked2.marked.setOptions({
+    renderer: new CustomRenderer({
+      width,
+      reflowText: true,
+      codespan: import_chalk3.default.hex("#F5C400"),
+      strong: import_chalk3.default.white.bold,
+      em: import_chalk3.default.italic
+    })
+  });
+  const parsed = import_marked2.marked.parse(withPlaceholders);
+  return parsed.replace(/\u0000DIFF(\d+)\u0000/g, (_m, idx) => placeholders[Number(idx)]);
+}
+var ChatUI = class {
+  W = 72;
+  lastLineCount = 0;
+  scrollOffset = 0;
+  totalContentLines = 0;
+  notification = "";
+  notificationTimeout;
+  BRAND = import_chalk3.default.hex("#F5C400");
+  DIM = import_chalk3.default.hex("#374151");
+  MUTED = import_chalk3.default.hex("#6B7280");
+  AI_TAG = this.BRAND.bold;
+  listeners = [];
+  currentData = null;
+  keyHandler;
+  showNotification(msg) {
+    this.notification = msg;
+    if (this.notificationTimeout) {
+      clearTimeout(this.notificationTimeout);
+    }
+    this.notify();
+    this.notificationTimeout = setTimeout(() => {
+      this.notification = "";
+      this.notify();
+    }, 2e3);
+  }
+  registerKeyHandler(handler) {
+    this.keyHandler = handler;
+  }
+  removeKeyHandler() {
+    this.keyHandler = void 0;
+  }
+  getKeyHandler() {
+    return this.keyHandler;
+  }
+  subscribe(listener) {
+    this.listeners.push(listener);
+    return () => {
+      this.listeners = this.listeners.filter((l) => l !== listener);
+    };
+  }
+  notify() {
+    this.listeners.forEach((l) => l());
+  }
+  scrollUp(n = 3) {
+    const viewH = Math.max(1, (process.stdout.rows || 24) - 1);
+    const max = Math.max(0, this.totalContentLines - viewH);
+    this.scrollOffset = Math.min(this.scrollOffset + n, max);
+    this.notify();
+  }
+  scrollDown(n = 3) {
+    this.scrollOffset = Math.max(0, this.scrollOffset - n);
+    this.notify();
+  }
+  scrollToBottom() {
+    this.scrollOffset = 0;
+    this.notify();
+  }
+  isAtBottom() {
+    return this.scrollOffset === 0;
+  }
+  render(messages, currentInput, telemetry, model, isThinking = false, pendingPlan = false, planMenuIndex = 0, diffsExpanded = false, delayMessage, pendingApproval, approvalMenuIndex = 0) {
+    this.currentData = {
+      messages,
+      currentInput,
+      telemetry,
+      model,
+      isThinking,
+      pendingPlan,
+      planMenuIndex,
+      diffsExpanded,
+      delayMessage,
+      pendingApproval,
+      approvalMenuIndex
+    };
+    this.notify();
+  }
+  drawToString() {
+    if (!this.currentData) return "";
+    this.W = process.stdout.columns ? Math.max(Math.min(process.stdout.columns - 4, 120), 60) : 72;
+    const {
+      messages,
+      currentInput,
+      telemetry,
+      model,
+      isThinking,
+      pendingPlan,
+      planMenuIndex,
+      diffsExpanded,
+      delayMessage,
+      pendingApproval,
+      approvalMenuIndex
+    } = this.currentData;
+    const lines = [];
+    const push = (line = "") => lines.push(line);
+    push(this.DIM("-".repeat(this.W)));
+    const leftHeader = "  " + this.BRAND("OTTO") + "  ";
+    const ctxPercent = telemetry.ctxMax > 0 ? Math.round(Math.min(telemetry.ctxUsed / telemetry.ctxMax, 1) * 100) : 0;
+    const ctxSummary = telemetry.showContextBar ? `ctx: ${telemetry.ctxUsed}/${telemetry.ctxMax} (${ctxPercent}%)` : "ctx: hidden";
+    const rightHeader = this.MUTED(`${ctxSummary}  |  ram: ${telemetry.ramMB}mb  |  ${model}`) + "  ";
+    const spaces = Math.max(0, this.W - stripAnsi(leftHeader).length - stripAnsi(rightHeader).length);
+    push(leftHeader + " ".repeat(spaces) + rightHeader);
+    push(this.DIM("-".repeat(this.W)));
+    if (this.notification) {
+      push("  " + import_chalk3.default.bgHex("#1F2937").hex("#10B981").bold(`  \u2713 ${this.notification}  `));
+      push("");
+    } else {
+      push("");
+    }
+    messages.forEach((msg) => {
+      if (msg.role === "system") {
+        push("  " + import_chalk3.default.bgHex("#374151").white(" SYSTEM ") + " " + this.MUTED(msg.content));
+        push("");
+        return;
+      }
+      if (msg.role === "tool") {
+        push("  " + import_chalk3.default.bgHex("#1F2937").white.bold(" TOOL "));
+        const rendered = renderMarkdownWithOttoStyles(msg.content, this.W - 4, diffsExpanded);
+        rendered.trim().split("\n").forEach((line) => push("  " + line));
+        push("");
+        return;
+      }
+      const header = msg.role === "user" ? "  " + import_chalk3.default.bgHex("#374151").white.bold(" YOU ") : this.AI_TAG("  O.T.T.O");
+      push(header);
+      let rawContent = msg.content;
+      const thinkMatch = rawContent.match(/<think>([\s\S]*?)(?:<\/think>|$)/);
+      if (thinkMatch) {
+        const thinkStr = thinkMatch[1].trim();
+        rawContent = rawContent.replace(/<think>[\s\S]*?(?:<\/think>|$)/, "").trim();
+        const thinkLines = thinkStr.split("\n");
+        const total = thinkLines.length;
+        if (!diffsExpanded) {
+          push("  " + import_chalk3.default.hex("#A78BFA")(`\u{1F9E0}  Reasoning Process (${total} lines) [Press Ctrl+E to Expand]`));
+          push("");
+        } else {
+          push("  " + this.MUTED("|-- ") + import_chalk3.default.hex("#A78BFA")("Reasoning Process"));
+          thinkLines.forEach((line) => {
+            const formattedLine = line.trim().replace(/^(#{1,6})\s+(.*)$/g, (_m, _p1, p2) => import_chalk3.default.white.bold(p2)).replace(/^(\d+\.)\s+(.*)$/g, (_m, p1, p2) => import_chalk3.default.white.bold(p1) + " " + p2).replace(/^([*-])\s+(.*)$/g, (_m, p1, p2) => import_chalk3.default.white.bold(p1) + " " + p2).replace(/\*\*(.*?)\*\*/g, (_m, p1) => import_chalk3.default.white.bold(p1)).replace(/\*(.*?)\*/g, (_m, p1) => import_chalk3.default.white.italic(p1)).replace(/`(.*?)`/g, (_m, p1) => import_chalk3.default.hex("#F5C400")(p1));
+            const wrapped = wrapText(formattedLine, this.W - 5, 0);
+            wrapped.forEach((wl) => push("  " + this.MUTED("| ") + this.MUTED(wl)));
+          });
+          push("  " + this.MUTED("`--"));
+          push("");
+        }
+        if (msg.content.includes("<think>") && !msg.content.includes("</think>")) {
+          push("  " + import_chalk3.default.hex("#A78BFA")("  \u{1F9E0}  Thinking..."));
+          push("");
+        }
+      }
+      if (rawContent.trim()) {
+        if (msg.role === "user") {
+          const wrappedLines = wrapText(rawContent, this.W, 2);
+          wrappedLines.forEach((line) => push(import_chalk3.default.white(line)));
+        } else {
+          const PLAN_RE = /<!--\s*PLAN_START\s*-->([\s\S]*?)<!--\s*PLAN_END\s*-->/;
+          const planMatch = rawContent.match(PLAN_RE);
+          if (planMatch) {
+            const beforePlan = rawContent.slice(0, rawContent.indexOf("<!-- PLAN_START")).trim();
+            if (beforePlan) {
+              const rendered = renderMarkdownWithOttoStyles(beforePlan, this.W - 4, diffsExpanded);
+              rendered.trim().split("\n").forEach((line) => push("  " + line));
+              push("");
+            }
+            const planContent = planMatch[1].trim();
+            const planWidth = Math.min(this.W - 6, 86);
+            const boxBorder = import_chalk3.default.hex("#F5C400");
+            const stepColor = import_chalk3.default.hex("#22D3EE");
+            const fileColor = import_chalk3.default.hex("#86EFAC");
+            const boxRow = (styledContent, bgHex) => {
+              const visLen = getStringWidth(styledContent);
+              const pad = " ".repeat(Math.max(0, planWidth - visLen));
+              const inner = bgHex ? import_chalk3.default.bgHex(bgHex)(styledContent + pad) : styledContent + pad;
+              return "  " + boxBorder("\u2551") + inner + boxBorder("\u2551");
+            };
+            push("  " + boxBorder("\u2554" + "\u2550".repeat(planWidth) + "\u2557"));
+            push(boxRow(import_chalk3.default.hex("#F5C400").bold(" \u{1F4CB} IMPLEMENTATION PLAN "), "#1a1200"));
+            push("  " + boxBorder("\u2560" + "\u2550".repeat(planWidth) + "\u2563"));
+            planContent.split("\n").forEach((line) => {
+              const stripped = line.trim();
+              if (!stripped || stripped.startsWith("##")) return;
+              let styledText;
+              if (/^\d+\./.test(stripped)) {
+                styledText = stepColor(" " + stripped);
+              } else if (stripped.startsWith("- `") || stripped.startsWith("- \\`")) {
+                styledText = " " + fileColor(stripped);
+              } else if (/^\*\*/.test(stripped)) {
+                styledText = " " + import_chalk3.default.white.bold(stripped.replace(/\*\*/g, ""));
+              } else {
+                styledText = " " + import_chalk3.default.hex("#D1D5DB")(stripped);
+              }
+              const visibleText = stripAnsi(styledText);
+              if (visibleText.length <= planWidth) {
+                push(boxRow(styledText));
+              } else {
+                wrapText(visibleText.trim(), planWidth - 2, 0).forEach((wl) => {
+                  push(boxRow(" " + import_chalk3.default.hex("#D1D5DB")(wl.trim())));
+                });
+              }
+            });
+            push("  " + boxBorder("\u255A" + "\u2550".repeat(planWidth) + "\u255D"));
+            push("");
+            const afterPlan = rawContent.slice(rawContent.indexOf("<!-- PLAN_END -->") + "<!-- PLAN_END -->".length).trim();
+            if (afterPlan) {
+              const rendered = renderMarkdownWithOttoStyles(afterPlan, this.W - 4, diffsExpanded);
+              rendered.trim().split("\n").forEach((line) => push("  " + line));
+            }
+          } else {
+            let processedContent = rawContent;
+            processedContent = processedContent.replace(/^[*\s]*\u25cf\s*([A-Za-z_]+)\(([^)]*)\)/gm, (_match, tool2, args) => {
+              return import_chalk3.default.dim("/- ") + import_chalk3.default.white.bold(tool2) + import_chalk3.default.dim("(" + args + ")");
+            });
+            processedContent = processedContent.replace(/^[*\s]*\u2514\s*(.*)/gm, (_match, details) => {
+              return import_chalk3.default.dim("\\- " + details);
+            });
+            const rendered = renderMarkdownWithOttoStyles(processedContent, this.W - 4, diffsExpanded);
+            rendered.trim().split("\n").forEach((line) => push("  " + line));
+          }
+        }
+      }
+      push("");
+    });
+    if (delayMessage) {
+      const dots = ".".repeat(Math.floor(Date.now() / 350) % 3 + 1);
+      push(this.AI_TAG("  O.T.T.O"));
+      push("  " + import_chalk3.default.hex("#FBBF24")(`${delayMessage}${dots}`));
+      push("");
+    } else if (isThinking) {
+      const dots = ".".repeat(Math.floor(Date.now() / 350) % 3 + 1);
+      push(this.AI_TAG("  O.T.T.O"));
+      push("  " + import_chalk3.default.hex("#A78BFA")(`thinking${dots}`));
+      push("");
+    }
+    if (pendingApproval) {
+      const menuWidth = Math.min(this.W - 6, 70);
+      const border = import_chalk3.default.hex("#FB7185");
+      const titleColor = import_chalk3.default.bgHex("#4C0519").hex("#FDA4AF");
+      const totalInnerWidth = menuWidth + 2;
+      const boxRow = (styledContent, bgHex) => {
+        const visLen = getStringWidth(styledContent);
+        const pad = " ".repeat(Math.max(0, totalInnerWidth - visLen));
+        const inner = bgHex ? import_chalk3.default.bgHex(bgHex)(styledContent + pad) : styledContent + pad;
+        return "  " + border("\u2502") + inner + border("\u2502");
+      };
+      push("  " + border("\u250C" + "\u2500".repeat(totalInnerWidth) + "\u2510"));
+      push(boxRow(titleColor.bold(" \u{1F6E1}\uFE0F  SECURITY APPROVAL REQUIRED "), "#4C0519"));
+      push("  " + border("\u251C" + "\u2500".repeat(totalInnerWidth) + "\u2524"));
+      const actionType = pendingApproval.type === "app" ? "launch application" : "execute command";
+      const promptText = `The agent wants to ${actionType}:`;
+      push(boxRow(" " + import_chalk3.default.white(promptText)));
+      const cmdStrWrapped = wrapText(pendingApproval.commandStr, totalInnerWidth - 4, 0);
+      cmdStrWrapped.forEach((line) => {
+        push(boxRow("   " + import_chalk3.default.hex("#FDA4AF").bold(line.trim())));
+      });
+      push("  " + border("\u251C" + "\u2500".repeat(totalInnerWidth) + "\u2524"));
+      const menuItems = [
+        { label: "Approve for now", color: import_chalk3.default.hex("#4ADE80") },
+        { label: `Approve always (whitelist '${pendingApproval.cmd}')`, color: import_chalk3.default.hex("#38BDF8") },
+        { label: "Don't approve", color: import_chalk3.default.hex("#F87171") }
+      ];
+      menuItems.forEach((item, idx) => {
+        const isSelected = idx === approvalMenuIndex;
+        const cursor2 = isSelected ? border.bold(" > ") : " ".repeat(getStringWidth(" > "));
+        const cursorWidth = getStringWidth(cursor2);
+        const paddedLabel = ansiPadEnd(item.label, totalInnerWidth - cursorWidth);
+        const label = isSelected ? import_chalk3.default.bgHex("#2E050E")(item.color.bold(paddedLabel)) : import_chalk3.default.hex("#9CA3AF")(paddedLabel);
+        push("  " + border("\u2502") + cursor2 + label + border("\u2502"));
+      });
+      push("  " + border("\u2514" + "\u2500".repeat(totalInnerWidth) + "\u2518"));
+      push("");
+    }
+    if (pendingPlan) {
+      const menuWidth = Math.min(this.W - 6, 60);
+      const border = import_chalk3.default.hex("#F5C400");
+      const menuItems = [
+        { label: "\u2705  Approve - execute the plan", color: import_chalk3.default.hex("#4ADE80") },
+        { label: "\u270F\uFE0F  Edit - request changes first", color: import_chalk3.default.hex("#FBBF24") },
+        { label: "\u274C  Cancel - do not proceed", color: import_chalk3.default.hex("#F87171") }
+      ];
+      const totalInnerWidth = menuWidth + 2;
+      push("  " + border("\u250C" + "\u2500".repeat(totalInnerWidth) + "\u2510"));
+      menuItems.forEach((item, idx) => {
+        const isSelected = idx === planMenuIndex;
+        const cursor2 = isSelected ? import_chalk3.default.hex("#F5C400").bold(" \u25B6 ") : " ".repeat(getStringWidth(" \u25B6 "));
+        const cursorWidth = getStringWidth(cursor2);
+        const paddedLabel = ansiPadEnd(item.label, totalInnerWidth - cursorWidth);
+        const label = isSelected ? import_chalk3.default.bgHex("#1a1200")(item.color.bold(paddedLabel)) : import_chalk3.default.hex("#6B7280")(paddedLabel);
+        push("  " + border("\u2502") + cursor2 + label + border("\u2502"));
+      });
+      push("  " + border("\u2514" + "\u2500".repeat(totalInnerWidth) + "\u2518"));
+      push("");
+    }
+    push(this.DIM("-".repeat(this.W)));
+    if (this.totalContentLines > 0 && this.scrollOffset > 0) {
+      const deltaLines = lines.length - this.totalContentLines;
+      if (deltaLines > 0) {
+        this.scrollOffset += deltaLines;
+      }
+    }
+    this.totalContentLines = lines.length;
+    const viewH = Math.max(1, (process.stdout.rows || 24) - 1);
+    const maxOffset = Math.max(0, lines.length - viewH);
+    this.scrollOffset = Math.min(this.scrollOffset, maxOffset);
+    const viewStart = maxOffset - this.scrollOffset;
+    const visible = lines.slice(viewStart, viewStart + viewH);
+    const linesAbove = viewStart;
+    const linesBelow = this.scrollOffset;
+    if (linesAbove > 0 && visible.length > 0) {
+      visible[0] = this.MUTED(
+        `  \u2191 ${linesAbove} line${linesAbove !== 1 ? "s" : ""} above` + import_chalk3.default.hex("#4B5563")("  (\u2191/\u2193 scroll  PgUp/PgDn page  End to snap)")
+      );
+    }
+    if (linesBelow > 0 && visible.length > 1) {
+      visible[visible.length - 1] = this.MUTED(`  \u2193 ${linesBelow} line${linesBelow !== 1 ? "s" : ""} below`);
+    }
+    let outStr = "";
+    for (const line of visible) {
+      outStr += line + "\x1B[K\n";
+    }
+    const promptPrefix = "  " + this.BRAND(">") + " ";
+    const scrollHint = linesBelow > 0 ? this.MUTED("  [scrolled \u2014 End to return]") : "";
+    let placeholder = "";
+    if (currentInput.length === 0) {
+      if (pendingApproval) {
+        placeholder = import_chalk3.default.hex("#FB7185")("\u2191\u2193 choose  \u21B5 confirm");
+      } else if (pendingPlan) {
+        placeholder = import_chalk3.default.hex("#F5C400")("\u2191\u2193 choose  \u21B5 confirm");
+      } else {
+        placeholder = this.MUTED("Type your message... (esc to menu)");
+      }
+    } else if (/[@][^\s]*$/.test(currentInput)) {
+      try {
+        const match = currentInput.match(/@([^\s]*)$/);
+        const prefix = match ? match[1] : "";
+        let dir = ".";
+        let filePrefix = prefix;
+        if (prefix.includes("/") || prefix.includes("\\")) {
+          const normalized = prefix.replace(/\\/g, "/");
+          const lastSlash = normalized.lastIndexOf("/");
+          dir = prefix.slice(0, lastSlash);
+          filePrefix = prefix.slice(lastSlash + 1);
+        }
+        const fullDir = import_path6.default.resolve(process.cwd(), dir);
+        if (import_fs5.default.existsSync(fullDir) && import_fs5.default.statSync(fullDir).isDirectory()) {
+          const entries = import_fs5.default.readdirSync(fullDir, { withFileTypes: true }).filter((e) => {
+            if (e.name.startsWith(".") && !filePrefix.startsWith(".")) return false;
+            if (e.name === "node_modules") return false;
+            return e.name.toLowerCase().startsWith(filePrefix.toLowerCase());
+          }).map((e) => e.isDirectory() ? e.name + "/" : e.name);
+          if (entries.length > 0) {
+            placeholder = this.MUTED("  [Press Tab to cycle: " + entries.slice(0, 5).join(", ") + (entries.length > 5 ? "..." : "") + "]");
+          }
+        }
+      } catch (e) {
+      }
+    }
+    let cursor = "";
+    const isEditing = !isThinking && !pendingApproval && !pendingPlan && !delayMessage;
+    if (isEditing) {
+      cursor = import_chalk3.default.hex("#F5C400")("\u2588");
+    }
+    outStr += promptPrefix + import_chalk3.default.white(currentInput) + cursor + placeholder + scrollHint;
+    return outStr;
+  }
+};
+function translateInkKey(input2, key) {
+  let name = "";
+  if (key.upArrow) name = "up";
+  else if (key.downArrow) name = "down";
+  else if (key.leftArrow) name = "left";
+  else if (key.rightArrow) name = "right";
+  else if (key.return) name = "return";
+  else if (key.escape) name = "escape";
+  else if (key.backspace || key.delete || input2 === "\x7F" || input2 === "\b") name = "backspace";
+  else if (key.tab) name = "tab";
+  else if (key.pageUp) name = "pageup";
+  else if (key.pageDown) name = "pagedown";
+  else if (input2) name = input2.toLowerCase();
+  return {
+    ctrl: !!key.ctrl,
+    meta: !!key.meta,
+    shift: !!key.shift,
+    name
+  };
+}
+function ChatUIInput({ chatUI }) {
+  (0, import_ink2.useInput)((input2, key) => {
+    const handler = chatUI.getKeyHandler();
+    if (handler) {
+      const translatedKey = translateInkKey(input2, key);
+      handler(input2, translatedKey);
+    }
+  });
+  return null;
+}
+function ChatUIApp({ chatUI }) {
+  const [, forceUpdate] = (0, import_react2.useState)(0);
+  (0, import_react2.useEffect)(() => {
+    return chatUI.subscribe(() => {
+      forceUpdate((prev) => prev + 1);
+    });
+  }, [chatUI]);
+  (0, import_react2.useEffect)(() => {
+    const handleResize = () => {
+      chatUI.notify();
+    };
+    process.stdout.on("resize", handleResize);
+    return () => {
+      process.stdout.off("resize", handleResize);
+    };
+  }, [chatUI]);
+  const isTTY = !!(process.stdin && process.stdin.isTTY);
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { flexDirection: "column", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { children: chatUI.drawToString() }),
+    isTTY && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(ChatUIInput, { chatUI })
+  ] });
+}
+
+// src/cli/views/taskBoard.tsx
+var import_chalk5 = __toESM(require("chalk"), 1);
+var import_fs6 = __toESM(require("fs"), 1);
+var import_path7 = __toESM(require("path"), 1);
 var import_prompts3 = require("@inquirer/prompts");
 
 // src/cli/prompt.ts
-var readline2 = __toESM(require("readline"), 1);
-var import_chalk3 = __toESM(require("chalk"), 1);
+var readline = __toESM(require("readline"), 1);
+var import_chalk4 = __toESM(require("chalk"), 1);
 async function promptWithEscape(message, initialValue = "") {
   return new Promise((resolve) => {
-    readline2.emitKeypressEvents(process.stdin);
+    readline.emitKeypressEvents(process.stdin);
     const wasRaw = !!process.stdin.isRaw;
     if (process.stdin.isTTY) process.stdin.setRawMode(true);
     process.stdin.resume();
     let value = initialValue;
     const render = () => {
       process.stdout.write("\x1B[0;0H\x1B[J");
-      process.stdout.write(import_chalk3.default.yellow(`${message} `) + import_chalk3.default.white(value));
-      process.stdout.write(import_chalk3.default.dim("\n\nEsc to cancel, Enter to confirm"));
+      process.stdout.write(import_chalk4.default.yellow(`${message} `) + import_chalk4.default.white(value) + import_chalk4.default.hex("#F5C400")("\u2588"));
+      process.stdout.write(import_chalk4.default.dim("\n\nEsc to cancel, Enter to confirm"));
     };
     const cleanup = (result) => {
       process.stdin.removeListener("keypress", onKeypress);
@@ -18027,12 +18240,14 @@ async function promptWithEscape(message, initialValue = "") {
         cleanup(value);
         return;
       }
-      if (key.name === "backspace") {
+      if (key.name === "backspace" || str === "\x7F" || str === "\b") {
         value = value.slice(0, -1);
         render();
         return;
       }
       if (str && !key.ctrl && !key.meta) {
+        const code = str.charCodeAt(0);
+        if (str.length === 1 && (code < 32 || code === 127) && str !== "	") return;
         value += str;
         render();
       }
@@ -18042,20 +18257,20 @@ async function promptWithEscape(message, initialValue = "") {
   });
 }
 
-// src/cli/views/taskBoard.ts
+// src/cli/views/taskBoard.tsx
 function getTasks() {
-  const p = import_path6.default.resolve(process.cwd(), "tasks.json");
-  if (import_fs5.default.existsSync(p)) {
+  const p = import_path7.default.resolve(process.cwd(), "tasks.json");
+  if (import_fs6.default.existsSync(p)) {
     try {
-      return JSON.parse(import_fs5.default.readFileSync(p, "utf8"));
+      return JSON.parse(import_fs6.default.readFileSync(p, "utf8"));
     } catch (e) {
     }
   }
   return [];
 }
 function saveTasks(tasks) {
-  const p = import_path6.default.resolve(process.cwd(), "tasks.json");
-  import_fs5.default.writeFileSync(p, JSON.stringify(tasks, null, 2));
+  const p = import_path7.default.resolve(process.cwd(), "tasks.json");
+  import_fs6.default.writeFileSync(p, JSON.stringify(tasks, null, 2));
 }
 function createTaskBoardView(phone) {
   return {
@@ -18069,25 +18284,25 @@ function createTaskBoardView(phone) {
       const done = tasks.filter((t) => t.status === "DONE");
       const W = 22;
       const formatCol = (title, color, items) => {
-        let str = color.bold(` \u256D\u2500 ${title.padEnd(W - 4, " ")} \u256E
+        let str = color.bold(` \u250C\u2500 ${title.padEnd(W - 4, " ")} \u2510
 `);
         if (items.length === 0) {
           const paddedEmpty = "Empty".padEnd(W - 4, " ");
-          str += color(` \u2502 `) + import_chalk4.default.dim(paddedEmpty) + color(` \u2502
+          str += color(` \u2502 `) + import_chalk5.default.dim(paddedEmpty) + color(` \u2502
 `);
         }
         items.forEach((t) => {
           let truncTitle = t.title.length > W - 6 ? t.title.substring(0, W - 9) + "..." : t.title;
           const paddedText = ("\u25CF " + truncTitle).padEnd(W - 4, " ");
-          str += color(` \u2502 `) + import_chalk4.default.white(paddedText) + color(` \u2502
+          str += color(` \u2502 `) + import_chalk5.default.white(paddedText) + color(` \u2502
 `);
         });
-        str += color(` \u2570${"\u2500".repeat(W - 2)}\u256F`);
+        str += color(` \u2514${"\u2500".repeat(W - 2)}\u2518`);
         return str.split("\n");
       };
-      const c1 = formatCol("TODO", import_chalk4.default.hex("#94a3b8"), todo);
-      const c2 = formatCol("IN PROGRESS", import_chalk4.default.hex("#F5C400"), inprog);
-      const c3 = formatCol("DONE", import_chalk4.default.hex("#4ade80"), done);
+      const c1 = formatCol("TODO", import_chalk5.default.hex("#94a3b8"), todo);
+      const c2 = formatCol("IN PROGRESS", import_chalk5.default.hex("#F5C400"), inprog);
+      const c3 = formatCol("DONE", import_chalk5.default.hex("#4ade80"), done);
       const lines = Math.max(c1.length, c2.length, c3.length);
       for (let i = 0; i < lines; i++) {
         const l1 = c1[i] || " ".repeat(W + 1);
@@ -18167,16 +18382,16 @@ function createTaskBoardView(phone) {
   };
 }
 
-// src/cli/views/fileTree.ts
-var import_chalk5 = __toESM(require("chalk"), 1);
-var import_fs6 = __toESM(require("fs"), 1);
-var import_path7 = __toESM(require("path"), 1);
+// src/cli/views/fileTree.tsx
+var import_chalk6 = __toESM(require("chalk"), 1);
+var import_fs7 = __toESM(require("fs"), 1);
+var import_path8 = __toESM(require("path"), 1);
 function isLikelyTextFile3(filePath) {
   try {
-    const fd = import_fs6.default.openSync(filePath, "r");
+    const fd = import_fs7.default.openSync(filePath, "r");
     const buffer = Buffer.alloc(512);
-    const bytesRead = import_fs6.default.readSync(fd, buffer, 0, buffer.length, 0);
-    import_fs6.default.closeSync(fd);
+    const bytesRead = import_fs7.default.readSync(fd, buffer, 0, buffer.length, 0);
+    import_fs7.default.closeSync(fd);
     for (let i = 0; i < bytesRead; i++) {
       if (buffer[i] === 0) return false;
     }
@@ -18186,7 +18401,7 @@ function isLikelyTextFile3(filePath) {
   }
 }
 function createFilePreviewView(phone, filePath) {
-  const fileName = import_path7.default.basename(filePath);
+  const fileName = import_path8.default.basename(filePath);
   return {
     id: "file_preview_" + filePath,
     title: "File Preview",
@@ -18194,24 +18409,24 @@ function createFilePreviewView(phone, filePath) {
     renderBody: () => {
       try {
         if (!isLikelyTextFile3(filePath)) {
-          console.log("  " + import_chalk5.default.red("Cannot preview binary file."));
+          console.log("  " + import_chalk6.default.red("Cannot preview binary file."));
           return;
         }
-        const allLines = import_fs6.default.readFileSync(filePath, "utf8").split(/\r?\n/);
+        const allLines = import_fs7.default.readFileSync(filePath, "utf8").split(/\r?\n/);
         const previewLines = allLines.slice(0, 20);
         const lineNoWidth = String(Math.min(allLines.length, 20)).length;
-        console.log(import_chalk5.default.yellow(`  --- ${fileName} first 20 lines ---`));
+        console.log(import_chalk6.default.yellow(`  --- ${fileName} first 20 lines ---`));
         console.log("");
         previewLines.forEach((line, index) => {
           const lineNo = String(index + 1).padStart(lineNoWidth, " ");
-          console.log("  " + import_chalk5.default.dim(lineNo + " | ") + import_chalk5.default.white(line));
+          console.log("  " + import_chalk6.default.dim(lineNo + " | ") + import_chalk6.default.white(line));
         });
         if (allLines.length > 20) {
           console.log("");
-          console.log("  " + import_chalk5.default.dim(`... truncated, ${allLines.length - 20} more lines`));
+          console.log("  " + import_chalk6.default.dim(`... truncated, ${allLines.length - 20} more lines`));
         }
       } catch {
-        console.log("  " + import_chalk5.default.red("Cannot read file."));
+        console.log("  " + import_chalk6.default.red("Cannot read file."));
       }
       console.log("");
     },
@@ -18224,13 +18439,13 @@ function createFileTreeView(phone, dir) {
   const currentDir = dir || process.cwd();
   let items = [];
   try {
-    items = import_fs6.default.readdirSync(currentDir).filter((n) => !n.startsWith(".git") && n !== "node_modules");
+    items = import_fs7.default.readdirSync(currentDir).filter((n) => !n.startsWith(".git") && n !== "node_modules");
   } catch (e) {
   }
   items.sort((a, b) => {
     try {
-      const aDir = import_fs6.default.statSync(import_path7.default.join(currentDir, a)).isDirectory();
-      const bDir = import_fs6.default.statSync(import_path7.default.join(currentDir, b)).isDirectory();
+      const aDir = import_fs7.default.statSync(import_path8.default.join(currentDir, a)).isDirectory();
+      const bDir = import_fs7.default.statSync(import_path8.default.join(currentDir, b)).isDirectory();
       if (aDir && !bDir) return -1;
       if (!aDir && bDir) return 1;
     } catch (e) {
@@ -18242,19 +18457,19 @@ function createFileTreeView(phone, dir) {
     title: "Project Explorer",
     subtitle: "Visual Project File Management",
     renderBody: () => {
-      console.log(import_chalk5.default.hex("#64748b")("  Directory: ") + import_chalk5.default.white.bold(currentDir));
+      console.log(import_chalk6.default.hex("#64748b")("  Directory: ") + import_chalk6.default.white.bold(currentDir));
       console.log("");
     },
     options: [
       ...items.map((item) => {
-        const p = import_path7.default.join(currentDir, item);
+        const p = import_path8.default.join(currentDir, item);
         let isDir = false;
         try {
-          isDir = import_fs6.default.statSync(p).isDirectory();
+          isDir = import_fs7.default.statSync(p).isDirectory();
         } catch (e) {
         }
         return {
-          label: isDir ? import_chalk5.default.blue.bold(`\u{1F4C1} ${item}/`) : import_chalk5.default.white(`\u{1F4C4} ${item}`),
+          label: isDir ? import_chalk6.default.blue.bold(`\u{1F4C1} ${item}/`) : import_chalk6.default.white(`\u{1F4C4} ${item}`),
           action: async () => {
             if (isDir) {
               phone.pushView(createFileTreeView(phone, p));
@@ -18269,12 +18484,12 @@ function createFileTreeView(phone, dir) {
                     action: () => phone.pushView(createFilePreviewView(phone, p))
                   },
                   {
-                    label: import_chalk5.default.red("Delete File"),
+                    label: import_chalk6.default.red("Delete File"),
                     action: async () => {
                       phone.active = false;
                       ui.clearScreen();
                       try {
-                        import_fs6.default.unlinkSync(p);
+                        import_fs7.default.unlinkSync(p);
                         ui.success("Deleted.");
                       } catch (e) {
                       }
@@ -18293,14 +18508,14 @@ function createFileTreeView(phone, dir) {
         };
       }),
       {
-        label: import_chalk5.default.green("+ Create File"),
+        label: import_chalk6.default.green("+ Create File"),
         action: async () => {
           phone.active = false;
           ui.clearScreen();
           const name = await promptWithEscape("New file name:");
           if (name && name.trim()) {
             try {
-              import_fs6.default.writeFileSync(import_path7.default.join(currentDir, name.trim()), "");
+              import_fs7.default.writeFileSync(import_path8.default.join(currentDir, name.trim()), "");
               ui.success("Created.");
             } catch (e) {
             }
@@ -18312,14 +18527,14 @@ function createFileTreeView(phone, dir) {
         }
       },
       {
-        label: import_chalk5.default.green("+ Create Folder"),
+        label: import_chalk6.default.green("+ Create Folder"),
         action: async () => {
           phone.active = false;
           ui.clearScreen();
           const name = await promptWithEscape("New folder name:");
           if (name && name.trim()) {
             try {
-              import_fs6.default.mkdirSync(import_path7.default.join(currentDir, name.trim()));
+              import_fs7.default.mkdirSync(import_path8.default.join(currentDir, name.trim()));
               ui.success("Created.");
             } catch (e) {
             }
@@ -18335,8 +18550,8 @@ function createFileTreeView(phone, dir) {
   };
 }
 
-// src/cli/views/gitPanel.ts
-var import_chalk6 = __toESM(require("chalk"), 1);
+// src/cli/views/gitPanel.tsx
+var import_chalk7 = __toESM(require("chalk"), 1);
 var import_child_process2 = require("child_process");
 function git(cmd) {
   return (0, import_child_process2.execSync)(`git ${cmd}`, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
@@ -18399,26 +18614,26 @@ function colorizeGraph(raw) {
       const ch = graphRaw[i];
       switch (ch) {
         case "*": {
-          coloredGraph += import_chalk6.default.hex(nodeColor).bold("\u25CF");
+          coloredGraph += import_chalk7.default.hex(nodeColor).bold("\u25CF");
           break;
         }
         case "|": {
           const col = posToColor.get(i);
           const c2 = col !== void 0 ? BRANCH_COLORS[col] : "#4B5563";
-          coloredGraph += import_chalk6.default.hex(c2)("\u2502");
+          coloredGraph += import_chalk7.default.hex(c2)("\u2502");
           break;
         }
         case "/":
-          coloredGraph += import_chalk6.default.hex("#6B7280")("\u2571");
+          coloredGraph += import_chalk7.default.hex("#6B7280")("\u2571");
           break;
         case "\\":
-          coloredGraph += import_chalk6.default.hex("#6B7280")("\u2572");
+          coloredGraph += import_chalk7.default.hex("#6B7280")("\u2572");
           break;
         case "-":
-          coloredGraph += import_chalk6.default.hex("#374151")("\u2500");
+          coloredGraph += import_chalk7.default.hex("#374151")("\u2500");
           break;
         case "_":
-          coloredGraph += import_chalk6.default.hex("#374151")("\u254C");
+          coloredGraph += import_chalk7.default.hex("#374151")("\u254C");
           break;
         default:
           coloredGraph += ch;
@@ -18435,23 +18650,23 @@ function colorizeGraph(raw) {
           const parts = inner.split(", ").map((ref) => {
             if (ref.startsWith("HEAD ->")) {
               const b = ref.slice("HEAD -> ".length);
-              return import_chalk6.default.bold.white("HEAD") + import_chalk6.default.dim(" \u2192 ") + import_chalk6.default.hex("#22C55E").bold(b);
+              return import_chalk7.default.bold.white("HEAD") + import_chalk7.default.dim(" \u2192 ") + import_chalk7.default.hex("#22C55E").bold(b);
             }
-            if (ref === "HEAD") return import_chalk6.default.bold.white("HEAD");
-            if (ref.startsWith("tag:")) return import_chalk6.default.hex("#EC4899")(ref);
-            if (ref.includes("/")) return import_chalk6.default.hex("#F59E0B")(ref);
-            return import_chalk6.default.hex("#56CFE1")(ref);
+            if (ref === "HEAD") return import_chalk7.default.bold.white("HEAD");
+            if (ref.startsWith("tag:")) return import_chalk7.default.hex("#EC4899")(ref);
+            if (ref.includes("/")) return import_chalk7.default.hex("#F59E0B")(ref);
+            return import_chalk7.default.hex("#56CFE1")(ref);
           });
-          return import_chalk6.default.dim("(") + parts.join(import_chalk6.default.dim(", ")) + import_chalk6.default.dim(")");
+          return import_chalk7.default.dim("(") + parts.join(import_chalk7.default.dim(", ")) + import_chalk7.default.dim(")");
         });
         const hasRefs = payload.includes("(");
-        const msgPart = hasRefs ? coloredPayload.replace(/\(.*?\)\s*/g, (m2) => m2) : import_chalk6.default.hex("#D1D5DB")(coloredPayload);
-        coloredInfo = " " + import_chalk6.default.hex("#F5C400")(hash2) + " " + (hasRefs ? coloredPayload.replace(
+        const msgPart = hasRefs ? coloredPayload.replace(/\(.*?\)\s*/g, (m2) => m2) : import_chalk7.default.hex("#D1D5DB")(coloredPayload);
+        coloredInfo = " " + import_chalk7.default.hex("#F5C400")(hash2) + " " + (hasRefs ? coloredPayload.replace(
           /^(\(.*?\))\s*/,
-          (_, refs) => refs + " " + import_chalk6.default.hex("#D1D5DB")(payload.replace(/^\(.*?\)\s*/, ""))
-        ) : import_chalk6.default.hex("#D1D5DB")(payload));
+          (_, refs) => refs + " " + import_chalk7.default.hex("#D1D5DB")(payload.replace(/^\(.*?\)\s*/, ""))
+        ) : import_chalk7.default.hex("#D1D5DB")(payload));
       } else {
-        coloredInfo = " " + import_chalk6.default.hex("#4B5563")(infoRaw.trim());
+        coloredInfo = " " + import_chalk7.default.hex("#4B5563")(infoRaw.trim());
       }
     }
     return coloredGraph + coloredInfo;
@@ -18463,7 +18678,7 @@ function createGitGraphView(phone, page = 0) {
       id: "git_graph",
       title: "Commit Graph",
       renderBody: () => {
-        console.log("  " + import_chalk6.default.red("Not a git repository."));
+        console.log("  " + import_chalk7.default.red("Not a git repository."));
       },
       options: [{ label: "Go Back", action: () => phone.goBack() }]
     };
@@ -18477,7 +18692,7 @@ function createGitGraphView(phone, page = 0) {
       id: "git_graph",
       title: "Commit Graph",
       renderBody: () => {
-        console.log("  " + import_chalk6.default.red("Error: " + e.message));
+        console.log("  " + import_chalk7.default.red("Error: " + e.message));
       },
       options: [{ label: "Go Back", action: () => phone.goBack() }]
     };
@@ -18491,7 +18706,7 @@ function createGitGraphView(phone, page = 0) {
   const navOptions = [];
   if (clampedPage > 0) {
     navOptions.push({
-      label: import_chalk6.default.hex("#56CFE1")("\u2191 Older commits"),
+      label: import_chalk7.default.hex("#56CFE1")("\u2191 Older commits"),
       action: () => {
         phone.goBack();
         phone.pushView(createGitGraphView(phone, clampedPage - 1));
@@ -18500,7 +18715,7 @@ function createGitGraphView(phone, page = 0) {
   }
   if (clampedPage < totalPages - 1) {
     navOptions.push({
-      label: import_chalk6.default.hex("#56CFE1")("\u2193 Newer commits"),
+      label: import_chalk7.default.hex("#56CFE1")("\u2193 Newer commits"),
       action: () => {
         phone.goBack();
         phone.pushView(createGitGraphView(phone, clampedPage + 1));
@@ -18514,19 +18729,26 @@ function createGitGraphView(phone, page = 0) {
     subtitle: `Page ${clampedPage + 1}/${totalPages}   \u25CF = commit   \u2500\u2500\u2500 = branch   \u2571\u2572 = merge/split`,
     renderBody: () => {
       console.log(
-        "  " + import_chalk6.default.hex("#F5C400")("\u25A0") + import_chalk6.default.hex("#6B7280")(" hash  ") + import_chalk6.default.hex("#22C55E")("\u25A0") + import_chalk6.default.hex("#6B7280")(" local-branch  ") + import_chalk6.default.hex("#F59E0B")("\u25A0") + import_chalk6.default.hex("#6B7280")(" remote  ") + import_chalk6.default.hex("#EC4899")("\u25A0") + import_chalk6.default.hex("#6B7280")(" tag")
+        "  " + import_chalk7.default.hex("#F5C400")("\u25A0") + import_chalk7.default.hex("#6B7280")(" hash  ") + import_chalk7.default.hex("#22C55E")("\u25A0") + import_chalk7.default.hex("#6B7280")(" local-branch  ") + import_chalk7.default.hex("#F59E0B")("\u25A0") + import_chalk7.default.hex("#6B7280")(" remote  ") + import_chalk7.default.hex("#EC4899")("\u25A0") + import_chalk7.default.hex("#6B7280")(" tag")
       );
-      console.log("  " + import_chalk6.default.hex("#374151")("\u2500".repeat(Math.min((process.stdout.columns || 80) - 4, 90))));
+      console.log("  " + import_chalk7.default.hex("#374151")("\u2500".repeat(Math.min((process.stdout.columns || 80) - 4, 90))));
       console.log("");
       slice.forEach((line) => {
-        process.stdout.write("  " + line + "\n");
+        console.log("  " + line);
       });
       if (rawLines.length === 0) {
-        console.log("  " + import_chalk6.default.dim("No commits found."));
+        console.log("  " + import_chalk7.default.dim("No commits found."));
       }
       console.log("");
     },
-    options: navOptions
+    options: navOptions,
+    onResize: () => {
+      const current = phone.history[phone.history.length - 1];
+      if (current && current.id === "git_graph") {
+        const nextView = createGitGraphView(phone, page);
+        phone.history[phone.history.length - 1] = nextView;
+      }
+    }
   };
 }
 function createGitPanelView(phone) {
@@ -18536,7 +18758,7 @@ function createGitPanelView(phone) {
     subtitle: "Version Control & Branches",
     renderBody: () => {
       if (!isRepo()) {
-        console.log("  " + import_chalk6.default.red("Not a git repository or git is not installed."));
+        console.log("  " + import_chalk7.default.red("Not a git repository or git is not installed."));
         return;
       }
       try {
@@ -18557,38 +18779,38 @@ function createGitPanelView(phone) {
           }
         })();
         console.log(
-          import_chalk6.default.hex("#64748b")("  Branch: ") + import_chalk6.default.green.bold(branch) + (hash2 ? import_chalk6.default.hex("#64748b")(`  (${hash2})`) : "")
+          import_chalk7.default.hex("#64748b")("  Branch: ") + import_chalk7.default.green.bold(branch) + (hash2 ? import_chalk7.default.hex("#64748b")(`  (${hash2})`) : "")
         );
         console.log(
-          import_chalk6.default.hex("#64748b")("  Ahead: ") + import_chalk6.default.yellow(ahead) + import_chalk6.default.hex("#64748b")("   Behind: ") + import_chalk6.default.cyan(behind)
+          import_chalk7.default.hex("#64748b")("  Ahead: ") + import_chalk7.default.yellow(ahead) + import_chalk7.default.hex("#64748b")("   Behind: ") + import_chalk7.default.cyan(behind)
         );
         console.log("");
         const status = git("status -s");
         if (!status) {
-          console.log("  " + import_chalk6.default.dim("\u2714 Working tree clean."));
+          console.log("  " + import_chalk7.default.dim("\u2714 Working tree clean."));
         } else {
-          console.log("  " + import_chalk6.default.white.bold("Changed Files"));
+          console.log("  " + import_chalk7.default.white.bold("Changed Files"));
           status.split("\n").forEach((line) => {
             const xy = line.substring(0, 2);
             const file2 = line.substring(3);
             const index = xy[0];
             const work = xy[1];
-            const stageColor = index === "A" || index === "M" || index === "R" || index === "C" ? import_chalk6.default.green : index === "D" ? import_chalk6.default.red : import_chalk6.default.hex("#6B7280");
-            const workColor = work === "M" ? import_chalk6.default.yellow : work === "D" ? import_chalk6.default.red : work === "?" ? import_chalk6.default.hex("#F59E0B") : import_chalk6.default.hex("#6B7280");
+            const stageColor = index === "A" || index === "M" || index === "R" || index === "C" ? import_chalk7.default.green : index === "D" ? import_chalk7.default.red : import_chalk7.default.hex("#6B7280");
+            const workColor = work === "M" ? import_chalk7.default.yellow : work === "D" ? import_chalk7.default.red : work === "?" ? import_chalk7.default.hex("#F59E0B") : import_chalk7.default.hex("#6B7280");
             console.log(
-              "    " + stageColor(index) + workColor(work) + " " + import_chalk6.default.white(file2)
+              "    " + stageColor(index) + workColor(work) + " " + import_chalk7.default.white(file2)
             );
           });
         }
         console.log("");
       } catch (e) {
-        console.log("  " + import_chalk6.default.red("git error: " + e.message));
+        console.log("  " + import_chalk7.default.red("git error: " + e.message));
       }
     },
     options: [
       // ── Commit Graph ───────────────────────────────────────────────────────
       {
-        label: import_chalk6.default.hex("#9D4EDD")("\u25C8") + "  Commit Graph",
+        label: import_chalk7.default.hex("#9D4EDD")("\u25C8") + "  Commit Graph",
         description: "Visual branch/commit history with colour-coded nodes",
         action: () => phone.pushView(createGitGraphView(phone, 0))
       },
@@ -18620,7 +18842,7 @@ function createGitPanelView(phone) {
               ...files.map((f) => {
                 const index = f.xy[0];
                 const isStaged = index !== " " && index !== "?";
-                const tag = isStaged ? import_chalk6.default.green("[staged]  ") : import_chalk6.default.yellow("[unstaged]");
+                const tag = isStaged ? import_chalk7.default.green("[staged]  ") : import_chalk7.default.yellow("[unstaged]");
                 return {
                   label: `${tag} ${f.file}`,
                   action: async () => {
@@ -18686,8 +18908,8 @@ function createGitPanelView(phone) {
             phone.render();
             return;
           }
-          console.log(import_chalk6.default.hex("#56CFE1")("Staged files:"));
-          staged.split("\n").forEach((f) => console.log("  " + import_chalk6.default.green("+") + " " + f));
+          console.log(import_chalk7.default.hex("#56CFE1")("Staged files:"));
+          staged.split("\n").forEach((f) => console.log("  " + import_chalk7.default.green("+") + " " + f));
           console.log("");
           const msg = await promptWithEscape("Commit message:");
           if (msg && msg.trim()) {
@@ -18713,7 +18935,7 @@ function createGitPanelView(phone) {
           ui.clearScreen();
           try {
             const branch = git("branch --show-current");
-            console.log(import_chalk6.default.hex("#6B7280")(`Pushing ${branch} to origin\u2026`));
+            console.log(import_chalk7.default.hex("#6B7280")(`Pushing ${branch} to origin\u2026`));
             const out = (0, import_child_process2.execSync)(`git push origin "${branch}"`, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
             ui.success("Pushed successfully.\n" + out.trim());
           } catch (e) {
@@ -18733,7 +18955,7 @@ function createGitPanelView(phone) {
           phone.active = false;
           ui.clearScreen();
           try {
-            console.log(import_chalk6.default.hex("#6B7280")("Pulling\u2026"));
+            console.log(import_chalk7.default.hex("#6B7280")("Pulling\u2026"));
             const out = (0, import_child_process2.execSync)("git pull", { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
             ui.success("Pulled.\n" + out.trim());
           } catch (e) {
@@ -18768,7 +18990,7 @@ function createGitPanelView(phone) {
                 } catch {
                 }
                 return {
-                  label: (current ? import_chalk6.default.green("* ") : "  ") + b,
+                  label: (current ? import_chalk7.default.green("* ") : "  ") + b,
                   action: async () => {
                     if (current) return;
                     phone.active = false;
@@ -18874,7 +19096,7 @@ function createGitPanelView(phone) {
 }
 
 // src/cli/views/commandPalette.ts
-var import_chalk7 = __toESM(require("chalk"), 1);
+var import_chalk8 = __toESM(require("chalk"), 1);
 function createCommandPaletteView(phone, actions) {
   return {
     id: "command_palette",
@@ -18882,7 +19104,7 @@ function createCommandPaletteView(phone, actions) {
     subtitle: "Search and execute actions globally",
     options: [
       {
-        label: import_chalk7.default.green("\u{1F50D} Search Commands..."),
+        label: import_chalk8.default.green("\u{1F50D} Search Commands..."),
         action: async () => {
           phone.active = false;
           ui.clearScreen();
@@ -18911,19 +19133,19 @@ function createCommandPaletteView(phone, actions) {
 }
 
 // src/cli/parser.ts
-var import_chalk8 = __toESM(require("chalk"), 1);
-var import_fs7 = __toESM(require("fs"), 1);
-var import_path8 = __toESM(require("path"), 1);
+var import_chalk9 = __toESM(require("chalk"), 1);
+var import_fs8 = __toESM(require("fs"), 1);
+var import_path9 = __toESM(require("path"), 1);
 var import_os7 = __toESM(require("os"), 1);
 var import_child_process3 = require("child_process");
 var c = {
-  info: (text) => import_chalk8.default.cyan(text),
-  ok: (text) => import_chalk8.default.green(text),
-  warn: (text) => import_chalk8.default.yellow(text),
-  error: (text) => import_chalk8.default.red(text),
-  tip: (text) => import_chalk8.default.blue(text),
-  bright: (text) => import_chalk8.default.bold.white(text),
-  dim: (text) => import_chalk8.default.dim(text)
+  info: (text) => import_chalk9.default.cyan(text),
+  ok: (text) => import_chalk9.default.green(text),
+  warn: (text) => import_chalk9.default.yellow(text),
+  error: (text) => import_chalk9.default.red(text),
+  tip: (text) => import_chalk9.default.blue(text),
+  bright: (text) => import_chalk9.default.bold.white(text),
+  dim: (text) => import_chalk9.default.dim(text)
 };
 function showHelp() {
   console.log(`
@@ -18955,21 +19177,21 @@ function showStatus() {
 ${c.bright("O.T.T.O - System Status")}
 `);
   console.log(c.dim("\u2550".repeat(60)));
-  const configPath = import_path8.default.join(import_os7.default.homedir(), ".otto", "config.json");
+  const configPath = import_path9.default.join(import_os7.default.homedir(), ".otto", "config.json");
   console.log(`
 ${c.info("[INFO]")} Configuration File:`);
   console.log(`       ${c.dim(configPath)}`);
-  console.log(`       Status: ${import_fs7.default.existsSync(configPath) ? c.ok("[OK] Exists") : c.warn("[WARN] Using Defaults")}`);
-  const rulesPath = import_path8.default.join(import_os7.default.homedir(), ".otto", "rules.md");
+  console.log(`       Status: ${import_fs8.default.existsSync(configPath) ? c.ok("[OK] Exists") : c.warn("[WARN] Using Defaults")}`);
+  const rulesPath = import_path9.default.join(import_os7.default.homedir(), ".otto", "rules.md");
   console.log(`
 ${c.info("[INFO]")} System Directives File:`);
   console.log(`       ${c.dim(rulesPath)}`);
-  console.log(`       Status: ${import_fs7.default.existsSync(rulesPath) ? c.ok("[OK] Custom Rules Active") : c.warn("[WARN] No custom rules")}`);
-  const tasksPath = import_path8.default.resolve(process.cwd(), "tasks.json");
+  console.log(`       Status: ${import_fs8.default.existsSync(rulesPath) ? c.ok("[OK] Custom Rules Active") : c.warn("[WARN] No custom rules")}`);
+  const tasksPath = import_path9.default.resolve(process.cwd(), "tasks.json");
   console.log(`
 ${c.info("[INFO]")} Project Task Board:`);
   console.log(`       ${c.dim(tasksPath)}`);
-  console.log(`       Status: ${import_fs7.default.existsSync(tasksPath) ? c.ok("[OK] Active project tracking") : c.dim("Not tracking")}`);
+  console.log(`       Status: ${import_fs8.default.existsSync(tasksPath) ? c.ok("[OK] Active project tracking") : c.dim("Not tracking")}`);
   console.log("\n" + c.dim("\u2550".repeat(60)));
   console.log(`
 ${c.tip("[TIP]")} Run ${c.bright("otto sandbox")} to explore safely isolated operations.
@@ -18992,8 +19214,8 @@ ${c.error("\u274C")} Workspace path required: otto sandbox <path>
 `);
     process.exit(1);
   }
-  const resolvedPath = workspace.startsWith("~") ? workspace.replace(/^~/, import_os7.default.homedir()) : import_path8.default.resolve(workspace);
-  if (!import_fs7.default.existsSync(resolvedPath)) {
+  const resolvedPath = workspace.startsWith("~") ? workspace.replace(/^~/, import_os7.default.homedir()) : import_path9.default.resolve(workspace);
+  if (!import_fs8.default.existsSync(resolvedPath)) {
     console.error(`
 ${c.error("\u274C")} Workspace path not found: ${c.dim(resolvedPath)}
 `);
@@ -19056,15 +19278,17 @@ ${c.error("\u274C")} Unknown command: ${command}`);
   return true;
 }
 
-// src/index.ts
-var readline3 = __toESM(require("readline"), 1);
+// src/index.tsx
 var import_module2 = require("module");
 var import_fs9 = __toESM(require("fs"), 1);
 var import_path10 = __toESM(require("path"), 1);
+var import_react3 = require("react");
+var import_ink3 = require("ink");
 var import_messages4 = require("@langchain/core/messages");
 var import_stream2 = require("@langchain/core/utils/stream");
 var import_prompts4 = require("@inquirer/prompts");
 var import_chalk10 = __toESM(require("chalk"), 1);
+var import_jsx_runtime3 = require("react/jsx-runtime");
 var import_meta2 = {};
 var require3 = (0, import_module2.createRequire)(import_meta2.url);
 var pkg2 = require3("../package.json");
@@ -19106,6 +19330,7 @@ function parseFallbackToolCalls2(content, messages) {
   const trimmed = content.trim();
   if (!trimmed) return null;
   const foundCalls = [];
+  const parsedBlockIndexes = /* @__PURE__ */ new Set();
   const addIfValid = (obj) => {
     if (obj && typeof obj === "object") {
       if (obj.name && (obj.arguments || obj.args)) {
@@ -19131,11 +19356,9 @@ function parseFallbackToolCalls2(content, messages) {
       } else {
         addIfValid(parsed);
       }
-      return foundCalls.length > 0 ? foundCalls : null;
     }
   } catch {
   }
-  let hasJsonToolCallBlock = false;
   const jsonBlockRegex = /```json\s*([\s\S]*?)\s*```/g;
   let match;
   while ((match = jsonBlockRegex.exec(trimmed)) !== null) {
@@ -19143,18 +19366,20 @@ function parseFallbackToolCalls2(content, messages) {
       const sanitized = sanitizeJsonString2(match[1].trim());
       const parsed = JSON.parse(sanitized);
       if (isToolCallFormat2(parsed)) {
-        hasJsonToolCallBlock = true;
+        let matched = false;
         if (Array.isArray(parsed)) {
-          parsed.forEach(addIfValid);
+          parsed.forEach((item) => {
+            if (addIfValid(item)) matched = true;
+          });
         } else {
-          addIfValid(parsed);
+          if (addIfValid(parsed)) matched = true;
+        }
+        if (matched) {
+          parsedBlockIndexes.add(match.index);
         }
       }
     } catch {
     }
-  }
-  if (hasJsonToolCallBlock) {
-    return foundCalls.length > 0 ? foundCalls : null;
   }
   let inString = false;
   let escapeNext = false;
@@ -19192,11 +19417,14 @@ function parseFallbackToolCalls2(content, messages) {
       }
     }
   }
-  if (foundCalls.length > 0) return foundCalls;
   const blockRegex = /```([a-zA-Z0-9_-]*)\s*([\s\S]*?)\s*```/g;
   let blockMatch;
   let lastIdx = 0;
   while ((blockMatch = blockRegex.exec(trimmed)) !== null) {
+    if (parsedBlockIndexes.has(blockMatch.index)) {
+      lastIdx = blockRegex.lastIndex;
+      continue;
+    }
     const lang = (blockMatch[1] || "").toLowerCase();
     const code = blockMatch[2].trim();
     const preText = trimmed.substring(lastIdx, blockMatch.index).trim();
@@ -19338,7 +19566,73 @@ function parseFallbackToolCalls2(content, messages) {
       }
     }
   }
-  return foundCalls.length > 0 ? foundCalls : null;
+  if (foundCalls.length > 0) {
+    const seen = /* @__PURE__ */ new Set();
+    const deduplicated = [];
+    for (const call of foundCalls) {
+      let key = "";
+      if (call.name === "write_file") {
+        const filePath = (call.args?.filePath || "").replace(/\\/g, "/").toLowerCase();
+        const content2 = (call.args?.content || "").trim();
+        key = `write_file:${filePath}:${content2}`;
+      } else if (call.name === "execute_terminal_command") {
+        const command = (call.args?.command || "").trim();
+        key = `execute_terminal_command:${command}`;
+      } else {
+        key = `${call.name}:${JSON.stringify(call.args)}`;
+      }
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduplicated.push(call);
+      }
+    }
+    return deduplicated.length > 0 ? deduplicated : null;
+  }
+  return null;
+}
+var RootController = class {
+  mode = "menu";
+  listeners = [];
+  getMode() {
+    return this.mode;
+  }
+  setMode(m) {
+    this.mode = m;
+    this.listeners.forEach((l) => l());
+  }
+  subscribe(listener) {
+    this.listeners.push(listener);
+    return () => {
+      this.listeners = this.listeners.filter((l) => l !== listener);
+    };
+  }
+};
+var rootController = new RootController();
+function AppShell({ phone, chatUI }) {
+  const [mode, setMode] = (0, import_react3.useState)(rootController.getMode());
+  (0, import_react3.useEffect)(() => {
+    ui.onTuiMessage = (type, text) => {
+      let cleanText = text.replace(/^\[[i✓!X]\]\s*/, "").replace(/^ERROR:\s*/, "");
+      if (rootController.getMode() === "chat") {
+        chatUI.showNotification(cleanText);
+      } else {
+        phone.showNotification(cleanText);
+      }
+    };
+    return () => {
+      ui.onTuiMessage = null;
+    };
+  }, [phone, chatUI]);
+  (0, import_react3.useEffect)(() => {
+    return rootController.subscribe(() => {
+      ui.clearScreen();
+      setMode(rootController.getMode());
+    });
+  }, []);
+  if (mode === "chat") {
+    return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(ChatUIApp, { chatUI });
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(PhoneOSApp, { phone });
 }
 async function main() {
   const args = process.argv.slice(2);
@@ -19346,15 +19640,15 @@ async function main() {
   if (cliHandled) {
     process.exit(0);
   }
+  process.stdout.write("\x1B[?1049h");
+  ui.tuiActive = true;
   ui.clearScreen();
   let config2 = await Configurator.init();
   const provider = new ProviderEngine(config2);
   const rules = ruleGuardrail.getRules();
   const phone = new PhoneOS(config2);
+  const chatUI = new ChatUI();
   const startChat = async () => {
-    process.stdout.write("\x1B[?1049h\x1B[H\x1B[J");
-    const { ChatUI: ChatUI2 } = await Promise.resolve().then(() => (init_chat(), chat_exports));
-    const chatUI = new ChatUI2();
     const messages = chatSession.getMessages();
     let currentInput = "";
     const getIsStreaming = () => chatSession.activeStreams.has(chatSession.threadId);
@@ -19519,9 +19813,9 @@ ${outputContent}
     };
     return new Promise((resolve) => {
       chatSession.isChatActive = true;
-      readline3.emitKeypressEvents(process.stdin);
-      if (process.stdin.isTTY) process.stdin.setRawMode(true);
-      process.stdin.resume();
+      chatUI.scrollOffset = 0;
+      chatUI.totalContentLines = 0;
+      chatUI.registerKeyHandler(onKeypress);
       const onPendingApproval = () => {
         if (chatSession.isChatActive) {
           render(true);
@@ -19535,7 +19829,7 @@ ${outputContent}
       };
       function onPromptStart() {
         isPrompting = true;
-        process.stdin.removeListener("keypress", onKeypress);
+        chatUI.removeKeyHandler();
         if (animationTimer) {
           clearInterval(animationTimer);
           animationTimer = null;
@@ -19543,7 +19837,7 @@ ${outputContent}
       }
       function onPromptEnd() {
         isPrompting = false;
-        process.stdin.on("keypress", onKeypress);
+        chatUI.registerKeyHandler(onKeypress);
         updateAnimationTimer();
         render(true);
       }
@@ -19560,8 +19854,7 @@ ${outputContent}
         sessionEvents.removeListener("pending_approval", onPendingApproval);
         sessionEvents.removeListener("prompt_start", onPromptStart);
         sessionEvents.removeListener("prompt_end", onPromptEnd);
-        process.stdout.write("\x1B[?1049l");
-        process.stdin.removeListener("keypress", onKeypress);
+        chatUI.removeKeyHandler();
       };
       const runAgentLoop = async (inputText) => {
         try {
@@ -19792,9 +20085,10 @@ ${reasoning}
           render(true);
         }
       };
-      const onKeypress = async (str, key) => {
+      async function onKeypress(str, key) {
         if (key.ctrl && key.name === "c") {
           process.stdout.write("\x1B[?1049l");
+          ui.tuiActive = false;
           process.exit(0);
         } else if (key.ctrl && key.name === "e") {
           diffsExpanded = !diffsExpanded;
@@ -19976,24 +20270,67 @@ ${reasoning}
           autocompleteState = null;
           if (!getPendingPlan() && !getPendingApproval()) chatUI.scrollToBottom();
           render(getIsStreaming());
-        } else if (key.name === "backspace") {
+        } else if (key.name === "backspace" || str === "\x7F" || str === "\b") {
           autocompleteState = null;
-          if (getIsStreaming() || getPendingApproval()) return;
-          if (!getPendingPlan()) {
-            currentInput = currentInput.slice(0, -1);
-            render();
-          }
+          if (getIsStreaming() || getPendingApproval() || getPendingPlan()) return;
+          currentInput = currentInput.slice(0, -1);
+          render();
         } else if (str && !key.ctrl && !key.meta) {
           if (key.name === "tab") return;
-          autocompleteState = null;
-          if (getIsStreaming() || getPendingApproval()) return;
-          if (!getPendingPlan()) {
-            currentInput += str;
-            render();
+          if (getPendingApproval()) {
+            const char = str.toLowerCase();
+            if (char === "y") {
+              const pendingApp = getPendingApproval();
+              const idx = chatSession.pendingApprovals.indexOf(pendingApp);
+              if (idx !== -1) {
+                chatSession.pendingApprovals.splice(idx, 1);
+              }
+              setApprovalMenuIndex(0);
+              pendingApp.resolve("now");
+              render(true);
+              return;
+            } else if (char === "n") {
+              const pendingApp = getPendingApproval();
+              const idx = chatSession.pendingApprovals.indexOf(pendingApp);
+              if (idx !== -1) {
+                chatSession.pendingApprovals.splice(idx, 1);
+              }
+              setApprovalMenuIndex(0);
+              pendingApp.resolve("deny");
+              render(true);
+              return;
+            }
+            return;
           }
+          if (getPendingPlan()) {
+            const char = str.toLowerCase();
+            if (char === "y") {
+              setPendingPlan(false);
+              setPlanMenuIndex(0);
+              runAgentLoop("approved - please proceed with the plan exactly as described.");
+              return;
+            } else if (char === "n") {
+              setPendingPlan(false);
+              setPlanMenuIndex(0);
+              runAgentLoop("cancel - do not proceed with this plan.");
+              return;
+            } else if (char === "e") {
+              setPendingPlan(false);
+              setPlanMenuIndex(0);
+              render(true);
+              return;
+            }
+            return;
+          }
+          const code = str.charCodeAt(0);
+          if (str.length === 1 && (code < 32 || code === 127) && str !== "	") return;
+          autocompleteState = null;
+          if (getIsStreaming()) return;
+          currentInput += str;
+          render();
         }
-      };
-      process.stdin.on("keypress", onKeypress);
+      }
+      ;
       render(getIsStreaming());
       render(getIsStreaming());
     });
@@ -20677,6 +21014,20 @@ ${reasoning}
             phone.pushView(createBedrockSettingsView());
           }
         },
+        {
+          label: `Toggle API Client: ${entry.useChatBedrock ? "Legacy BedrockChat" : "Converse API"}`,
+          description: "Switch between ChatBedrockConverse and legacy BedrockChat clients",
+          action: async () => {
+            if (!config2.providers.bedrock) config2.providers.bedrock = {};
+            config2.providers.bedrock.useChatBedrock = !config2.providers.bedrock.useChatBedrock;
+            Configurator.saveConfig(config2);
+            phone.updateConfig(config2);
+            ui.success(`Bedrock API Client set to ${config2.providers.bedrock.useChatBedrock ? "BedrockChat" : "ChatBedrockConverse"}`);
+            await new Promise((r) => setTimeout(r, 900));
+            phone.goBack();
+            phone.pushView(createBedrockSettingsView());
+          }
+        },
         { label: "Go Back", action: () => phone.goBack() }
       ]
     };
@@ -21200,12 +21551,12 @@ ${reasoning}
       const displayName = Configurator.getUsername(config2) || "user";
       const isDefaultName = !config2.profile?.username;
       if (isCompact) {
-        console.log(borderDim(` \u256D\u2500 O.T.T.O v${CLI_VERSION2} ` + "\u2500".repeat(Math.max(0, W - 12 - CLI_VERSION2.length)) + "\u256E"));
+        console.log(borderDim(` \u250C\u2500 O.T.T.O v${CLI_VERSION2} ` + "\u2500".repeat(Math.max(0, W - 12 - CLI_VERSION2.length)) + "\u2510"));
         console.log(borderDim(" \u2502 ") + import_chalk10.default.whiteBright(`Welcome back, ${displayName}!`).padEnd(Math.max(0, W - 1)) + borderDim("\u2502"));
         if (isDefaultName) {
           console.log(borderDim(" \u2502 ") + import_chalk10.default.hex("#F59E0B")("\u26A0  Go to Settings \u203A Profile to set your username").padEnd(Math.max(0, W - 1)) + borderDim("\u2502"));
         }
-        console.log(borderDim(" \u2570" + "\u2500".repeat(W) + "\u256F"));
+        console.log(borderDim(" \u2514" + "\u2500".repeat(W) + "\u2518"));
         return;
       }
       const vlen2 = (s) => s.replace(/\x1B\[[0-9;]*m/g, "").length;
@@ -21214,7 +21565,7 @@ ${reasoning}
       const drawRow = (left, right, leftColor, rightColor) => {
         const lPad = Math.max(0, leftWidth - vlen2(left));
         const rPad = Math.max(0, rightWidth - vlen2(right));
-        process.stdout.write(borderDim(" \u2502") + leftColor(left) + " ".repeat(lPad) + rightColor(right) + " ".repeat(rPad) + borderDim("\u2502\n"));
+        console.log(borderDim(" \u2502") + leftColor(left) + " ".repeat(lPad) + rightColor(right) + " ".repeat(rPad) + borderDim("\u2502"));
       };
       const rightRows = [
         "",
@@ -21228,7 +21579,7 @@ ${reasoning}
         `    ${textDim("\u2190\u2192")} Switch     ${textDim("^C")} Quit`,
         ""
       ];
-      console.log(borderDim(` \u256D\u2500 O.T.T.O v${CLI_VERSION2} ` + "\u2500".repeat(Math.max(0, W - 12 - CLI_VERSION2.length)) + "\u256E"));
+      console.log(borderDim(` \u250C\u2500 O.T.T.O v${CLI_VERSION2} ` + "\u2500".repeat(Math.max(0, W - 12 - CLI_VERSION2.length)) + "\u2510"));
       drawRow(`      Welcome back, ${displayName}!`, rightRows[0], import_chalk10.default.white, import_chalk10.default.white);
       if (isDefaultName) {
         drawRow(`      ${import_chalk10.default.hex("#F59E0B")("\u26A0")} ${import_chalk10.default.hex("#6B7280")("Go to Settings \u203A Profile to set your username")}`, rightRows[1], import_chalk10.default.white, import_chalk10.default.white);
@@ -21245,17 +21596,16 @@ ${reasoning}
       let pth = process.cwd();
       if (pth.length > leftWidth - 4) pth = "..." + pth.slice(-(leftWidth - 7));
       drawRow(`    ${pth}`, rightRows[9], textDim, import_chalk10.default.white);
-      console.log(borderDim(" \u2570" + "\u2500".repeat(W) + "\u256F"));
+      console.log(borderDim(" \u2514" + "\u2500".repeat(W) + "\u2518"));
     },
     options: [
       {
         label: "Enter Chat",
         description: "Start a conversation with the AI agent",
         action: async () => {
-          phone.cleanup();
+          rootController.setMode("chat");
           await startChat();
-          phone.startListening();
-          phone.render();
+          rootController.setMode("menu");
         }
       },
       {
@@ -21306,7 +21656,7 @@ ${reasoning}
       {
         label: "Exit",
         action: () => {
-          ui.clearScreen();
+          process.stdout.write("\x1B[?1049l");
           process.exit(0);
         }
       }
@@ -21372,8 +21722,8 @@ ${reasoning}
     phone.pushView(createCommandPaletteView(phone, actions));
   });
   phone.pushView(createHomeView());
+  (0, import_ink3.render)(/* @__PURE__ */ (0, import_jsx_runtime3.jsx)(AppShell, { phone, chatUI }));
   phone.startListening();
-  phone.render();
 }
 process.on("uncaughtException", (error51) => {
   try {
@@ -21389,7 +21739,19 @@ process.on("unhandledRejection", (reason) => {
   } catch {
   }
 });
+var cleanupAndExit = () => {
+  process.stdout.write("\x1B[?1049l");
+  ui.tuiActive = false;
+  process.exit(0);
+};
+process.on("SIGINT", cleanupAndExit);
+process.on("SIGTERM", cleanupAndExit);
 main().catch((err) => {
   ui.error(err.message);
   process.exit(1);
+});
+// Annotate the CommonJS export names for ESM import in node:
+0 && (module.exports = {
+  RootController,
+  rootController
 });

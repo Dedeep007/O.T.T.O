@@ -20,6 +20,8 @@ marked.setOptions({
 
 export const ui = {
   accent: chalk.yellow,
+  tuiActive: false,
+  onTuiMessage: null as ((type: 'success' | 'info' | 'error' | 'warning' | 'alert', text: string) => void) | null,
   
   clearScreen: () => {
     // Soft clear (move to 0,0 and clear down) to prevent glitch scrolling during live streams
@@ -69,23 +71,43 @@ export const ui = {
   },
 
   alert: (text: string) => {
-    console.log(chalk.yellow(`[!] ${text}`));
+    if (ui.tuiActive) {
+      if (ui.onTuiMessage) ui.onTuiMessage('alert', text);
+    } else {
+      console.log(chalk.yellow(`[!] ${text}`));
+    }
   },
 
   warning: (text: string) => {
-    console.log(chalk.yellow.inverse(` WARNING `) + chalk.yellow(` ${text}`));
+    if (ui.tuiActive) {
+      if (ui.onTuiMessage) ui.onTuiMessage('warning', text);
+    } else {
+      console.log(chalk.yellow.inverse(` WARNING `) + chalk.yellow(` ${text}`));
+    }
   },
 
   info: (text: string) => {
-    console.log(chalk.blue(`[i] ${text}`));
+    if (ui.tuiActive) {
+      if (ui.onTuiMessage) ui.onTuiMessage('info', text);
+    } else {
+      console.log(chalk.blue(`[i] ${text}`));
+    }
   },
 
   success: (text: string) => {
-    console.log(chalk.green(`[✓] ${text}`));
+    if (ui.tuiActive) {
+      if (ui.onTuiMessage) ui.onTuiMessage('success', text);
+    } else {
+      console.log(chalk.green(`[✓] ${text}`));
+    }
   },
 
   error: (text: string) => {
-    console.log(chalk.red.bold(`[X] ERROR: `) + chalk.red(text));
+    if (ui.tuiActive) {
+      if (ui.onTuiMessage) ui.onTuiMessage('error', text);
+    } else {
+      console.log(chalk.red.bold(`[X] ERROR: `) + chalk.red(text));
+    }
   },
 
   renderMarkdown: (markdownString: string) => {

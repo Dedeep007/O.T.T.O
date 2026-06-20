@@ -201,7 +201,7 @@ function createGitGraphView(phone: PhoneOS, page = 0): PhoneView {
       console.log('');
 
       slice.forEach(line => {
-        process.stdout.write('  ' + line + '\n');
+        console.log('  ' + line);
       });
 
       if (rawLines.length === 0) {
@@ -209,7 +209,14 @@ function createGitGraphView(phone: PhoneOS, page = 0): PhoneView {
       }
       console.log('');
     },
-    options: navOptions
+    options: navOptions,
+    onResize: () => {
+      const current = phone.history[phone.history.length - 1];
+      if (current && current.id === 'git_graph') {
+        const nextView = createGitGraphView(phone, page);
+        phone.history[phone.history.length - 1] = nextView;
+      }
+    }
   };
 }
 

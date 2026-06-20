@@ -5,6 +5,7 @@ import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { ChatOllama } from '@langchain/ollama';
 import { ChatMistralAI } from '@langchain/mistralai';
 import { ChatBedrockConverse } from '@langchain/aws';
+import { BedrockChat } from '@langchain/community/chat_models/bedrock';
 import { OttoConfig } from '../cli/configurator.js';
 import { Configurator } from '../cli/configurator.js';
 import { quotaManager } from './quota.js';
@@ -56,6 +57,7 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
   if (!trimmed) return null;
 
   const foundCalls: any[] = [];
+  const parsedBlockIndexes = new Set<number>();
 
   const addIfValid = (obj: any) => {
     if (obj && typeof obj === 'object') {
@@ -74,6 +76,7 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
     return false;
   };
 
+  // 1. Try parsing whole response as JSON
   try {
     const sanitized = sanitizeJsonString(trimmed);
     const parsed = JSON.parse(sanitized);
@@ -83,11 +86,10 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
       } else {
         addIfValid(parsed);
       }
-      return foundCalls.length > 0 ? foundCalls : null;
     }
   } catch {}
 
-  let hasJsonToolCallBlock = false;
+  // 2. Parse JSON code blocks
   const jsonBlockRegex = /```json\s*([\s\S]*?)\s*```/g;
   let match;
   while ((match = jsonBlockRegex.exec(trimmed)) !== null) {
@@ -95,20 +97,20 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
       const sanitized = sanitizeJsonString(match[1].trim());
       const parsed = JSON.parse(sanitized);
       if (isToolCallFormat(parsed)) {
-        hasJsonToolCallBlock = true;
+        let matched = false;
         if (Array.isArray(parsed)) {
-          parsed.forEach(addIfValid);
+          parsed.forEach(item => { if (addIfValid(item)) matched = true; });
         } else {
-          addIfValid(parsed);
+          if (addIfValid(parsed)) matched = true;
+        }
+        if (matched) {
+          parsedBlockIndexes.add(match.index);
         }
       }
     } catch {}
   }
 
-  if (hasJsonToolCallBlock) {
-    return foundCalls.length > 0 ? foundCalls : null;
-  }
-
+  // 3. Parse inline JSON objects
   let inString = false;
   let escapeNext = false;
   let depth = 0;
@@ -150,13 +152,17 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
     }
   }
 
-  if (foundCalls.length > 0) return foundCalls;
-
+  // 4. Parse markdown code blocks
   const blockRegex = /```([a-zA-Z0-9_-]*)\s*([\s\S]*?)\s*```/g;
   let blockMatch;
   let lastIdx = 0;
 
   while ((blockMatch = blockRegex.exec(trimmed)) !== null) {
+    if (parsedBlockIndexes.has(blockMatch.index)) {
+      lastIdx = blockRegex.lastIndex;
+      continue;
+    }
+
     const lang = (blockMatch[1] || '').toLowerCase();
     const code = blockMatch[2].trim();
     const preText = trimmed.substring(lastIdx, blockMatch.index).trim();
@@ -311,7 +317,31 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
     }
   }
 
-  return foundCalls.length > 0 ? foundCalls : null;
+  // 6. Deduplicate the collected calls
+  if (foundCalls.length > 0) {
+    const seen = new Set<string>();
+    const deduplicated: any[] = [];
+    for (const call of foundCalls) {
+      let key = '';
+      if (call.name === 'write_file') {
+        const filePath = (call.args?.filePath || '').replace(/\\/g, '/').toLowerCase();
+        const content = (call.args?.content || '').trim();
+        key = `write_file:${filePath}:${content}`;
+      } else if (call.name === 'execute_terminal_command') {
+        const command = (call.args?.command || '').trim();
+        key = `execute_terminal_command:${command}`;
+      } else {
+        key = `${call.name}:${JSON.stringify(call.args)}`;
+      }
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduplicated.push(call);
+      }
+    }
+    return deduplicated.length > 0 ? deduplicated : null;
+  }
+
+  return null;
 }
 
 export class ProviderEngine {
@@ -434,14 +464,27 @@ export class ProviderEngine {
           ? { accessKeyId, secretAccessKey, sessionToken }
           : undefined;
 
-        this.primaryModel = new ChatBedrockConverse({
-          region,
-          credentials,
-          model,
-          temperature: 0,
-          maxRetries: 0
-        }).bindTools(tools) as any;
-        ui.info(`Switched to AWS Bedrock - ${model} (${region})`);
+        const useChatBedrock = !!entry?.useChatBedrock;
+
+        if (useChatBedrock) {
+          this.primaryModel = new BedrockChat({
+            region,
+            credentials,
+            model,
+            temperature: 0,
+            maxRetries: 0
+          }).bindTools(tools) as any;
+          ui.info(`Switched to AWS Bedrock (ChatBedrock) - ${model} (${region})`);
+        } else {
+          this.primaryModel = new ChatBedrockConverse({
+            region,
+            credentials,
+            model,
+            temperature: 0,
+            maxRetries: 0
+          }).bindTools(tools) as any;
+          ui.info(`Switched to AWS Bedrock (Converse API) - ${model} (${region})`);
+        }
       } else {
         ui.warning(`Provider ${providerName} is not fully configured or supported yet.`);
         this.primaryModel = null;

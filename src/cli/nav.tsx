@@ -1,3 +1,5 @@
+import React, { useState, useEffect } from 'react';
+import { Box, Text, useInput, useApp } from 'ink';
 import * as readline from 'readline';
 import { ui } from './ui.js';
 import chalk from 'chalk';
@@ -23,60 +25,64 @@ export interface PhoneView {
   renderBody?: () => void;
   options: PhoneMenuOption[];
   onBack?: () => void;
+  onResize?: () => void;
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 function strip(s: string) { return s.replace(/\x1B\[[0-9;]*m/g, ''); }
 function vlen(s: string)  { return strip(s).length; }
 
-
 export class PhoneOS {
   public history: PhoneView[]    = [];
-  private forward:  PhoneView[]   = [];
-  private cursor:   number        = 0;
+  public forward:  PhoneView[]   = [];
+  public cursor:   number        = 0;
   public active:    boolean       = false;
-  private config:   OttoConfig;
-  private firstRender: boolean    = true;
-  private lastRenderLines: number = 0;
-  private listening: boolean      = false;
+  public config:   OttoConfig;
+  public listening: boolean      = false;
+  public notification: string = '';
+  private notificationTimeout?: NodeJS.Timeout;
   private ctrlKHandler?: () => void;
+  private listeners: (() => void)[] = [];
 
   constructor(c: OttoConfig) {
     this.config = c;
-    process.stdout.on('resize', () => {
-      if (this.active) {
-        this.firstRender = true;
-        this.render();
-      }
-    });
   }
-  updateConfig(c: OttoConfig) { this.config = c; }
+
+  showNotification(msg: string) {
+    this.notification = msg;
+    if (this.notificationTimeout) {
+      clearTimeout(this.notificationTimeout);
+    }
+    this.notify();
+    this.notificationTimeout = setTimeout(() => {
+      this.notification = '';
+      this.notify();
+    }, 2000);
+  }
+
+  subscribe(listener: () => void) {
+    this.listeners.push(listener);
+    return () => {
+      this.listeners = this.listeners.filter(l => l !== listener);
+    };
+  }
+
+  notify() {
+    this.listeners.forEach(l => l());
+  }
+
+  updateConfig(c: OttoConfig) { 
+    this.config = c; 
+    this.notify();
+  }
 
   registerCtrlKHandler(handler: () => void) {
     this.ctrlKHandler = handler;
   }
 
-  private onKey = async (_: string, key: any) => {
-    try {
-      const fs = await import('fs');
-      fs.appendFileSync('C:\\Users\\dedeep vasireddy\\keypresses.log', `onKey: active=${this.active} key=${JSON.stringify(key)}\n`);
-    } catch {}
-    if (!this.active) return;
-    if (key.ctrl && key.name === 'c') { this.cleanup(); process.exit(0); }
-    if (key.ctrl && key.name === 'k') {
-      if (this.ctrlKHandler) {
-        this.ctrlKHandler();
-      }
-      return;
-    }
-    const view = this.history[this.history.length - 1];
-
-    if      (key.name === 'up')    { this.cursor = this.cursor > 0 ? this.cursor - 1 : view.options.length - 1; this.render(); }
-    else if (key.name === 'down')  { this.cursor = this.cursor < view.options.length - 1 ? this.cursor + 1 : 0; this.render(); }
-    else if (key.name === 'left' || key.name === 'escape' || key.name === 'backspace')  { this.goBack(); }
-    else if (key.name === 'right') { if (this.forward.length) { this.history.push(this.forward.pop()!); this.cursor = 0; this.render(); } else { this.select(); } }
-    else if (key.name === 'return' || key.name === 'enter'){ this.select(); }
-  };
+  public getCtrlKHandler() {
+    return this.ctrlKHandler;
+  }
 
   public goBack() {
     if (this.history.length > 1) {
@@ -84,79 +90,54 @@ export class PhoneOS {
       this.cursor = 0;
       const prev = this.history[this.history.length - 1];
       if (prev.onBack) prev.onBack();
-      this.render();
+      this.notify();
     }
   }
 
-  private async select() {
+  public async select() {
     const view = this.history[this.history.length - 1];
-    if (!view.options.length) return;
+    if (!view || !view.options.length) return;
     const opt = view.options[this.cursor];
-    this.cleanup();
+    
+    this.active = false;
+    this.listening = false;
+    this.notify();
+
     await opt.action();
     this.forward = [];
-    if (!this.listening) { this.startListening(); this.render(); }
+    
+    this.active = true;
+    this.listening = true;
+    this.notify();
   }
 
   pushView(view: PhoneView) {
     this.history.push(view);
     this.cursor = 0;
-    this.firstRender = true; // Full clear on view change
-    if (this.active) this.render();
+    this.notify();
   }
 
   startListening() {
-    if (this.listening) {
-      this.active = true;
-      return;
-    }
     this.active = true;
     this.listening = true;
-    readline.emitKeypressEvents(process.stdin);
-    if (process.stdin.isTTY) process.stdin.setRawMode(true);
-    process.stdin.resume();
-    process.stdin.on('keypress', this.onKey);
+    this.notify();
   }
 
   cleanup() {
     this.active = false;
     this.listening = false;
-    if (process.stdin.isTTY) process.stdin.setRawMode(false);
-    process.stdin.removeListener('keypress', this.onKey);
+    this.notify();
   }
 
-  // ─── Render ──────────────────────────────────────────────────────
   render() {
-    let out = '';
-    const writeOrig = process.stdout.write;
-    const logOrig = console.log;
-    
-    // Intercept all output to buffer it
-    const captureWrite = (chunk: any) => { out += chunk; return true; };
-    const captureLog = (...args: any[]) => { out += args.join(' ') + '\n'; };
-    
-    (process.stdout as any).write = captureWrite;
-    console.log = captureLog;
-    
-    try {
-      this._renderInternal();
-    } finally {
-      process.stdout.write = writeOrig;
-      console.log = logOrig;
-    }
-
-    const lines = out.split('\n');
-    let frameStr = '';
-    
-    // Wipe the entire screen and scrollback buffer on every render
-    // to guarantee no duplicates are left behind in the history.
-    frameStr = '\x1B[2J\x1B[3J\x1B[H' + out;
-    
-    process.stdout.write(frameStr);
+    this.notify();
   }
 
-  private _renderInternal() {
-    const view   = this.history[this.history.length - 1];
+  drawToString(): string {
+    const view = this.history[this.history.length - 1];
+    if (!view) return '';
+
+    let out = '';
     const stats  = memoryManager.getBudgetStatsForMessages(chatSession.getMessages());
     const ratio  = stats.max > 0 ? Math.min(stats.filled / stats.max, 1) : 0;
     const pct    = Math.round(ratio * 100);
@@ -178,16 +159,12 @@ export class PhoneOS {
     const WHITE = chalk.white;
     const BOLD  = chalk.bold;
     
-    // Background color for active menu item (Tailwind Gray-700 mapped)
     const BG_HL = chalk.bgHex('#374151'); 
 
     // ── Header Box ────────────────────────────────────────────────
     const hLine = GOLD('═'.repeat(W));
-    process.stdout.write(GOLD(' ╔') + hLine + GOLD('╗\n'));
+    out += GOLD(' ╔') + hLine + GOLD('╗\n');
 
-    // Left Section
-
-    // Right Section Components
     const isOllama = prov === 'ollama';
     const isLocal = isOllama && !!providerConfig?.baseUrl;
     const dot = (hasKey || isLocal) ? GREEN('●') : RED('●');
@@ -198,7 +175,7 @@ export class PhoneOS {
     if (ratio > 0.55) barChalk = chalk.hex('#F4A261');
     if (ratio > 0.85) barChalk = RED;
     
-    const BAR = 6; // Compact bar for header
+    const BAR = 6;
     const fill = Math.round(ratio * BAR);
     const ctxBar = barChalk('▰'.repeat(fill)) + DIM('▱'.repeat(BAR - fill));
     const pctStr = `${pct}%`;
@@ -240,8 +217,8 @@ export class PhoneOS {
     const midSpace = Math.max(0, W - leftLen - rightTotLen);
     const content = leftStr + ' '.repeat(midSpace) + rightStr;
     const spaces = Math.max(0, W - vlen(content));
-    process.stdout.write(GOLD(' ║') + content + ' '.repeat(spaces) + GOLD('║\n'));
-    process.stdout.write(GOLD(' ╚') + hLine + GOLD('╝\n'));
+    out += GOLD(' ║') + content + ' '.repeat(spaces) + GOLD('║\n');
+    out += GOLD(' ╚') + hLine + GOLD('╝\n');
 
     // ── Breadcrumbs ───────────────────────────────────────────────
     if (this.history.length > 1) {
@@ -250,42 +227,57 @@ export class PhoneOS {
           ? WHITE.bold(v.title)
           : MUTED(v.title)
       ).join(MUTED(' › '));
-      console.log('  ' + crumbs);
+      out += '  ' + crumbs + '\n';
+    }
+
+    if (this.notification) {
+      out += '  ' + chalk.bgHex('#1F2937').hex('#10B981').bold(`  ✓ ${this.notification}  `) + '\n';
     }
 
     // ── Section Body / Dashboard Stats ────────────────────────────
     let hasBody = false;
     
     if (chatSession.pendingApprovals && chatSession.pendingApprovals.length > 0) {
-      console.log('  ' + RED.bold(`[!] Pending Approvals: ${chatSession.pendingApprovals.length} command(s) waiting for your permission!`));
+      out += '  ' + RED.bold(`[!] Pending Approvals: ${chatSession.pendingApprovals.length} command(s) waiting for your permission!`) + '\n';
       for (const p of chatSession.pendingApprovals) {
-        console.log('      ' + CYAN(p.cmd) + MUTED(` (Thread: ${p.threadId})`));
+        out += '      ' + CYAN(p.cmd) + MUTED(` (Thread: ${p.threadId})`) + '\n';
       }
-      console.log('');
+      out += '\n';
       hasBody = true;
     }
 
     if (view.subtitle) {
-      console.log('  ' + BOLD(WHITE(view.subtitle)));
+      out += '  ' + BOLD(WHITE(view.subtitle)) + '\n';
       hasBody = true;
     }
 
+    let bodyLineCount = 0;
     if (view.renderBody) {
-      const lines: string[] = [];
+      const bodyLines: string[] = [];
       const orig = console.log;
-      // Capture and pad body outputs
-      console.log = (...a: any[]) => a.join(' ').split('\n').forEach(l => lines.push(l));
+      console.log = (...a: any[]) => a.join(' ').split('\n').forEach(l => bodyLines.push(l));
       try { view.renderBody(); } finally { console.log = orig; }
-      for (const l of lines) process.stdout.write(l + '\n');
+      bodyLineCount = bodyLines.length;
+      for (const l of bodyLines) out += l + '\n';
       hasBody = true;
     }
 
     // ── Menu Box ──────────────────────────────────────────────────
     const hBoxLine = GOLD('═'.repeat(W));
-    process.stdout.write(GOLD(' ╔') + hBoxLine + GOLD('╗\n'));
+    out += GOLD(' ╔') + hBoxLine + GOLD('╗\n');
 
     const LABEL_COL_WIDTH = 28;
-    const MAX_OPTIONS = 10;
+    
+    // Dynamic menu rows calculation to fit the terminal window
+    const rows = process.stdout.rows || 24;
+    const nonMenuHeight = 3 + 
+      (this.history.length > 1 ? 2 : 0) +
+      ((chatSession.pendingApprovals && chatSession.pendingApprovals.length > 0) ? (6 + chatSession.pendingApprovals.length * 2) : 0) +
+      (view.subtitle ? 1 : 0) +
+      bodyLineCount +
+      2;
+    const maxMenuOptions = Math.max(3, rows - nonMenuHeight - 3);
+    const MAX_OPTIONS = Math.min(10, maxMenuOptions);
     
     let startIdx = 0;
     let endIdx = view.options.length;
@@ -302,7 +294,7 @@ export class PhoneOS {
     const printIndicator = (char: string) => {
       const padLeft = Math.floor((W - 1) / 2);
       const padRight = Math.max(0, W - 1 - padLeft);
-      process.stdout.write(GOLD(' ║') + ' '.repeat(padLeft) + MUTED(char) + ' '.repeat(padRight) + GOLD('║\n'));
+      out += GOLD(' ║') + ' '.repeat(padLeft) + MUTED(char) + ' '.repeat(padRight) + GOLD('║\n');
     };
 
     if (startIdx > 0) printIndicator('▲');
@@ -313,7 +305,6 @@ export class PhoneOS {
       const isSel = realIdx === this.cursor;
       const plainLabel = strip(opt.label);
 
-      // 1. Setup Menu Prefix and Label
       const prefix = isSel 
         ? '  ' + GOLD('█') + '  ' + GOLD.bold(plainLabel) 
         : '     ' + MUTED(plainLabel);
@@ -321,7 +312,6 @@ export class PhoneOS {
       const rawLen = 5 + plainLabel.length;
       const space1 = Math.max(0, LABEL_COL_WIDTH - rawLen);
 
-      // 2. Setup Description Block
       const descStrPlain = opt.description ? opt.description.slice(0, Math.max(0, W - LABEL_COL_WIDTH - 2)) : '';
       const descLen = descStrPlain.length;
       
@@ -331,26 +321,102 @@ export class PhoneOS {
         
       const space2 = Math.max(0, W - rawLen - space1 - descLen);
 
-      // 3. Assemble Full Padded Row String
       const rowAnsi = prefix + ' '.repeat(space1) + descStr + ' '.repeat(space2);
-      
-      // 4. Highlight if Active
       const coloredRow = isSel ? BG_HL(rowAnsi) : rowAnsi;
 
-      process.stdout.write(GOLD(' ║') + coloredRow + GOLD('║\n'));
+      out += GOLD(' ║') + coloredRow + GOLD('║\n');
     });
 
     if (endIdx < view.options.length) printIndicator('▼');
 
-    process.stdout.write(GOLD(' ╚') + hBoxLine + GOLD('╝\n'));
+    out += GOLD(' ╚') + hBoxLine + GOLD('╝\n');
 
-    // Print warning notification below the Menu Box if approvals are pending
     if (chatSession.pendingApprovals && chatSession.pendingApprovals.length > 0) {
       const uniqueThreads = Array.from(new Set(chatSession.pendingApprovals.map(p => p.threadId)));
       const threadList = uniqueThreads.map(id => chalk.hex('#22D3EE').bold(id)).join(', ');
-      process.stdout.write('\n');
-      process.stdout.write('  ' + chalk.hex('#EF4444').bold('⚠️  PENDING APPROVAL: ') + chalk.white(`Agent needs command approval in thread(s): ${threadList}`) + '\n');
-      process.stdout.write('     Please choose "Enter Chat" or select the corresponding thread to approve.\n');
+      out += '\n';
+      out += '  ' + chalk.hex('#EF4444').bold('⚠️  PENDING APPROVAL: ') + chalk.white(`Agent needs command approval in thread(s): ${threadList}`) + '\n';
+      out += '     Please choose "Enter Chat" or select the corresponding thread to approve.\n';
     }
+
+    return out;
   }
+}
+
+function PhoneOSInput({ phone, exit }: { phone: PhoneOS; exit: () => void }) {
+  useInput((input, key) => {
+    if (!phone.active) return;
+
+    if (key.ctrl && input === 'c') {
+      process.stdout.write('\x1B[?1049l');
+      exit();
+      process.exit(0);
+    }
+
+    if (key.ctrl && input === 'k') {
+      const handler = phone.getCtrlKHandler();
+      if (handler) {
+        handler();
+      }
+      return;
+    }
+
+    const view = phone.history[phone.history.length - 1];
+    if (!view) return;
+
+    if (key.upArrow) {
+      phone.cursor = phone.cursor > 0 ? phone.cursor - 1 : view.options.length - 1;
+      phone.render();
+    } else if (key.downArrow) {
+      phone.cursor = phone.cursor < view.options.length - 1 ? phone.cursor + 1 : 0;
+      phone.render();
+    } else if (key.leftArrow || key.escape || key.backspace || key.delete || input === '\x7f' || input === '\x08') {
+      phone.goBack();
+    } else if (key.rightArrow) {
+      if (phone.forward.length > 0) {
+        phone.history.push(phone.forward.pop()!);
+        phone.cursor = 0;
+        phone.render();
+      } else {
+        phone.select();
+      }
+    } else if (key.return) {
+      phone.select();
+    }
+  });
+  return null;
+}
+
+export function PhoneOSApp({ phone }: { phone: PhoneOS }) {
+  const [, forceUpdate] = useState(0);
+  const { exit } = useApp();
+
+  useEffect(() => {
+    return phone.subscribe(() => {
+      forceUpdate(prev => prev + 1);
+    });
+  }, [phone]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      const view = phone.history[phone.history.length - 1];
+      if (view && view.onResize) {
+        view.onResize();
+      }
+      phone.render();
+    };
+    process.stdout.on('resize', handleResize);
+    return () => {
+      process.stdout.off('resize', handleResize);
+    };
+  }, [phone]);
+
+  const isTTY = !!(process.stdin && process.stdin.isTTY);
+
+  return (
+    <Box flexDirection="column">
+      <Text>{phone.drawToString()}</Text>
+      {isTTY && <PhoneOSInput phone={phone} exit={exit} />}
+    </Box>
+  );
 }

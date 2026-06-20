@@ -12,6 +12,13 @@ if (!fs.existsSync(targetDir)) {
   fs.mkdirSync(targetDir, { recursive: true });
 }
 
+// Kill processes on ports 3001 and 3002 to avoid EADDRINUSE
+import { execSync } from 'child_process';
+try {
+  console.log("Cleaning up ports 3001 and 3002...");
+  execSync("npx kill-port 3001 3002", { stdio: 'ignore' });
+} catch (e) {}
+
 // Auto-approve commands for headless test harness
 (executor as any).promptAction = async (cmd: string, fullCommand: string) => {
   console.log(`  [TEST HARNESS AUTO-APPROVED] ${fullCommand}`);
@@ -58,6 +65,7 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
   if (!trimmed) return null;
 
   const foundCalls: any[] = [];
+  const parsedBlockIndexes = new Set<number>();
 
   const addIfValid = (obj: any) => {
     if (obj && typeof obj === 'object') {
@@ -76,6 +84,7 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
     return false;
   };
 
+  // 1. Try parsing whole response as JSON
   try {
     const sanitized = sanitizeJsonString(trimmed);
     const parsed = JSON.parse(sanitized);
@@ -85,11 +94,10 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
       } else {
         addIfValid(parsed);
       }
-      return foundCalls.length > 0 ? foundCalls : null;
     }
   } catch {}
 
-  let hasJsonToolCallBlock = false;
+  // 2. Parse JSON code blocks
   const jsonBlockRegex = /```json\s*([\s\S]*?)\s*```/g;
   let match;
   while ((match = jsonBlockRegex.exec(trimmed)) !== null) {
@@ -97,20 +105,20 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
       const sanitized = sanitizeJsonString(match[1].trim());
       const parsed = JSON.parse(sanitized);
       if (isToolCallFormat(parsed)) {
-        hasJsonToolCallBlock = true;
+        let matched = false;
         if (Array.isArray(parsed)) {
-          parsed.forEach(addIfValid);
+          parsed.forEach(item => { if (addIfValid(item)) matched = true; });
         } else {
-          addIfValid(parsed);
+          if (addIfValid(parsed)) matched = true;
+        }
+        if (matched) {
+          parsedBlockIndexes.add(match.index);
         }
       }
     } catch {}
   }
 
-  if (hasJsonToolCallBlock) {
-    return foundCalls.length > 0 ? foundCalls : null;
-  }
-
+  // 3. Parse inline JSON objects
   let inString = false;
   let escapeNext = false;
   let depth = 0;
@@ -152,13 +160,17 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
     }
   }
 
-  if (foundCalls.length > 0) return foundCalls;
-
+  // 4. Parse markdown code blocks
   const blockRegex = /```([a-zA-Z0-9_-]*)\s*([\s\S]*?)\s*```/g;
   let blockMatch;
   let lastIdx = 0;
 
   while ((blockMatch = blockRegex.exec(trimmed)) !== null) {
+    if (parsedBlockIndexes.has(blockMatch.index)) {
+      lastIdx = blockRegex.lastIndex;
+      continue;
+    }
+
     const lang = (blockMatch[1] || '').toLowerCase();
     const code = blockMatch[2].trim();
     const preText = trimmed.substring(lastIdx, blockMatch.index).trim();
@@ -313,7 +325,31 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
     }
   }
 
-  return foundCalls.length > 0 ? foundCalls : null;
+  // 6. Deduplicate the collected calls
+  if (foundCalls.length > 0) {
+    const seen = new Set<string>();
+    const deduplicated: any[] = [];
+    for (const call of foundCalls) {
+      let key = '';
+      if (call.name === 'write_file') {
+        const filePath = (call.args?.filePath || '').replace(/\\/g, '/').toLowerCase();
+        const content = (call.args?.content || '').trim();
+        key = `write_file:${filePath}:${content}`;
+      } else if (call.name === 'execute_terminal_command') {
+        const command = (call.args?.command || '').trim();
+        key = `execute_terminal_command:${command}`;
+      } else {
+        key = `${call.name}:${JSON.stringify(call.args)}`;
+      }
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduplicated.push(call);
+      }
+    }
+    return deduplicated.length > 0 ? deduplicated : null;
+  }
+
+  return null;
 }
 
 async function runScenario(name: string, instruction: string) {
@@ -395,6 +431,8 @@ async function runScenario(name: string, instruction: string) {
         "CRITICAL FOR THIS HEADLESS RUN: You are in EXECUTION MODE. The user has already approved all plans. " +
         "Do NOT output or request plans (do not output PLAN_START/PLAN_END). " +
         "Proceed directly with editing, writing files, and running commands using tools.\n" +
+        "If a script execution fails with a runtime error (e.g. ZeroDivisionError, KeyError, or ReferenceError), you MUST edit the script file itself to fix the logical error. Do NOT just re-run the script or re-write unchanged data files.\n" +
+        "When writing data files (like CSVs), ensure you structure them consistently with how they are read by your scripts (e.g. including matching headers if reading with header keys like DictReader, or omitting headers and parsing columns by index if reading headerless).\n" +
         "For TypeScript compilation: if compiling with tsc, remember to either initialize a config file using `npx tsc --init` first, or specify the input files explicitly (e.g. `npx tsc index.ts mathUtils.ts`).\n" +
         "Before finishing, double check that ALL files requested in the instruction have been successfully created and that the compilation/run verification step succeeded."
       ),

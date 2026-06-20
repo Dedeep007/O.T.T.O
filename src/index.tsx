@@ -12,7 +12,8 @@ import { browserAutomation } from './hardware/browser.js';
 import { serialBridge } from './hardware/serial.js';
 import { dbManager } from './db/checkpoint.js';
 import { threadLocalStorage } from './cli/threadContext.js';
-import { PhoneOS, PhoneView } from './cli/nav.js';
+import { PhoneOS, PhoneView, PhoneOSApp } from './cli/nav.js';
+import { ChatUI, ChatUIApp } from './cli/chat.js';
 import { createTaskBoardView } from './cli/views/taskBoard.js';
 import { createFileTreeView } from './cli/views/fileTree.js';
 import { createGitPanelView } from './cli/views/gitPanel.js';
@@ -24,6 +25,8 @@ import * as readline from 'readline';
 import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
+import React, { useState, useEffect } from 'react';
+import { render as inkRender } from 'ink';
 
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
@@ -77,6 +80,7 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
   if (!trimmed) return null;
 
   const foundCalls: any[] = [];
+  const parsedBlockIndexes = new Set<number>();
 
   const addIfValid = (obj: any) => {
     if (obj && typeof obj === 'object') {
@@ -95,6 +99,7 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
     return false;
   };
 
+  // 1. Try parsing whole response as JSON
   try {
     const sanitized = sanitizeJsonString(trimmed);
     const parsed = JSON.parse(sanitized);
@@ -104,11 +109,10 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
       } else {
         addIfValid(parsed);
       }
-      return foundCalls.length > 0 ? foundCalls : null;
     }
   } catch {}
 
-  let hasJsonToolCallBlock = false;
+  // 2. Parse JSON code blocks
   const jsonBlockRegex = /```json\s*([\s\S]*?)\s*```/g;
   let match;
   while ((match = jsonBlockRegex.exec(trimmed)) !== null) {
@@ -116,20 +120,20 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
       const sanitized = sanitizeJsonString(match[1].trim());
       const parsed = JSON.parse(sanitized);
       if (isToolCallFormat(parsed)) {
-        hasJsonToolCallBlock = true;
+        let matched = false;
         if (Array.isArray(parsed)) {
-          parsed.forEach(addIfValid);
+          parsed.forEach(item => { if (addIfValid(item)) matched = true; });
         } else {
-          addIfValid(parsed);
+          if (addIfValid(parsed)) matched = true;
+        }
+        if (matched) {
+          parsedBlockIndexes.add(match.index);
         }
       }
     } catch {}
   }
 
-  if (hasJsonToolCallBlock) {
-    return foundCalls.length > 0 ? foundCalls : null;
-  }
-
+  // 3. Parse inline JSON objects
   let inString = false;
   let escapeNext = false;
   let depth = 0;
@@ -171,13 +175,17 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
     }
   }
 
-  if (foundCalls.length > 0) return foundCalls;
-
+  // 4. Parse markdown code blocks
   const blockRegex = /```([a-zA-Z0-9_-]*)\s*([\s\S]*?)\s*```/g;
   let blockMatch;
   let lastIdx = 0;
 
   while ((blockMatch = blockRegex.exec(trimmed)) !== null) {
+    if (parsedBlockIndexes.has(blockMatch.index)) {
+      lastIdx = blockRegex.lastIndex;
+      continue;
+    }
+
     const lang = (blockMatch[1] || '').toLowerCase();
     const code = blockMatch[2].trim();
     const preText = trimmed.substring(lastIdx, blockMatch.index).trim();
@@ -332,7 +340,81 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
     }
   }
 
-  return foundCalls.length > 0 ? foundCalls : null;
+  // 6. Deduplicate the collected calls
+  if (foundCalls.length > 0) {
+    const seen = new Set<string>();
+    const deduplicated: any[] = [];
+    for (const call of foundCalls) {
+      let key = '';
+      if (call.name === 'write_file') {
+        const filePath = (call.args?.filePath || '').replace(/\\/g, '/').toLowerCase();
+        const content = (call.args?.content || '').trim();
+        key = `write_file:${filePath}:${content}`;
+      } else if (call.name === 'execute_terminal_command') {
+        const command = (call.args?.command || '').trim();
+        key = `execute_terminal_command:${command}`;
+      } else {
+        key = `${call.name}:${JSON.stringify(call.args)}`;
+      }
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduplicated.push(call);
+      }
+    }
+    return deduplicated.length > 0 ? deduplicated : null;
+  }
+
+  return null;
+}
+
+export class RootController {
+  private mode: 'menu' | 'chat' = 'menu';
+  private listeners: (() => void)[] = [];
+
+  getMode() { return this.mode; }
+  
+  setMode(m: 'menu' | 'chat') {
+    this.mode = m;
+    this.listeners.forEach(l => l());
+  }
+
+  subscribe(listener: () => void) {
+    this.listeners.push(listener);
+    return () => {
+      this.listeners = this.listeners.filter(l => l !== listener);
+    };
+  }
+}
+export const rootController = new RootController();
+
+function AppShell({ phone, chatUI }: { phone: PhoneOS; chatUI: ChatUI }) {
+  const [mode, setMode] = useState<'menu' | 'chat'>(rootController.getMode());
+
+  useEffect(() => {
+    ui.onTuiMessage = (type, text) => {
+      let cleanText = text.replace(/^\[[i✓!X]\]\s*/, '').replace(/^ERROR:\s*/, '');
+      if (rootController.getMode() === 'chat') {
+        chatUI.showNotification(cleanText);
+      } else {
+        phone.showNotification(cleanText);
+      }
+    };
+    return () => {
+      ui.onTuiMessage = null;
+    };
+  }, [phone, chatUI]);
+
+  useEffect(() => {
+    return rootController.subscribe(() => {
+      ui.clearScreen();
+      setMode(rootController.getMode());
+    });
+  }, []);
+
+  if (mode === 'chat') {
+    return <ChatUIApp chatUI={chatUI} />;
+  }
+  return <PhoneOSApp phone={phone} />;
 }
 
 async function main() {
@@ -342,19 +424,19 @@ async function main() {
     process.exit(0);
   }
 
+  // Enter alternate screen buffer
+  process.stdout.write('\x1B[?1049h');
+  ui.tuiActive = true;
+
   ui.clearScreen();
   let config = await Configurator.init();
   const provider = new ProviderEngine(config);
   const rules = ruleGuardrail.getRules();
 
   const phone = new PhoneOS(config);
+  const chatUI = new ChatUI();
 
   const startChat = async () => {
-    // Enter the alternate screen buffer — streaming frames stay completely
-    // out of the main scrollback so scrolling up never shows partial renders.
-    process.stdout.write('\x1B[?1049h\x1B[H\x1B[J');
-    const { ChatUI } = await import('./cli/chat.js');
-    const chatUI = new ChatUI();
     const messages = chatSession.getMessages();
     let currentInput = '';
     const getIsStreaming = () => chatSession.activeStreams.has(chatSession.threadId);
@@ -549,9 +631,9 @@ async function main() {
 
     return new Promise<void>((resolve) => {
       chatSession.isChatActive = true;
-      readline.emitKeypressEvents(process.stdin);
-      if (process.stdin.isTTY) process.stdin.setRawMode(true);
-      process.stdin.resume(); // ensure stdin is flowing after phone.cleanup() may have paused it
+      chatUI.scrollOffset = 0;
+      chatUI.totalContentLines = 0;
+      chatUI.registerKeyHandler(onKeypress);
 
       const onPendingApproval = () => {
         if (chatSession.isChatActive) {
@@ -568,7 +650,7 @@ async function main() {
 
       function onPromptStart() {
         isPrompting = true;
-        process.stdin.removeListener('keypress', onKeypress);
+        chatUI.removeKeyHandler();
         if (animationTimer) {
           clearInterval(animationTimer);
           animationTimer = null;
@@ -577,7 +659,7 @@ async function main() {
 
       function onPromptEnd() {
         isPrompting = false;
-        process.stdin.on('keypress', onKeypress);
+        chatUI.registerKeyHandler(onKeypress);
         updateAnimationTimer();
         render(true);
       }
@@ -596,8 +678,7 @@ async function main() {
         sessionEvents.removeListener('pending_approval', onPendingApproval);
         sessionEvents.removeListener('prompt_start', onPromptStart);
         sessionEvents.removeListener('prompt_end', onPromptEnd);
-        process.stdout.write('\x1B[?1049l');
-        process.stdin.removeListener('keypress', onKeypress);
+        chatUI.removeKeyHandler();
       };
 
       const runAgentLoop = async (inputText: string) => {
@@ -846,10 +927,11 @@ async function main() {
         }
       };
 
-      const onKeypress = async (str: string, key: any) => {
+      async function onKeypress(str: string, key: any) {
         if (key.ctrl && key.name === 'c') {
           // Exit alternate screen before hard-quitting so the terminal is clean
           process.stdout.write('\x1B[?1049l');
+          ui.tuiActive = false;
           process.exit(0);
         } else if (key.ctrl && key.name === 'e') {
           diffsExpanded = !diffsExpanded;
@@ -1053,19 +1135,70 @@ async function main() {
           autocompleteState = null;
           if (!getPendingPlan() && !getPendingApproval()) chatUI.scrollToBottom();
           render(getIsStreaming());
-        } else if (key.name === 'backspace') {
+        } else if (key.name === 'backspace' || str === '\x7f' || str === '\x08') {
           autocompleteState = null;
-          if (getIsStreaming() || getPendingApproval()) return;
-          if (!getPendingPlan()) { currentInput = currentInput.slice(0, -1); render(); }
+          if (getIsStreaming() || getPendingApproval() || getPendingPlan()) return;
+          currentInput = currentInput.slice(0, -1);
+          render();
         } else if (str && !key.ctrl && !key.meta) {
           if (key.name === 'tab') return;
+          
+          if (getPendingApproval()) {
+            const char = str.toLowerCase();
+            if (char === 'y') {
+              const pendingApp = getPendingApproval()!;
+              const idx = chatSession.pendingApprovals.indexOf(pendingApp);
+              if (idx !== -1) {
+                chatSession.pendingApprovals.splice(idx, 1);
+              }
+              setApprovalMenuIndex(0);
+              pendingApp.resolve('now');
+              render(true);
+              return;
+            } else if (char === 'n') {
+              const pendingApp = getPendingApproval()!;
+              const idx = chatSession.pendingApprovals.indexOf(pendingApp);
+              if (idx !== -1) {
+                chatSession.pendingApprovals.splice(idx, 1);
+              }
+              setApprovalMenuIndex(0);
+              pendingApp.resolve('deny');
+              render(true);
+              return;
+            }
+            return;
+          }
+
+          if (getPendingPlan()) {
+            const char = str.toLowerCase();
+            if (char === 'y') {
+              setPendingPlan(false);
+              setPlanMenuIndex(0);
+              runAgentLoop('approved - please proceed with the plan exactly as described.');
+              return;
+            } else if (char === 'n') {
+              setPendingPlan(false);
+              setPlanMenuIndex(0);
+              runAgentLoop('cancel - do not proceed with this plan.');
+              return;
+            } else if (char === 'e') {
+              setPendingPlan(false);
+              setPlanMenuIndex(0);
+              render(true);
+              return;
+            }
+            return;
+          }
+
+          const code = str.charCodeAt(0);
+          if (str.length === 1 && (code < 32 || code === 127) && str !== '\t') return;
           autocompleteState = null;
-          if (getIsStreaming() || getPendingApproval()) return;
-          if (!getPendingPlan()) { currentInput += str; render(); }
+          if (getIsStreaming()) return;
+          currentInput += str;
+          render();
         }
       };
 
-      process.stdin.on('keypress', onKeypress);
       render(getIsStreaming());
       render(getIsStreaming());
     });
@@ -1763,6 +1896,20 @@ async function main() {
             phone.pushView(createBedrockSettingsView());
           }
         },
+        {
+          label: `Toggle API Client: ${entry.useChatBedrock ? 'Legacy BedrockChat' : 'Converse API'}`,
+          description: 'Switch between ChatBedrockConverse and legacy BedrockChat clients',
+          action: async () => {
+            if (!config.providers.bedrock) config.providers.bedrock = {};
+            config.providers.bedrock.useChatBedrock = !config.providers.bedrock.useChatBedrock;
+            Configurator.saveConfig(config);
+            phone.updateConfig(config);
+            ui.success(`Bedrock API Client set to ${config.providers.bedrock.useChatBedrock ? 'BedrockChat' : 'ChatBedrockConverse'}`);
+            await new Promise(r => setTimeout(r, 900));
+            phone.goBack();
+            phone.pushView(createBedrockSettingsView());
+          }
+        },
         { label: 'Go Back', action: () => phone.goBack() }
       ]
     };
@@ -2293,12 +2440,12 @@ async function main() {
       const isDefaultName = !config.profile?.username;
 
       if (isCompact) {
-        console.log(borderDim(` ╭─ O.T.T.O v${CLI_VERSION} ` + '─'.repeat(Math.max(0, W - 12 - CLI_VERSION.length)) + '╮'));
+        console.log(borderDim(` ┌─ O.T.T.O v${CLI_VERSION} ` + '─'.repeat(Math.max(0, W - 12 - CLI_VERSION.length)) + '┐'));
         console.log(borderDim(' │ ') + chalk.whiteBright(`Welcome back, ${displayName}!`).padEnd(Math.max(0, W - 1)) + borderDim('│'));
         if (isDefaultName) {
           console.log(borderDim(' │ ') + chalk.hex('#F59E0B')('⚠  Go to Settings › Profile to set your username').padEnd(Math.max(0, W - 1)) + borderDim('│'));
         }
-        console.log(borderDim(' ╰' + '─'.repeat(W) + '╯'));
+        console.log(borderDim(' └' + '─'.repeat(W) + '┘'));
         return;
       }
 
@@ -2309,7 +2456,7 @@ async function main() {
       const drawRow = (left: string, right: string, leftColor: any, rightColor: any) => {
         const lPad = Math.max(0, leftWidth - vlen(left));
         const rPad = Math.max(0, rightWidth - vlen(right));
-        process.stdout.write(borderDim(' │') + leftColor(left) + ' '.repeat(lPad) + rightColor(right) + ' '.repeat(rPad) + borderDim('│\n'));
+        console.log(borderDim(' │') + leftColor(left) + ' '.repeat(lPad) + rightColor(right) + ' '.repeat(rPad) + borderDim('│'));
       };
 
       const rightRows = [
@@ -2325,7 +2472,7 @@ async function main() {
         ''
       ];
 
-      console.log(borderDim(` ╭─ O.T.T.O v${CLI_VERSION} ` + '─'.repeat(Math.max(0, W - 12 - CLI_VERSION.length)) + '╮'));
+      console.log(borderDim(` ┌─ O.T.T.O v${CLI_VERSION} ` + '─'.repeat(Math.max(0, W - 12 - CLI_VERSION.length)) + '┐'));
 
       drawRow(`      Welcome back, ${displayName}!`, rightRows[0], chalk.white, chalk.white);
       if (isDefaultName) {
@@ -2347,17 +2494,16 @@ async function main() {
       if (pth.length > leftWidth - 4) pth = '...' + pth.slice(-(leftWidth - 7));
       drawRow(`    ${pth}`, rightRows[9], textDim, chalk.white);
 
-      console.log(borderDim(' ╰' + '─'.repeat(W) + '╯'));
+      console.log(borderDim(' └' + '─'.repeat(W) + '┘'));
     },
     options: [
       {
         label: 'Enter Chat',
         description: 'Start a conversation with the AI agent',
         action: async () => {
-          phone.cleanup();
+          rootController.setMode('chat');
           await startChat();
-          phone.startListening();
-          phone.render();
+          rootController.setMode('menu');
         }
       },
       {
@@ -2408,7 +2554,7 @@ async function main() {
       {
         label: 'Exit',
         action: () => {
-          ui.clearScreen();
+          process.stdout.write('\x1B[?1049l');
           process.exit(0);
         }
       }
@@ -2476,10 +2622,10 @@ async function main() {
     phone.pushView(createCommandPaletteView(phone, actions));
   });
 
-  // Launch OS
+  // Launch OS via Ink React renderer
   phone.pushView(createHomeView());
+  inkRender(<AppShell phone={phone} chatUI={chatUI} />);
   phone.startListening();
-  phone.render();
 }
 
 process.on('uncaughtException', (error) => {
@@ -2493,6 +2639,14 @@ process.on('unhandledRejection', (reason) => {
     fs.appendFileSync('otto-errors.log', `Unhandled Rejection: ${reason instanceof Error ? reason.stack : reason}\n`);
   } catch {}
 });
+
+const cleanupAndExit = () => {
+  process.stdout.write('\x1B[?1049l');
+  ui.tuiActive = false;
+  process.exit(0);
+};
+process.on('SIGINT', cleanupAndExit);
+process.on('SIGTERM', cleanupAndExit);
 
 main().catch(err => {
   ui.error(err.message);

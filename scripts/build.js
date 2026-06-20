@@ -19,7 +19,7 @@ console.log('Obfuscating output...');
 // It's much easier to obfuscate a bundled file. Let's build a bundle first using tsup.
 
 console.log('Bundling with tsup...');
-execSync('npx tsup src/index.ts --format cjs --no-external --external better-sqlite3 --external sqlite-vec --external serialport --out-dir dist-bundle', { stdio: 'inherit' });
+execSync('npx tsup src/index.tsx --format cjs --no-external --external better-sqlite3 --external sqlite-vec --external serialport --out-dir dist-bundle', { stdio: 'inherit' });
 
 const bundledFile = path.join(process.cwd(), 'dist-bundle', 'index.cjs');
 if (fs.existsSync(bundledFile)) {
