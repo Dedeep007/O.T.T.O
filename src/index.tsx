@@ -2282,23 +2282,31 @@ async function main() {
         {
           label: chalk.red('Delete All Threads'),
           description: 'Remove every saved thread and start fresh',
-          action: async () => {
-            phone.active = false;
-            ui.clearScreen();
-            const approved = await confirm({
-              message: 'Delete all saved threads?',
-              default: false
+          action: () => {
+            phone.pushView({
+              id: 'confirm_delete_all_threads',
+              title: 'Confirm Delete All',
+              subtitle: 'Are you sure you want to delete all saved threads?',
+              options: [
+                {
+                  label: 'No, Cancel',
+                  action: () => phone.goBack()
+                },
+                {
+                  label: chalk.red('Yes, Delete All Threads'),
+                  action: async () => {
+                    dbManager.deleteAllThreads();
+                    chatSession.clearAllThreadMessages();
+                    chatSession.createFreshThread();
+                    ui.success('Deleted all threads. Started a fresh chat.');
+                    await new Promise(r => setTimeout(r, 800));
+                    phone.goBack(); // pop confirmation
+                    phone.goBack(); // pop Manage Threads view
+                    phone.pushView(createThreadsView());
+                  }
+                }
+              ]
             });
-            if (approved) {
-              dbManager.deleteAllThreads();
-              chatSession.clearAllThreadMessages();
-              chatSession.createFreshThread();
-              ui.success('Deleted all threads. Started a fresh chat.');
-              await new Promise(r => setTimeout(r, 800));
-            }
-            phone.active = true;
-            phone.goBack();
-            phone.pushView(createThreadsView());
           }
         },
         ...threads.map(t => {
@@ -2370,22 +2378,33 @@ async function main() {
         ...procs.map(p => ({
           label: `[PID ${p.pid}] ${p.command}`,
           description: `Running for ${Math.round((Date.now() - p.startTime) / 1000)}s`,
-          action: async () => {
-            phone.active = false;
-            ui.clearScreen();
-            const confirmKill = await confirm({ message: `Kill process ${p.pid} (${p.command})?`, default: false });
-            if (confirmKill) {
-              try {
-                await backgroundManager.killProcess(p.pid);
-                ui.success(`Killed process ${p.pid}`);
-              } catch (e: any) {
-                ui.error(`Failed to kill: ${e.message}`);
-              }
-              await new Promise(r => setTimeout(r, 1000));
-            }
-            phone.active = true;
-            phone.goBack();
-            phone.pushView(createTerminalSessionsView());
+          action: () => {
+            phone.pushView({
+              id: 'confirm_kill_process',
+              title: 'Confirm Kill',
+              subtitle: `Kill process ${p.pid} (${p.command})?`,
+              options: [
+                {
+                  label: 'No, Cancel',
+                  action: () => phone.goBack()
+                },
+                {
+                  label: chalk.red('Yes, Kill Process'),
+                  action: async () => {
+                    try {
+                      await backgroundManager.killProcess(p.pid);
+                      ui.success(`Killed process ${p.pid}`);
+                    } catch (e: any) {
+                      ui.error(`Failed to kill: ${e.message}`);
+                    }
+                    await new Promise(r => setTimeout(r, 1000));
+                    phone.goBack(); // pop confirmation
+                    phone.goBack(); // pop sessions view
+                    phone.pushView(createTerminalSessionsView());
+                  }
+                }
+              ]
+            });
           }
         })),
         { label: 'Go Back', action: () => phone.goBack() }

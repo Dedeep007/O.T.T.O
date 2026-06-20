@@ -19286,7 +19286,6 @@ var import_react3 = require("react");
 var import_ink3 = require("ink");
 var import_messages4 = require("@langchain/core/messages");
 var import_stream2 = require("@langchain/core/utils/stream");
-var import_prompts4 = require("@inquirer/prompts");
 var import_chalk10 = __toESM(require("chalk"), 1);
 var import_jsx_runtime3 = require("react/jsx-runtime");
 var import_meta2 = {};
@@ -21400,23 +21399,31 @@ ${reasoning}
         {
           label: import_chalk10.default.red("Delete All Threads"),
           description: "Remove every saved thread and start fresh",
-          action: async () => {
-            phone.active = false;
-            ui.clearScreen();
-            const approved = await (0, import_prompts4.confirm)({
-              message: "Delete all saved threads?",
-              default: false
+          action: () => {
+            phone.pushView({
+              id: "confirm_delete_all_threads",
+              title: "Confirm Delete All",
+              subtitle: "Are you sure you want to delete all saved threads?",
+              options: [
+                {
+                  label: "No, Cancel",
+                  action: () => phone.goBack()
+                },
+                {
+                  label: import_chalk10.default.red("Yes, Delete All Threads"),
+                  action: async () => {
+                    dbManager.deleteAllThreads();
+                    chatSession.clearAllThreadMessages();
+                    chatSession.createFreshThread();
+                    ui.success("Deleted all threads. Started a fresh chat.");
+                    await new Promise((r) => setTimeout(r, 800));
+                    phone.goBack();
+                    phone.goBack();
+                    phone.pushView(createThreadsView());
+                  }
+                }
+              ]
             });
-            if (approved) {
-              dbManager.deleteAllThreads();
-              chatSession.clearAllThreadMessages();
-              chatSession.createFreshThread();
-              ui.success("Deleted all threads. Started a fresh chat.");
-              await new Promise((r) => setTimeout(r, 800));
-            }
-            phone.active = true;
-            phone.goBack();
-            phone.pushView(createThreadsView());
           }
         },
         ...threads.map((t) => {
@@ -21487,22 +21494,33 @@ ${reasoning}
         ...procs.map((p) => ({
           label: `[PID ${p.pid}] ${p.command}`,
           description: `Running for ${Math.round((Date.now() - p.startTime) / 1e3)}s`,
-          action: async () => {
-            phone.active = false;
-            ui.clearScreen();
-            const confirmKill = await (0, import_prompts4.confirm)({ message: `Kill process ${p.pid} (${p.command})?`, default: false });
-            if (confirmKill) {
-              try {
-                await backgroundManager.killProcess(p.pid);
-                ui.success(`Killed process ${p.pid}`);
-              } catch (e) {
-                ui.error(`Failed to kill: ${e.message}`);
-              }
-              await new Promise((r) => setTimeout(r, 1e3));
-            }
-            phone.active = true;
-            phone.goBack();
-            phone.pushView(createTerminalSessionsView());
+          action: () => {
+            phone.pushView({
+              id: "confirm_kill_process",
+              title: "Confirm Kill",
+              subtitle: `Kill process ${p.pid} (${p.command})?`,
+              options: [
+                {
+                  label: "No, Cancel",
+                  action: () => phone.goBack()
+                },
+                {
+                  label: import_chalk10.default.red("Yes, Kill Process"),
+                  action: async () => {
+                    try {
+                      await backgroundManager.killProcess(p.pid);
+                      ui.success(`Killed process ${p.pid}`);
+                    } catch (e) {
+                      ui.error(`Failed to kill: ${e.message}`);
+                    }
+                    await new Promise((r) => setTimeout(r, 1e3));
+                    phone.goBack();
+                    phone.goBack();
+                    phone.pushView(createTerminalSessionsView());
+                  }
+                }
+              ]
+            });
           }
         })),
         { label: "Go Back", action: () => phone.goBack() }
