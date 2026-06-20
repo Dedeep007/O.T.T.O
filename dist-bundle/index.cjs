@@ -17154,6 +17154,13 @@ var MemoryManager = class {
       includeSystem: false
     });
     const dropped = normalizedMessages.slice(0, Math.max(0, normalizedMessages.length - trimmed.length));
+    const hasHuman = trimmed.some((m) => m._getType() === "human");
+    if (!hasHuman) {
+      const lastHuman = [...normalizedMessages].reverse().find((m) => m._getType() === "human");
+      if (lastHuman) {
+        trimmed.unshift(lastHuman);
+      }
+    }
     const summaryText = this.buildSummary(dropped);
     this.lastSummary = summaryText;
     const finalMessages = summaryText ? [new import_messages2.SystemMessage(systemPrompt), new import_messages2.SystemMessage(summaryText), ...trimmed.filter((m) => m._getType() !== "system")] : [new import_messages2.SystemMessage(systemPrompt), ...trimmed.filter((m) => m._getType() !== "system")];
@@ -17636,7 +17643,14 @@ function PhoneOSApp({ phone }) {
   const [, forceUpdate] = (0, import_react.useState)(0);
   const { exit } = (0, import_ink.useApp)();
   (0, import_react.useEffect)(() => {
+    let lastViewId = "";
     return phone.subscribe(() => {
+      const activeView = phone.history[phone.history.length - 1];
+      const activeViewId = activeView ? activeView.id : "";
+      if (activeViewId !== lastViewId) {
+        lastViewId = activeViewId;
+        ui.clearScreen();
+      }
       forceUpdate((prev) => prev + 1);
     });
   }, [phone]);

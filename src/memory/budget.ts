@@ -121,6 +121,16 @@ export class MemoryManager {
     });
 
     const dropped = normalizedMessages.slice(0, Math.max(0, normalizedMessages.length - trimmed.length));
+    
+    // Ensure we always preserve at least the latest human message to prevent API errors
+    const hasHuman = trimmed.some(m => m._getType() === 'human');
+    if (!hasHuman) {
+      const lastHuman = [...normalizedMessages].reverse().find(m => m._getType() === 'human');
+      if (lastHuman) {
+        trimmed.unshift(lastHuman);
+      }
+    }
+
     const summaryText = this.buildSummary(dropped);
     this.lastSummary = summaryText;
 

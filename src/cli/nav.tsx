@@ -392,7 +392,14 @@ export function PhoneOSApp({ phone }: { phone: PhoneOS }) {
   const { exit } = useApp();
 
   useEffect(() => {
+    let lastViewId = '';
     return phone.subscribe(() => {
+      const activeView = phone.history[phone.history.length - 1];
+      const activeViewId = activeView ? activeView.id : '';
+      if (activeViewId !== lastViewId) {
+        lastViewId = activeViewId;
+        ui.clearScreen();
+      }
       forceUpdate(prev => prev + 1);
     });
   }, [phone]);
