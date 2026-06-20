@@ -2,6 +2,7 @@ import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { executor } from '../security/executor.js';
 import { backgroundManager } from '../security/background.js';
 import { osController } from '../hardware/os.js';
@@ -15,6 +16,13 @@ const MAX_LINE_READ = 240;
 function resolveWorkspacePath(filePath: string): string {
   const root = process.cwd();
   const resolved = path.resolve(root, filePath);
+  
+  // Allow reading background process logs in os.tmpdir()/otto-cli-logs
+  const logDir = path.resolve(os.tmpdir(), 'otto-cli-logs');
+  if (resolved.toLowerCase().startsWith(logDir.toLowerCase())) {
+    return resolved;
+  }
+  
   const relative = path.relative(root, resolved);
   if (relative.startsWith('..') || path.isAbsolute(relative)) {
     throw new Error(`Path escapes workspace: ${filePath}`);
@@ -88,8 +96,12 @@ const writeFile = tool(
       fs.mkdirSync(path.dirname(resolved), { recursive: true });
       fs.writeFileSync(resolved, content, 'utf8');
 
+      if (before !== content) {
+        executor.clearAttempts();
+      }
+
       const diff = diffForSingleFile(relative, before, content);
-      return diff || `No changes made to ${relative.replace(/\\/g, '/')}.`;
+      return diff || `File written successfully. Content was already up to date (no changes needed) for ${relative.replace(/\\/g, '/')}.`;
     } catch (e: any) {
       return `Error writing file: ${e.message}`;
     }
@@ -250,7 +262,7 @@ const replaceFileLines = tool(
       fs.writeFileSync(resolved, after, 'utf8');
 
       const diff = diffForSingleFile(relative, before, after);
-      return diff || `No changes made to ${formatPathForDisplay(relative)}.`;
+      return diff || `File modified successfully. Content was already up to date (no changes needed) for ${formatPathForDisplay(relative)}.`;
     } catch (e: any) {
       return `Error replacing lines: ${e.message}`;
     }

@@ -14,6 +14,25 @@ export class Executor {
   private lastCommands = new Map<string, { cmdStr: string; attempts: number }>();
 
   async executeCommand(commandStr: string, background: boolean = false): Promise<string> {
+    let cleanCmd = commandStr.trim();
+    
+    // Check if we should auto-background
+    const isBgPattern = /&$/i.test(cleanCmd) || 
+                        /^(npm\s+(run\s+)?(dev|start|watch)|node\s+server|python\s+-m\s+http\.server)/i.test(cleanCmd) ||
+                        /\b(--background|-background|--bg)\b/i.test(cleanCmd);
+    if (isBgPattern && !background) {
+      background = true;
+      ui.info(`Auto-backgrounding command: "${commandStr}"`);
+    }
+
+    // Clean comments, background flags, and trailing ampersands
+    cleanCmd = cleanCmd.replace(/(?:\s+#|\s+\/\/).*$/, '').trim();
+    cleanCmd = cleanCmd.replace(/\b(--background|-background|--bg)\b/gi, '').trim();
+    if (process.platform === 'win32') {
+      cleanCmd = cleanCmd.replace(/&+\s*$/, '').trim();
+    }
+    commandStr = cleanCmd;
+
     const executingThreadId = getExecutingThreadId() || chatSession.threadId || 'default';
     const cmdRecord = this.lastCommands.get(executingThreadId);
     if (cmdRecord && cmdRecord.cmdStr === commandStr && cmdRecord.attempts >= 3) {
@@ -47,15 +66,6 @@ export class Executor {
       ui.warning(`[Full Access Mode] Executing ${cmd} autonomously.`);
     }
 
-    // Detect background tasks run synchronously
-    if (!background) {
-      const trimmedCmd = commandStr.trim();
-      const isBgRegex = /&$/i.test(trimmedCmd) || /^(npm\s+(run\s+)?(dev|start|watch)|node\s+server|python\s+-m\s+http\.server)/i.test(trimmedCmd);
-      if (isBgRegex) {
-        throw new Error(`Command "${commandStr}" appears to be a long-running process or server. You must call execute_terminal_command with the "background" argument set to true. Do not use "&" at the end of the command string to background it on Windows.`);
-      }
-    }
-
     const runCore = async (): Promise<string> => {
       if (background) {
         const logDir = path.join(os.tmpdir(), 'otto-cli-logs');
@@ -68,8 +78,11 @@ export class Executor {
           cwd: process.cwd(),
           shell: true,
           stdio: ['ignore', out, err],
-          detached: true
+          detached: process.platform !== 'win32'
         });
+        
+        fs.closeSync(out);
+        fs.closeSync(err);
         
         backgroundManager.addProcess(commandStr, child, executingThreadId);
 
@@ -172,6 +185,10 @@ export class Executor {
     } finally {
       sessionEvents.emit('prompt_end');
     }
+  }
+
+  clearAttempts() {
+    this.lastCommands.clear();
   }
 }
 

@@ -36,8 +36,43 @@ import { confirm, select } from '@inquirer/prompts';
 import chalk from 'chalk';
 import os from 'os';
 
+function sanitizeJsonString(jsonStr: string): string {
+  let result = '';
+  let inString = false;
+  for (let i = 0; i < jsonStr.length; i++) {
+    const char = jsonStr[i];
+    if (char === '"') {
+      inString = !inString;
+      result += char;
+      continue;
+    }
+    if (inString && char === '\\') {
+      const nextChar = jsonStr[i + 1];
+      if (nextChar === "'" || nextChar === undefined) {
+        continue;
+      }
+      result += '\\' + nextChar;
+      i++;
+      continue;
+    }
+    if (inString && (char === '\n' || char === '\r')) {
+      if (char === '\n') result += '\\n';
+      continue;
+    }
+    result += char;
+  }
+  return result;
+}
+
+function isToolCallFormat(obj: any): boolean {
+  if (Array.isArray(obj)) {
+    return obj.length === 0 || (obj[0] && typeof obj[0] === 'object' && 'name' in obj[0]);
+  }
+  return obj && typeof obj === 'object' && 'name' in obj && ('args' in obj || 'arguments' in obj);
+}
+
 type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral';
-function parseFallbackToolCalls(content: string): any[] | null {
+function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null {
   const trimmed = content.trim();
   if (!trimmed) return null;
 
@@ -51,6 +86,9 @@ function parseFallbackToolCalls(content: string): any[] | null {
           args: obj.arguments || obj.args,
           id: 'fallback_' + Math.random().toString(36).substring(2, 9)
         });
+        if (obj.name === 'write_file' || obj.name === 'replace_file_lines') {
+          executor.clearAttempts();
+        }
         return true;
       }
     }
@@ -58,30 +96,39 @@ function parseFallbackToolCalls(content: string): any[] | null {
   };
 
   try {
-    const parsed = JSON.parse(trimmed);
-    if (Array.isArray(parsed)) {
-      parsed.forEach(addIfValid);
-    } else {
-      addIfValid(parsed);
-    }
-  } catch {}
-
-  if (foundCalls.length > 0) return foundCalls;
-
-  const jsonBlockRegex = /```json\s*([\s\S]*?)\s*```/g;
-  let match;
-  while ((match = jsonBlockRegex.exec(trimmed)) !== null) {
-    try {
-      const parsed = JSON.parse(match[1].trim());
+    const sanitized = sanitizeJsonString(trimmed);
+    const parsed = JSON.parse(sanitized);
+    if (isToolCallFormat(parsed)) {
       if (Array.isArray(parsed)) {
         parsed.forEach(addIfValid);
       } else {
         addIfValid(parsed);
       }
+      return foundCalls.length > 0 ? foundCalls : null;
+    }
+  } catch {}
+
+  let hasJsonToolCallBlock = false;
+  const jsonBlockRegex = /```json\s*([\s\S]*?)\s*```/g;
+  let match;
+  while ((match = jsonBlockRegex.exec(trimmed)) !== null) {
+    try {
+      const sanitized = sanitizeJsonString(match[1].trim());
+      const parsed = JSON.parse(sanitized);
+      if (isToolCallFormat(parsed)) {
+        hasJsonToolCallBlock = true;
+        if (Array.isArray(parsed)) {
+          parsed.forEach(addIfValid);
+        } else {
+          addIfValid(parsed);
+        }
+      }
     } catch {}
   }
 
-  if (foundCalls.length > 0) return foundCalls;
+  if (hasJsonToolCallBlock) {
+    return foundCalls.length > 0 ? foundCalls : null;
+  }
 
   let inString = false;
   let escapeNext = false;
@@ -115,7 +162,8 @@ function parseFallbackToolCalls(content: string): any[] | null {
         if (depth === 0 && startIdx !== -1) {
           const potentialJson = trimmed.substring(startIdx, i + 1);
           try {
-            const parsed = JSON.parse(potentialJson);
+            const sanitized = sanitizeJsonString(potentialJson);
+            const parsed = JSON.parse(sanitized);
             addIfValid(parsed);
           } catch {}
         }
@@ -125,7 +173,7 @@ function parseFallbackToolCalls(content: string): any[] | null {
 
   if (foundCalls.length > 0) return foundCalls;
 
-  const blockRegex = /```(bash|sh|shell|powershell|cmd|ps1|javascript|typescript|js|ts|json|html|css)?\s*([\s\S]*?)\s*```/g;
+  const blockRegex = /```([a-zA-Z0-9_-]*)\s*([\s\S]*?)\s*```/g;
   let blockMatch;
   let lastIdx = 0;
 
@@ -136,6 +184,38 @@ function parseFallbackToolCalls(content: string): any[] | null {
     lastIdx = blockRegex.lastIndex;
 
     if (!code) continue;
+    if (lang === 'diff' || lang === 'patch') continue;
+
+    if (messages && messages.length > 0) {
+      const lastMsg = messages[messages.length - 1];
+      const isToolMessage = lastMsg && (
+        lastMsg._getType?.() === 'tool' || 
+        lastMsg.role === 'tool' ||
+        (lastMsg.content && lastMsg.content.toString().includes('Background process started')) ||
+        (lastMsg.content && lastMsg.content.toString().includes('Initial Output Logs'))
+      );
+      if (isToolMessage) {
+        const lastMsgContent = (lastMsg.content || '').toString();
+        if (lastMsgContent.includes(code)) {
+          continue;
+        }
+      }
+    }
+
+    const isWin = process.platform === 'win32';
+    const osFilterMatch = preText.match(/(?:for|on|mac|linux|windows|win)\s*(mac(?:os)?|osx|linux|ubuntu|debian|windows|win32)/i);
+    if (osFilterMatch) {
+      const targetOS = osFilterMatch[1].toLowerCase();
+      if ((targetOS.includes('mac') || targetOS.includes('osx')) && isWin) {
+        continue;
+      }
+      if (targetOS.includes('linux') && isWin) {
+        continue;
+      }
+      if (targetOS.includes('windows') && !isWin) {
+        continue;
+      }
+    }
 
     const isCmdLang = ['bash', 'sh', 'shell', 'powershell', 'cmd', 'ps1'].includes(lang);
     const firstLine = code.split('\n')[0]?.trim() ?? '';
@@ -152,10 +232,80 @@ function parseFallbackToolCalls(content: string): any[] | null {
 
     let fileMatch = code.split('\n')[0]?.trim().match(/^(?:#|\/\/|\/\*+)\s*(?:file:)?\s*`?([a-zA-Z0-9_\-\.\/\\:]+\.[a-zA-Z0-9_]+)`?/i);
     if (!fileMatch) {
-      fileMatch = preText.match(/(?:file|to|named|in|create|write|for)\s+`?([a-zA-Z0-9_\-\.\/\\:]+\.[a-zA-Z0-9_]+)`?/i);
+      fileMatch = preText.match(/(?:file|to|named|in|create|write|for|of|as|called)\s+`?([a-zA-Z0-9_\-\.\/\\:]+\.[a-zA-Z0-9_]+)`?/i);
     }
     if (!fileMatch) {
-      fileMatch = preText.match(/\b([a-zA-Z0-9_\-\.\/\\:]+\.(?:py|js|ts|json|html|css|sh|ps1|bat|cmd|cpp|c|h|md))\b/i);
+      const afterMatch = preText.match(/`?([a-zA-Z0-9_\-\.\/\\:]+\.[a-zA-Z0-9_]+)`?\s+(?:file|content|data|code|structure|script|program|module|template|text)/i);
+      if (afterMatch) {
+        fileMatch = afterMatch;
+      }
+    }
+    if (!fileMatch) {
+      fileMatch = preText.match(/\b([a-zA-Z0-9_\-\.\/\\:]+\.(?:py|js|ts|json|html|css|sh|ps1|bat|cmd|cpp|c|h|md|csv|yaml|yml|toml|txt))\b/i);
+    }
+
+    if (!fileMatch) {
+      // Content-based heuristics for common files
+      if (lang === 'json' || code.startsWith('{')) {
+        if (code.includes('"name"') && code.includes('"version"') && (code.includes('"dependencies"') || code.includes('"devDependencies"') || code.includes('"scripts"'))) {
+          fileMatch = ['package.json', 'package.json'];
+        } else if (code.includes('"compilerOptions"')) {
+          fileMatch = ['tsconfig.json', 'tsconfig.json'];
+        }
+      } else if (lang === 'html' || code.includes('<!DOCTYPE') || code.includes('<html')) {
+        fileMatch = ['index.html', 'index.html'];
+      }
+    }
+
+    const extMap: Record<string, string> = {
+      typescript: 'ts', ts: 'ts', tsx: 'tsx',
+      javascript: 'js', js: 'js', jsx: 'jsx',
+      python: 'py', py: 'py',
+      json: 'json',
+      html: 'html',
+      css: 'css',
+      rust: 'rs', rs: 'rs',
+      toml: 'toml',
+      yaml: 'yaml', yml: 'yml',
+      csv: 'csv',
+      markdown: 'md', md: 'md'
+    };
+    const extension = extMap[lang];
+
+    if (!fileMatch && extension) {
+      // Search in entire response content (trimmed) for a unique filename with this extension
+      const escExt = extension.replace(/\./g, '\\.');
+      const allMatches = trimmed.match(new RegExp(`\\b([a-zA-Z0-9_\\-\\.\\/\\\\:]+\\.${escExt})\\b`, 'gi'));
+      if (allMatches && allMatches.length > 0) {
+        const unique = Array.from(new Set(allMatches.map(f => f.toLowerCase())));
+        if (unique.length === 1) {
+          const matchIdx = allMatches.map(f => f.toLowerCase()).indexOf(unique[0]);
+          fileMatch = [allMatches[matchIdx], allMatches[matchIdx]];
+        }
+      }
+    }
+
+    if (!fileMatch && extension && messages && Array.isArray(messages)) {
+      // Search in the messages (specifically the user prompts/last messages) for a unique filename with this extension
+      let userText = '';
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if (msg && (msg._getType?.() === 'human' || msg.role === 'user' || msg.role === 'human')) {
+          userText = (msg.content || '').toString();
+          break;
+        }
+      }
+      if (userText) {
+        const escExt = extension.replace(/\./g, '\\.');
+        const allMatches = userText.match(new RegExp(`\\b([a-zA-Z0-9_\\-\\.\\/\\\\:]+\\.${escExt})\\b`, 'gi'));
+        if (allMatches && allMatches.length > 0) {
+          const unique = Array.from(new Set(allMatches.map(f => f.toLowerCase())));
+          if (unique.length === 1) {
+            const matchIdx = allMatches.map(f => f.toLowerCase()).indexOf(unique[0]);
+            fileMatch = [allMatches[matchIdx], allMatches[matchIdx]];
+          }
+        }
+      }
     }
 
     if (fileMatch) {
@@ -164,6 +314,7 @@ function parseFallbackToolCalls(content: string): any[] | null {
         args: { filePath: fileMatch[1], content: code },
         id: 'fallback_text_file_' + Math.random().toString(36).substring(2, 9)
       });
+      executor.clearAttempts();
     }
   }
 
@@ -608,7 +759,7 @@ async function main() {
             
             let hasToolCalls = finalMessage?.tool_calls && finalMessage.tool_calls.length > 0;
             if (!hasToolCalls && finalMessage?.content) {
-              const fallbackCalls = parseFallbackToolCalls(finalMessage.content.toString());
+              const fallbackCalls = parseFallbackToolCalls(finalMessage.content.toString(), messages);
               if (fallbackCalls && fallbackCalls.length > 0) {
                 finalMessage.tool_calls = fallbackCalls;
                 aiMessage.tool_calls = fallbackCalls;

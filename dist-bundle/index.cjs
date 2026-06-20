@@ -16012,6 +16012,7 @@ config(en_default());
 // src/llm/tools.ts
 var import_fs3 = __toESM(require("fs"), 1);
 var import_path4 = __toESM(require("path"), 1);
+var import_os4 = __toESM(require("os"), 1);
 
 // src/security/executor.ts
 var import_child_process = require("child_process");
@@ -16090,6 +16091,18 @@ function getExecutingThreadId() {
 var Executor = class {
   lastCommands = /* @__PURE__ */ new Map();
   async executeCommand(commandStr, background = false) {
+    let cleanCmd = commandStr.trim();
+    const isBgPattern = /&$/i.test(cleanCmd) || /^(npm\s+(run\s+)?(dev|start|watch)|node\s+server|python\s+-m\s+http\.server)/i.test(cleanCmd) || /\b(--background|-background|--bg)\b/i.test(cleanCmd);
+    if (isBgPattern && !background) {
+      background = true;
+      ui.info(`Auto-backgrounding command: "${commandStr}"`);
+    }
+    cleanCmd = cleanCmd.replace(/(?:\s+#|\s+\/\/).*$/, "").trim();
+    cleanCmd = cleanCmd.replace(/\b(--background|-background|--bg)\b/gi, "").trim();
+    if (process.platform === "win32") {
+      cleanCmd = cleanCmd.replace(/&+\s*$/, "").trim();
+    }
+    commandStr = cleanCmd;
     const executingThreadId = getExecutingThreadId() || chatSession.threadId || "default";
     const cmdRecord = this.lastCommands.get(executingThreadId);
     if (cmdRecord && cmdRecord.cmdStr === commandStr && cmdRecord.attempts >= 3) {
@@ -16116,13 +16129,6 @@ var Executor = class {
     } else if (config2.security.mode === "full") {
       ui.warning(`[Full Access Mode] Executing ${cmd} autonomously.`);
     }
-    if (!background) {
-      const trimmedCmd = commandStr.trim();
-      const isBgRegex = /&$/i.test(trimmedCmd) || /^(npm\s+(run\s+)?(dev|start|watch)|node\s+server|python\s+-m\s+http\.server)/i.test(trimmedCmd);
-      if (isBgRegex) {
-        throw new Error(`Command "${commandStr}" appears to be a long-running process or server. You must call execute_terminal_command with the "background" argument set to true. Do not use "&" at the end of the command string to background it on Windows.`);
-      }
-    }
     const runCore = async () => {
       if (background) {
         const logDir = path3.join(os4.tmpdir(), "otto-cli-logs");
@@ -16134,8 +16140,10 @@ var Executor = class {
           cwd: process.cwd(),
           shell: true,
           stdio: ["ignore", out, err],
-          detached: true
+          detached: process.platform !== "win32"
         });
+        fs2.closeSync(out);
+        fs2.closeSync(err);
         backgroundManager.addProcess(commandStr, child, executingThreadId);
         let spawnError = null;
         const onError = (err2) => {
@@ -16232,6 +16240,9 @@ ${out}`;
     } finally {
       sessionEvents.emit("prompt_end");
     }
+  }
+  clearAttempts() {
+    this.lastCommands.clear();
   }
 };
 var executor = new Executor();
@@ -16330,6 +16341,9 @@ function walk(dir, root, snapshot) {
     if (entry.isDirectory()) {
       if (shouldSkipDir(entry.name)) continue;
       walk(import_path3.default.join(dir, entry.name), root, snapshot);
+      continue;
+    }
+    if (entry.name === "package-lock.json" || entry.name === "yarn.lock" || entry.name === "pnpm-lock.yaml") {
       continue;
     }
     const fullPath = import_path3.default.join(dir, entry.name);
@@ -16438,6 +16452,10 @@ var MAX_LINE_READ = 240;
 function resolveWorkspacePath(filePath) {
   const root = process.cwd();
   const resolved = import_path4.default.resolve(root, filePath);
+  const logDir = import_path4.default.resolve(import_os4.default.tmpdir(), "otto-cli-logs");
+  if (resolved.toLowerCase().startsWith(logDir.toLowerCase())) {
+    return resolved;
+  }
   const relative = import_path4.default.relative(root, resolved);
   if (relative.startsWith("..") || import_path4.default.isAbsolute(relative)) {
     throw new Error(`Path escapes workspace: ${filePath}`);
@@ -16503,8 +16521,11 @@ var writeFile = (0, import_tools.tool)(
       const before = import_fs3.default.existsSync(resolved) ? import_fs3.default.readFileSync(resolved, "utf8") : void 0;
       import_fs3.default.mkdirSync(import_path4.default.dirname(resolved), { recursive: true });
       import_fs3.default.writeFileSync(resolved, content, "utf8");
+      if (before !== content) {
+        executor.clearAttempts();
+      }
       const diff = diffForSingleFile(relative, before, content);
-      return diff || `No changes made to ${relative.replace(/\\/g, "/")}.`;
+      return diff || `File written successfully. Content was already up to date (no changes needed) for ${relative.replace(/\\/g, "/")}.`;
     } catch (e) {
       return `Error writing file: ${e.message}`;
     }
@@ -16650,7 +16671,7 @@ var replaceFileLines = (0, import_tools.tool)(
       const after = nextLines.join("\n");
       import_fs3.default.writeFileSync(resolved, after, "utf8");
       const diff = diffForSingleFile(relative, before, after);
-      return diff || `No changes made to ${formatPathForDisplay(relative)}.`;
+      return diff || `File modified successfully. Content was already up to date (no changes needed) for ${formatPathForDisplay(relative)}.`;
     } catch (e) {
       return `Error replacing lines: ${e.message}`;
     }
@@ -16775,7 +16796,40 @@ var tools = [
 
 // src/llm/provider.ts
 var import_stream = require("@langchain/core/utils/stream");
-function parseFallbackToolCalls(content) {
+function sanitizeJsonString(jsonStr) {
+  let result = "";
+  let inString = false;
+  for (let i = 0; i < jsonStr.length; i++) {
+    const char = jsonStr[i];
+    if (char === '"') {
+      inString = !inString;
+      result += char;
+      continue;
+    }
+    if (inString && char === "\\") {
+      const nextChar = jsonStr[i + 1];
+      if (nextChar === "'" || nextChar === void 0) {
+        continue;
+      }
+      result += "\\" + nextChar;
+      i++;
+      continue;
+    }
+    if (inString && (char === "\n" || char === "\r")) {
+      if (char === "\n") result += "\\n";
+      continue;
+    }
+    result += char;
+  }
+  return result;
+}
+function isToolCallFormat(obj) {
+  if (Array.isArray(obj)) {
+    return obj.length === 0 || obj[0] && typeof obj[0] === "object" && "name" in obj[0];
+  }
+  return obj && typeof obj === "object" && "name" in obj && ("args" in obj || "arguments" in obj);
+}
+function parseFallbackToolCalls(content, messages) {
   const trimmed = content.trim();
   if (!trimmed) return null;
   const foundCalls = [];
@@ -16787,35 +16841,48 @@ function parseFallbackToolCalls(content) {
           args: obj.arguments || obj.args,
           id: "fallback_" + Math.random().toString(36).substring(2, 9)
         });
+        if (obj.name === "write_file" || obj.name === "replace_file_lines") {
+          executor.clearAttempts();
+        }
         return true;
       }
     }
     return false;
   };
   try {
-    const parsed = JSON.parse(trimmed);
-    if (Array.isArray(parsed)) {
-      parsed.forEach(addIfValid);
-    } else {
-      addIfValid(parsed);
-    }
-  } catch {
-  }
-  if (foundCalls.length > 0) return foundCalls;
-  const jsonBlockRegex = /```json\s*([\s\S]*?)\s*```/g;
-  let match;
-  while ((match = jsonBlockRegex.exec(trimmed)) !== null) {
-    try {
-      const parsed = JSON.parse(match[1].trim());
+    const sanitized = sanitizeJsonString(trimmed);
+    const parsed = JSON.parse(sanitized);
+    if (isToolCallFormat(parsed)) {
       if (Array.isArray(parsed)) {
         parsed.forEach(addIfValid);
       } else {
         addIfValid(parsed);
       }
+      return foundCalls.length > 0 ? foundCalls : null;
+    }
+  } catch {
+  }
+  let hasJsonToolCallBlock = false;
+  const jsonBlockRegex = /```json\s*([\s\S]*?)\s*```/g;
+  let match;
+  while ((match = jsonBlockRegex.exec(trimmed)) !== null) {
+    try {
+      const sanitized = sanitizeJsonString(match[1].trim());
+      const parsed = JSON.parse(sanitized);
+      if (isToolCallFormat(parsed)) {
+        hasJsonToolCallBlock = true;
+        if (Array.isArray(parsed)) {
+          parsed.forEach(addIfValid);
+        } else {
+          addIfValid(parsed);
+        }
+      }
     } catch {
     }
   }
-  if (foundCalls.length > 0) return foundCalls;
+  if (hasJsonToolCallBlock) {
+    return foundCalls.length > 0 ? foundCalls : null;
+  }
   let inString = false;
   let escapeNext = false;
   let depth = 0;
@@ -16843,7 +16910,8 @@ function parseFallbackToolCalls(content) {
         if (depth === 0 && startIdx !== -1) {
           const potentialJson = trimmed.substring(startIdx, i + 1);
           try {
-            const parsed = JSON.parse(potentialJson);
+            const sanitized = sanitizeJsonString(potentialJson);
+            const parsed = JSON.parse(sanitized);
             addIfValid(parsed);
           } catch {
           }
@@ -16852,7 +16920,7 @@ function parseFallbackToolCalls(content) {
     }
   }
   if (foundCalls.length > 0) return foundCalls;
-  const blockRegex = /```(bash|sh|shell|powershell|cmd|ps1|javascript|typescript|js|ts|json|html|css)?\s*([\s\S]*?)\s*```/g;
+  const blockRegex = /```([a-zA-Z0-9_-]*)\s*([\s\S]*?)\s*```/g;
   let blockMatch;
   let lastIdx = 0;
   while ((blockMatch = blockRegex.exec(trimmed)) !== null) {
@@ -16861,6 +16929,31 @@ function parseFallbackToolCalls(content) {
     const preText = trimmed.substring(lastIdx, blockMatch.index).trim();
     lastIdx = blockRegex.lastIndex;
     if (!code) continue;
+    if (lang === "diff" || lang === "patch") continue;
+    if (messages && messages.length > 0) {
+      const lastMsg = messages[messages.length - 1];
+      const isToolMessage = lastMsg && (lastMsg._getType?.() === "tool" || lastMsg.role === "tool" || lastMsg.content && lastMsg.content.toString().includes("Background process started") || lastMsg.content && lastMsg.content.toString().includes("Initial Output Logs"));
+      if (isToolMessage) {
+        const lastMsgContent = (lastMsg.content || "").toString();
+        if (lastMsgContent.includes(code)) {
+          continue;
+        }
+      }
+    }
+    const isWin = process.platform === "win32";
+    const osFilterMatch = preText.match(/(?:for|on|mac|linux|windows|win)\s*(mac(?:os)?|osx|linux|ubuntu|debian|windows|win32)/i);
+    if (osFilterMatch) {
+      const targetOS = osFilterMatch[1].toLowerCase();
+      if ((targetOS.includes("mac") || targetOS.includes("osx")) && isWin) {
+        continue;
+      }
+      if (targetOS.includes("linux") && isWin) {
+        continue;
+      }
+      if (targetOS.includes("windows") && !isWin) {
+        continue;
+      }
+    }
     const isCmdLang = ["bash", "sh", "shell", "powershell", "cmd", "ps1"].includes(lang);
     const firstLine = code.split("\n")[0]?.trim() ?? "";
     const isCmdPattern = /^(npm|git|node|tsc|npx|pip|python|docker|cargo|yarn|pnpm|deno|ollama)\b/i.test(firstLine);
@@ -16872,13 +16965,91 @@ function parseFallbackToolCalls(content) {
       });
       continue;
     }
-    const fileMatch = preText.match(/(?:file|to|named|in|create|write)\s+`?([a-zA-Z0-9_\-\.\/\\:]+\.[a-zA-Z0-9_]+)`?/i);
+    let fileMatch = code.split("\n")[0]?.trim().match(/^(?:#|\/\/|\/\*+)\s*(?:file:)?\s*`?([a-zA-Z0-9_\-\.\/\\:]+\.[a-zA-Z0-9_]+)`?/i);
+    if (!fileMatch) {
+      fileMatch = preText.match(/(?:file|to|named|in|create|write|for|of|as|called)\s+`?([a-zA-Z0-9_\-\.\/\\:]+\.[a-zA-Z0-9_]+)`?/i);
+    }
+    if (!fileMatch) {
+      const afterMatch = preText.match(/`?([a-zA-Z0-9_\-\.\/\\:]+\.[a-zA-Z0-9_]+)`?\s+(?:file|content|data|code|structure|script|program|module|template|text)/i);
+      if (afterMatch) {
+        fileMatch = afterMatch;
+      }
+    }
+    if (!fileMatch) {
+      fileMatch = preText.match(/\b([a-zA-Z0-9_\-\.\/\\:]+\.(?:py|js|ts|json|html|css|sh|ps1|bat|cmd|cpp|c|h|md|csv|yaml|yml|toml|txt))\b/i);
+    }
+    if (!fileMatch) {
+      if (lang === "json" || code.startsWith("{")) {
+        if (code.includes('"name"') && code.includes('"version"') && (code.includes('"dependencies"') || code.includes('"devDependencies"') || code.includes('"scripts"'))) {
+          fileMatch = ["package.json", "package.json"];
+        } else if (code.includes('"compilerOptions"')) {
+          fileMatch = ["tsconfig.json", "tsconfig.json"];
+        }
+      } else if (lang === "html" || code.includes("<!DOCTYPE") || code.includes("<html")) {
+        fileMatch = ["index.html", "index.html"];
+      }
+    }
+    const extMap = {
+      typescript: "ts",
+      ts: "ts",
+      tsx: "tsx",
+      javascript: "js",
+      js: "js",
+      jsx: "jsx",
+      python: "py",
+      py: "py",
+      json: "json",
+      html: "html",
+      css: "css",
+      rust: "rs",
+      rs: "rs",
+      toml: "toml",
+      yaml: "yaml",
+      yml: "yml",
+      csv: "csv",
+      markdown: "md",
+      md: "md"
+    };
+    const extension = extMap[lang];
+    if (!fileMatch && extension) {
+      const escExt = extension.replace(/\./g, "\\.");
+      const allMatches = trimmed.match(new RegExp(`\\b([a-zA-Z0-9_\\-\\.\\/\\\\:]+\\.${escExt})\\b`, "gi"));
+      if (allMatches && allMatches.length > 0) {
+        const unique = Array.from(new Set(allMatches.map((f) => f.toLowerCase())));
+        if (unique.length === 1) {
+          const matchIdx = allMatches.map((f) => f.toLowerCase()).indexOf(unique[0]);
+          fileMatch = [allMatches[matchIdx], allMatches[matchIdx]];
+        }
+      }
+    }
+    if (!fileMatch && extension && messages && Array.isArray(messages)) {
+      let userText = "";
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if (msg && (msg._getType?.() === "human" || msg.role === "user" || msg.role === "human")) {
+          userText = (msg.content || "").toString();
+          break;
+        }
+      }
+      if (userText) {
+        const escExt = extension.replace(/\./g, "\\.");
+        const allMatches = userText.match(new RegExp(`\\b([a-zA-Z0-9_\\-\\.\\/\\\\:]+\\.${escExt})\\b`, "gi"));
+        if (allMatches && allMatches.length > 0) {
+          const unique = Array.from(new Set(allMatches.map((f) => f.toLowerCase())));
+          if (unique.length === 1) {
+            const matchIdx = allMatches.map((f) => f.toLowerCase()).indexOf(unique[0]);
+            fileMatch = [allMatches[matchIdx], allMatches[matchIdx]];
+          }
+        }
+      }
+    }
     if (fileMatch) {
       foundCalls.push({
         name: "write_file",
         args: { filePath: fileMatch[1], content: code },
         id: "fallback_text_file_" + Math.random().toString(36).substring(2, 9)
       });
+      executor.clearAttempts();
     }
   }
   if (foundCalls.length === 0) {
@@ -16975,7 +17146,7 @@ var ProviderEngine = class {
         rawModel.invoke = async (inputMessages, options) => {
           const response = await originalInvoke(inputMessages, options);
           if (response && response.content && (!response.tool_calls || response.tool_calls.length === 0)) {
-            const fallbackCalls = parseFallbackToolCalls(response.content.toString());
+            const fallbackCalls = parseFallbackToolCalls(response.content.toString(), inputMessages);
             if (fallbackCalls && fallbackCalls.length > 0) {
               response.tool_calls = fallbackCalls;
               const rawTrimmed = response.content.toString().trim();
@@ -17332,12 +17503,12 @@ var memoryManager = new MemoryManager();
 // src/security/rules.ts
 var import_fs4 = __toESM(require("fs"), 1);
 var import_path5 = __toESM(require("path"), 1);
-var import_os5 = __toESM(require("os"), 1);
+var import_os6 = __toESM(require("os"), 1);
 var import_prompts3 = require("@inquirer/prompts");
 var RuleGuardrail = class {
   rulesPath;
   constructor() {
-    this.rulesPath = import_path5.default.join(import_os5.default.homedir(), ".otto", "rules.md");
+    this.rulesPath = import_path5.default.join(import_os6.default.homedir(), ".otto", "rules.md");
     this.ensureRulesExist();
   }
   ensureRulesExist() {
@@ -18640,7 +18811,7 @@ function createCommandPaletteView(phone, actions) {
 var import_chalk8 = __toESM(require("chalk"), 1);
 var import_fs7 = __toESM(require("fs"), 1);
 var import_path8 = __toESM(require("path"), 1);
-var import_os6 = __toESM(require("os"), 1);
+var import_os7 = __toESM(require("os"), 1);
 var import_child_process3 = require("child_process");
 var c = {
   info: (text) => import_chalk8.default.cyan(text),
@@ -18681,12 +18852,12 @@ function showStatus() {
 ${c.bright("O.T.T.O - System Status")}
 `);
   console.log(c.dim("\u2550".repeat(60)));
-  const configPath = import_path8.default.join(import_os6.default.homedir(), ".otto", "config.json");
+  const configPath = import_path8.default.join(import_os7.default.homedir(), ".otto", "config.json");
   console.log(`
 ${c.info("[INFO]")} Configuration File:`);
   console.log(`       ${c.dim(configPath)}`);
   console.log(`       Status: ${import_fs7.default.existsSync(configPath) ? c.ok("[OK] Exists") : c.warn("[WARN] Using Defaults")}`);
-  const rulesPath = import_path8.default.join(import_os6.default.homedir(), ".otto", "rules.md");
+  const rulesPath = import_path8.default.join(import_os7.default.homedir(), ".otto", "rules.md");
   console.log(`
 ${c.info("[INFO]")} System Directives File:`);
   console.log(`       ${c.dim(rulesPath)}`);
@@ -18718,7 +18889,7 @@ ${c.error("\u274C")} Workspace path required: otto sandbox <path>
 `);
     process.exit(1);
   }
-  const resolvedPath = workspace.startsWith("~") ? workspace.replace(/^~/, import_os6.default.homedir()) : import_path8.default.resolve(workspace);
+  const resolvedPath = workspace.startsWith("~") ? workspace.replace(/^~/, import_os7.default.homedir()) : import_path8.default.resolve(workspace);
   if (!import_fs7.default.existsSync(resolvedPath)) {
     console.error(`
 ${c.error("\u274C")} Workspace path not found: ${c.dim(resolvedPath)}
@@ -18795,7 +18966,40 @@ var import_meta2 = {};
 var require3 = (0, import_module2.createRequire)(import_meta2.url);
 var pkg2 = require3("../package.json");
 var CLI_VERSION2 = pkg2.version;
-function parseFallbackToolCalls2(content) {
+function sanitizeJsonString2(jsonStr) {
+  let result = "";
+  let inString = false;
+  for (let i = 0; i < jsonStr.length; i++) {
+    const char = jsonStr[i];
+    if (char === '"') {
+      inString = !inString;
+      result += char;
+      continue;
+    }
+    if (inString && char === "\\") {
+      const nextChar = jsonStr[i + 1];
+      if (nextChar === "'" || nextChar === void 0) {
+        continue;
+      }
+      result += "\\" + nextChar;
+      i++;
+      continue;
+    }
+    if (inString && (char === "\n" || char === "\r")) {
+      if (char === "\n") result += "\\n";
+      continue;
+    }
+    result += char;
+  }
+  return result;
+}
+function isToolCallFormat2(obj) {
+  if (Array.isArray(obj)) {
+    return obj.length === 0 || obj[0] && typeof obj[0] === "object" && "name" in obj[0];
+  }
+  return obj && typeof obj === "object" && "name" in obj && ("args" in obj || "arguments" in obj);
+}
+function parseFallbackToolCalls2(content, messages) {
   const trimmed = content.trim();
   if (!trimmed) return null;
   const foundCalls = [];
@@ -18807,35 +19011,48 @@ function parseFallbackToolCalls2(content) {
           args: obj.arguments || obj.args,
           id: "fallback_" + Math.random().toString(36).substring(2, 9)
         });
+        if (obj.name === "write_file" || obj.name === "replace_file_lines") {
+          executor.clearAttempts();
+        }
         return true;
       }
     }
     return false;
   };
   try {
-    const parsed = JSON.parse(trimmed);
-    if (Array.isArray(parsed)) {
-      parsed.forEach(addIfValid);
-    } else {
-      addIfValid(parsed);
-    }
-  } catch {
-  }
-  if (foundCalls.length > 0) return foundCalls;
-  const jsonBlockRegex = /```json\s*([\s\S]*?)\s*```/g;
-  let match;
-  while ((match = jsonBlockRegex.exec(trimmed)) !== null) {
-    try {
-      const parsed = JSON.parse(match[1].trim());
+    const sanitized = sanitizeJsonString2(trimmed);
+    const parsed = JSON.parse(sanitized);
+    if (isToolCallFormat2(parsed)) {
       if (Array.isArray(parsed)) {
         parsed.forEach(addIfValid);
       } else {
         addIfValid(parsed);
       }
+      return foundCalls.length > 0 ? foundCalls : null;
+    }
+  } catch {
+  }
+  let hasJsonToolCallBlock = false;
+  const jsonBlockRegex = /```json\s*([\s\S]*?)\s*```/g;
+  let match;
+  while ((match = jsonBlockRegex.exec(trimmed)) !== null) {
+    try {
+      const sanitized = sanitizeJsonString2(match[1].trim());
+      const parsed = JSON.parse(sanitized);
+      if (isToolCallFormat2(parsed)) {
+        hasJsonToolCallBlock = true;
+        if (Array.isArray(parsed)) {
+          parsed.forEach(addIfValid);
+        } else {
+          addIfValid(parsed);
+        }
+      }
     } catch {
     }
   }
-  if (foundCalls.length > 0) return foundCalls;
+  if (hasJsonToolCallBlock) {
+    return foundCalls.length > 0 ? foundCalls : null;
+  }
   let inString = false;
   let escapeNext = false;
   let depth = 0;
@@ -18863,7 +19080,8 @@ function parseFallbackToolCalls2(content) {
         if (depth === 0 && startIdx !== -1) {
           const potentialJson = trimmed.substring(startIdx, i + 1);
           try {
-            const parsed = JSON.parse(potentialJson);
+            const sanitized = sanitizeJsonString2(potentialJson);
+            const parsed = JSON.parse(sanitized);
             addIfValid(parsed);
           } catch {
           }
@@ -18872,7 +19090,7 @@ function parseFallbackToolCalls2(content) {
     }
   }
   if (foundCalls.length > 0) return foundCalls;
-  const blockRegex = /```(bash|sh|shell|powershell|cmd|ps1|javascript|typescript|js|ts|json|html|css)?\s*([\s\S]*?)\s*```/g;
+  const blockRegex = /```([a-zA-Z0-9_-]*)\s*([\s\S]*?)\s*```/g;
   let blockMatch;
   let lastIdx = 0;
   while ((blockMatch = blockRegex.exec(trimmed)) !== null) {
@@ -18881,6 +19099,31 @@ function parseFallbackToolCalls2(content) {
     const preText = trimmed.substring(lastIdx, blockMatch.index).trim();
     lastIdx = blockRegex.lastIndex;
     if (!code) continue;
+    if (lang === "diff" || lang === "patch") continue;
+    if (messages && messages.length > 0) {
+      const lastMsg = messages[messages.length - 1];
+      const isToolMessage = lastMsg && (lastMsg._getType?.() === "tool" || lastMsg.role === "tool" || lastMsg.content && lastMsg.content.toString().includes("Background process started") || lastMsg.content && lastMsg.content.toString().includes("Initial Output Logs"));
+      if (isToolMessage) {
+        const lastMsgContent = (lastMsg.content || "").toString();
+        if (lastMsgContent.includes(code)) {
+          continue;
+        }
+      }
+    }
+    const isWin = process.platform === "win32";
+    const osFilterMatch = preText.match(/(?:for|on|mac|linux|windows|win)\s*(mac(?:os)?|osx|linux|ubuntu|debian|windows|win32)/i);
+    if (osFilterMatch) {
+      const targetOS = osFilterMatch[1].toLowerCase();
+      if ((targetOS.includes("mac") || targetOS.includes("osx")) && isWin) {
+        continue;
+      }
+      if (targetOS.includes("linux") && isWin) {
+        continue;
+      }
+      if (targetOS.includes("windows") && !isWin) {
+        continue;
+      }
+    }
     const isCmdLang = ["bash", "sh", "shell", "powershell", "cmd", "ps1"].includes(lang);
     const firstLine = code.split("\n")[0]?.trim() ?? "";
     const isCmdPattern = /^(npm|git|node|tsc|npx|pip|python|docker|cargo|yarn|pnpm|deno|ollama)\b/i.test(firstLine);
@@ -18894,10 +19137,81 @@ function parseFallbackToolCalls2(content) {
     }
     let fileMatch = code.split("\n")[0]?.trim().match(/^(?:#|\/\/|\/\*+)\s*(?:file:)?\s*`?([a-zA-Z0-9_\-\.\/\\:]+\.[a-zA-Z0-9_]+)`?/i);
     if (!fileMatch) {
-      fileMatch = preText.match(/(?:file|to|named|in|create|write|for)\s+`?([a-zA-Z0-9_\-\.\/\\:]+\.[a-zA-Z0-9_]+)`?/i);
+      fileMatch = preText.match(/(?:file|to|named|in|create|write|for|of|as|called)\s+`?([a-zA-Z0-9_\-\.\/\\:]+\.[a-zA-Z0-9_]+)`?/i);
     }
     if (!fileMatch) {
-      fileMatch = preText.match(/\b([a-zA-Z0-9_\-\.\/\\:]+\.(?:py|js|ts|json|html|css|sh|ps1|bat|cmd|cpp|c|h|md))\b/i);
+      const afterMatch = preText.match(/`?([a-zA-Z0-9_\-\.\/\\:]+\.[a-zA-Z0-9_]+)`?\s+(?:file|content|data|code|structure|script|program|module|template|text)/i);
+      if (afterMatch) {
+        fileMatch = afterMatch;
+      }
+    }
+    if (!fileMatch) {
+      fileMatch = preText.match(/\b([a-zA-Z0-9_\-\.\/\\:]+\.(?:py|js|ts|json|html|css|sh|ps1|bat|cmd|cpp|c|h|md|csv|yaml|yml|toml|txt))\b/i);
+    }
+    if (!fileMatch) {
+      if (lang === "json" || code.startsWith("{")) {
+        if (code.includes('"name"') && code.includes('"version"') && (code.includes('"dependencies"') || code.includes('"devDependencies"') || code.includes('"scripts"'))) {
+          fileMatch = ["package.json", "package.json"];
+        } else if (code.includes('"compilerOptions"')) {
+          fileMatch = ["tsconfig.json", "tsconfig.json"];
+        }
+      } else if (lang === "html" || code.includes("<!DOCTYPE") || code.includes("<html")) {
+        fileMatch = ["index.html", "index.html"];
+      }
+    }
+    const extMap = {
+      typescript: "ts",
+      ts: "ts",
+      tsx: "tsx",
+      javascript: "js",
+      js: "js",
+      jsx: "jsx",
+      python: "py",
+      py: "py",
+      json: "json",
+      html: "html",
+      css: "css",
+      rust: "rs",
+      rs: "rs",
+      toml: "toml",
+      yaml: "yaml",
+      yml: "yml",
+      csv: "csv",
+      markdown: "md",
+      md: "md"
+    };
+    const extension = extMap[lang];
+    if (!fileMatch && extension) {
+      const escExt = extension.replace(/\./g, "\\.");
+      const allMatches = trimmed.match(new RegExp(`\\b([a-zA-Z0-9_\\-\\.\\/\\\\:]+\\.${escExt})\\b`, "gi"));
+      if (allMatches && allMatches.length > 0) {
+        const unique = Array.from(new Set(allMatches.map((f) => f.toLowerCase())));
+        if (unique.length === 1) {
+          const matchIdx = allMatches.map((f) => f.toLowerCase()).indexOf(unique[0]);
+          fileMatch = [allMatches[matchIdx], allMatches[matchIdx]];
+        }
+      }
+    }
+    if (!fileMatch && extension && messages && Array.isArray(messages)) {
+      let userText = "";
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if (msg && (msg._getType?.() === "human" || msg.role === "user" || msg.role === "human")) {
+          userText = (msg.content || "").toString();
+          break;
+        }
+      }
+      if (userText) {
+        const escExt = extension.replace(/\./g, "\\.");
+        const allMatches = userText.match(new RegExp(`\\b([a-zA-Z0-9_\\-\\.\\/\\\\:]+\\.${escExt})\\b`, "gi"));
+        if (allMatches && allMatches.length > 0) {
+          const unique = Array.from(new Set(allMatches.map((f) => f.toLowerCase())));
+          if (unique.length === 1) {
+            const matchIdx = allMatches.map((f) => f.toLowerCase()).indexOf(unique[0]);
+            fileMatch = [allMatches[matchIdx], allMatches[matchIdx]];
+          }
+        }
+      }
     }
     if (fileMatch) {
       foundCalls.push({
@@ -18905,6 +19219,7 @@ function parseFallbackToolCalls2(content) {
         args: { filePath: fileMatch[1], content: code },
         id: "fallback_text_file_" + Math.random().toString(36).substring(2, 9)
       });
+      executor.clearAttempts();
     }
   }
   if (foundCalls.length === 0) {
@@ -19289,7 +19604,7 @@ ${reasoning}
               }
               let hasToolCalls = finalMessage?.tool_calls && finalMessage.tool_calls.length > 0;
               if (!hasToolCalls && finalMessage?.content) {
-                const fallbackCalls = parseFallbackToolCalls2(finalMessage.content.toString());
+                const fallbackCalls = parseFallbackToolCalls2(finalMessage.content.toString(), messages);
                 if (fallbackCalls && fallbackCalls.length > 0) {
                   finalMessage.tool_calls = fallbackCalls;
                   aiMessage.tool_calls = fallbackCalls;

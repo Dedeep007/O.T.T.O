@@ -45,6 +45,10 @@ function walk(dir: string, root: string, snapshot: Snapshot) {
       continue;
     }
 
+    if (entry.name === 'package-lock.json' || entry.name === 'yarn.lock' || entry.name === 'pnpm-lock.yaml') {
+      continue;
+    }
+
     const fullPath = path.join(dir, entry.name);
     let stat: fs.Stats;
     try {
