@@ -480,16 +480,16 @@ export class ChatUI {
     }
 
     // ── 4. Write viewport to terminal (overwrite in place) ────────────────────
-    process.stdout.write('\x1B[H');
+    let out = '\x1B[?25l\x1B[H';
 
     for (const line of visible) {
-      process.stdout.write(line + '\x1B[K\n');
+      out += line + '\x1B[K\n';
     }
 
     // Erase leftover rows from a previous taller render
     const leftover = this.lastLineCount - visible.length;
     for (let i = 0; i < leftover; i++) {
-      process.stdout.write('\x1B[2K\n');
+      out += '\x1B[2K\n';
     }
     this.lastLineCount = visible.length;
 
@@ -533,6 +533,7 @@ export class ChatUI {
         }
       } catch (e) {}
     }
-    process.stdout.write('\x1B[2K\r' + promptPrefix + chalk.white(currentInput) + placeholder + scrollHint);
+    out += '\x1B[2K\r' + promptPrefix + chalk.white(currentInput) + placeholder + scrollHint + '\x1B[?25h';
+    process.stdout.write(out);
   }
 }

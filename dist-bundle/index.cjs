@@ -373,13 +373,13 @@ var init_chat = __esm({
         if (linesBelow > 0 && visible.length > 1) {
           visible[visible.length - 1] = this.MUTED(`  \u2193 ${linesBelow} line${linesBelow !== 1 ? "s" : ""} below`);
         }
-        process.stdout.write("\x1B[H");
+        let out = "\x1B[?25l\x1B[H";
         for (const line of visible) {
-          process.stdout.write(line + "\x1B[K\n");
+          out += line + "\x1B[K\n";
         }
         const leftover = this.lastLineCount - visible.length;
         for (let i = 0; i < leftover; i++) {
-          process.stdout.write("\x1B[2K\n");
+          out += "\x1B[2K\n";
         }
         this.lastLineCount = visible.length;
         const promptPrefix = "  " + this.BRAND(">") + " ";
@@ -413,7 +413,8 @@ var init_chat = __esm({
           } catch (e) {
           }
         }
-        process.stdout.write("\x1B[2K\r" + promptPrefix + import_chalk9.default.white(currentInput) + placeholder + scrollHint);
+        out += "\x1B[2K\r" + promptPrefix + import_chalk9.default.white(currentInput) + placeholder + scrollHint + "\x1B[?25h";
+        process.stdout.write(out);
       }
     };
   }
