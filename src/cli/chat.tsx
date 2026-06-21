@@ -459,15 +459,18 @@ export class ChatUI {
               const stripped = line.trim();
               if (!stripped || stripped.startsWith('##')) return;
 
+              let formattedLine = stripped
+                .replace(/\*\*(.*?)\*\*/g, (_m, p1) => chalk.white.bold(p1))
+                .replace(/\*(.*?)\*/g, (_m, p1) => chalk.white.italic(p1))
+                .replace(/`(.*?)`/g, (_m, p1) => chalk.hex('#F5C400')(p1));
+
               let styledText: string;
               if (/^\d+\./.test(stripped)) {
-                styledText = stepColor(' ' + stripped);
-              } else if (stripped.startsWith('- `') || stripped.startsWith('- \\`')) {
-                styledText = ' ' + fileColor(stripped);
-              } else if (/^\*\*/.test(stripped)) {
-                styledText = ' ' + chalk.white.bold(stripped.replace(/\*\*/g, ''));
+                styledText = stepColor(' ' + formattedLine);
+              } else if (stripped.startsWith('- `') || stripped.startsWith('- \\`') || stripped.startsWith('- ') || stripped.startsWith('* ')) {
+                styledText = fileColor(' ' + formattedLine);
               } else {
-                styledText = ' ' + chalk.hex('#D1D5DB')(stripped);
+                styledText = chalk.hex('#D1D5DB')(' ' + formattedLine);
               }
 
               const visibleText = stripAnsi(styledText);
