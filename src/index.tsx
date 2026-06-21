@@ -798,22 +798,24 @@ async function main() {
             // Save checkpoint before adding the user message
             snapshotManager.saveCheckpoint(currentThreadId, messages.length);
 
-            if (inputText.startsWith('PLAN APPROVED')) {
+            let finalInputText = inputText;
+            if (finalInputText.startsWith('PLAN APPROVED')) {
               for (let i = messages.length - 1; i >= 0; i--) {
                 const msg = messages[i];
                 if (msg._getType() === 'ai') {
                   let text = msg.content.toString();
-                  if (PLAN_BLOCK_RE.test(text)) {
-                    text = text.replace(/<!--\s*PLAN_START\s*-->/g, '✅ **[PLAN APPROVED BY USER]**')
-                               .replace(/<!--\s*PLAN_END\s*-->/g, '');
-                    msg.content = text;
+                  const match = text.match(PLAN_BLOCK_RE);
+                  if (match) {
+                    const planText = match[0];
+                    msg.content = text.replace(PLAN_BLOCK_RE, '[Plan submitted for approval]');
+                    finalInputText = finalInputText + '\n\nApproved Plan to execute:\n' + planText.replace(/<!--\s*PLAN_START\s*-->/g, '').replace(/<!--\s*PLAN_END\s*-->/g, '');
                   }
                   break; // Stop at the most recent AI message
                 }
               }
             }
 
-            messages.push(new HumanMessage(inputText));
+            messages.push(new HumanMessage(finalInputText));
             syncMessages();
             chatUI.scrollToBottom();
             chatSession.agentStates.set(currentThreadId, 'thinking');

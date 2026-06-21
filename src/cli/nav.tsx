@@ -270,6 +270,15 @@ export class PhoneOS {
       hasBody = true;
     }
 
+    if (chatSession.pendingPlans && chatSession.pendingPlans.size > 0) {
+      out += '  ' + chalk.hex('#F59E0B').bold(`[!] Pending Plan Approvals: ${chatSession.pendingPlans.size} plan(s) waiting for your review!`) + '\n';
+      for (const threadId of chatSession.pendingPlans) {
+        out += '      ' + MUTED(`(Thread: ${threadId})`) + '\n';
+      }
+      out += '\n';
+      hasBody = true;
+    }
+
     if (view.subtitle) {
       out += '  ' + BOLD(WHITE(view.subtitle)) + '\n';
       hasBody = true;
@@ -361,6 +370,13 @@ export class PhoneOS {
       out += '\n';
       out += '  ' + chalk.hex('#EF4444').bold('⚠️  PENDING APPROVAL: ') + chalk.white(`Agent needs command approval in thread(s): ${threadList}`) + '\n';
       out += '     Please choose "Enter Chat" or select the corresponding thread to approve.\n';
+    }
+
+    if (chatSession.pendingPlans && chatSession.pendingPlans.size > 0) {
+      const threadList = Array.from(chatSession.pendingPlans).map(id => chalk.hex('#22D3EE').bold(id)).join(', ');
+      out += '\n';
+      out += '  ' + chalk.hex('#F59E0B').bold('📋 PENDING PLAN: ') + chalk.white(`Agent proposed a plan in thread(s): ${threadList}`) + '\n';
+      out += '     Please choose "Enter Chat" to review and approve the plan.\n';
     }
 
     return out;
