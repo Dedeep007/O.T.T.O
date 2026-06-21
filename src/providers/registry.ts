@@ -663,8 +663,7 @@ export class ProviderRegistry {
             ui.info(`Payload too large for current tier. Retrying with fallback (attempt ${attempt + 1}/6)...`);
             return this.invoke(messages, attempt + 1);
           }
-          ui.error('Request too large and no more fallback API keys or models available.');
-          throw error;
+          ui.warning('Request too large and no more fallback API keys available. Falling back to delay loop...');
         }
 
         const retryAfter = error?.response?.headers?.['retry-after'];
@@ -725,8 +724,7 @@ export class ProviderRegistry {
             yield* this.stream(messages, attempt + 1);
             return;
           }
-          ui.error('Request too large and no more fallback API keys or models available.');
-          throw error;
+          ui.warning('Request too large and no more fallback API keys available. Falling back to delay loop...');
         }
 
         const retryAfter = error?.response?.headers?.['retry-after'];
