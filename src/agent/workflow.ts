@@ -193,6 +193,16 @@ export class AgentWorkflow {
         await this.runAgentLoop(ctx, undefined, depth + 1);
       }
     } else {
+      const strippedContent = ctx.stripToolBleed(finalMessage?.content?.toString() || '');
+      if (!strippedContent.trim() && finalMessage?.content?.toString().includes('<think>')) {
+        // The AI generated a think block but stopped without outputting text or tools
+        ctx.messages.push(new HumanMessage('SYSTEM: You stopped generating without executing a tool or saying anything to the user. Proceed with your tool calls or respond to the user.'));
+        ctx.syncMessages();
+        if (ctx.chatSession.isChatActive) ctx.render(true);
+        await this.runAgentLoop(ctx, undefined, depth + 1);
+        return;
+      }
+      
       ctx.chatSession.agentStates.set(ctx.chatSession.threadId, 'idle');
       if (ctx.chatSession.isChatActive) ctx.render(true);
     }

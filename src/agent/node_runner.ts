@@ -83,8 +83,7 @@ export class NodeRunner extends EventEmitter {
     }
     
     if (finalMessage?.content) {
-      finalMessage.content = stripToolBleed(finalMessage.content.toString());
-      aiMessage.content = finalMessage.content;
+      aiMessage.content = stripToolBleed(finalMessage.content.toString());
     }
 
     return { finalMessage, isDone: false, hasToolCalls };
