@@ -464,7 +464,21 @@ export class ChatUI {
             });
 
             const rendered = renderMarkdownWithOttoStyles(processedContent, this.W - 4, diffsExpanded);
-            rendered.trim().split('\n').forEach(line => push('  ' + line));
+            const renderedLines = rendered.trim().split('\n');
+            const isTerminal = msg.role === 'tool' && rawContent.includes('> `');
+            
+            if (msg.role === 'tool' && !diffsExpanded && !isTerminal && renderedLines.length > 15) {
+              const top = renderedLines.slice(0, 5);
+              const bottom = renderedLines.slice(renderedLines.length - 3);
+              const contracted = [
+                ...top, 
+                chalk.hex('#FBBF24')(`  ... (${renderedLines.length - 8} hidden lines) [Press Ctrl+E to Expand] ...`), 
+                ...bottom
+              ];
+              contracted.forEach(line => push('  ' + line));
+            } else {
+              renderedLines.forEach(line => push('  ' + line));
+            }
           }
         }
       }
