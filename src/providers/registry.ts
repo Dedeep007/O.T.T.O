@@ -579,6 +579,8 @@ export class ProviderRegistry {
     const msg = (error?.message || '').toLowerCase();
     return error?.status === 429 ||
       error?.response?.status === 429 ||
+      error?.status === 413 ||
+      error?.response?.status === 413 ||
       error?.error?.code === 'rate_limit_exceeded' ||
       error?.code === 'rate_limit_exceeded' ||
       msg.includes('rate limit') ||
@@ -586,6 +588,7 @@ export class ProviderRegistry {
       msg.includes('too many requests') ||
       msg.includes('tpm') ||
       msg.includes('rpm') ||
+      msg.includes('too large') ||
       msg.includes('quota');
   }
 
@@ -614,7 +617,7 @@ export class ProviderRegistry {
       if (beforeKey === nextKey && beforeModel === nextModel) continue;
 
       this.setConfig(nextConfig);
-      ui.warning(`Rate limit hit. Rotated ${action === 'key' ? 'API key' : 'model'} and retrying.`);
+      ui.warning(`Rate limit hit. Rotated ${action === 'key' ? 'API key' : 'model'} and retrying. (Tip: You can add more API keys in Settings > API Settings for automatic rotation)`);
       return true;
     }
 
@@ -652,14 +655,21 @@ export class ProviderRegistry {
       return response;
     } catch (error: any) {
       if (this.isRateLimit(error)) {
-        const retryAfter = error?.response?.headers?.['retry-after'];
+        const msg = (error?.message || '').toLowerCase();
+        const isTooLarge = msg.includes('too large') || error?.status === 413 || error?.response?.status === 413;
 
-        if (attempt <= 6 && this.tryFallback(attempt)) {
-          ui.info(`Retrying request with fallback (attempt ${attempt + 1}/6)...`);
-          return this.invoke(messages, attempt + 1);
+        if (isTooLarge) {
+          if (attempt <= 6 && this.tryFallback(attempt)) {
+            ui.info(`Payload too large for current tier. Retrying with fallback (attempt ${attempt + 1}/6)...`);
+            return this.invoke(messages, attempt + 1);
+          }
+          ui.error('Request too large and no more fallback API keys or models available.');
+          throw error;
         }
 
+        const retryAfter = error?.response?.headers?.['retry-after'];
         await quotaManager.handleRateLimit(retryAfter);
+
         if (attempt <= 6) {
           ui.info(`Retrying request after backoff (attempt ${attempt + 1}/6)...`);
           return this.invoke(messages, attempt + 1);
@@ -706,15 +716,22 @@ export class ProviderRegistry {
       quotaManager.recordUsage(activeModel, inputTokens, outputTokens);
     } catch (error: any) {
       if (this.isRateLimit(error)) {
-        const retryAfter = error?.response?.headers?.['retry-after'];
+        const msg = (error?.message || '').toLowerCase();
+        const isTooLarge = msg.includes('too large') || error?.status === 413 || error?.response?.status === 413;
 
-        if (attempt <= 6 && this.tryFallback(attempt)) {
-          ui.info(`Retrying stream with fallback (attempt ${attempt + 1}/6)...`);
-          yield* this.stream(messages, attempt + 1);
-          return;
+        if (isTooLarge) {
+          if (attempt <= 6 && this.tryFallback(attempt)) {
+            ui.info(`Payload too large for current tier. Retrying stream with fallback (attempt ${attempt + 1}/6)...`);
+            yield* this.stream(messages, attempt + 1);
+            return;
+          }
+          ui.error('Request too large and no more fallback API keys or models available.');
+          throw error;
         }
 
+        const retryAfter = error?.response?.headers?.['retry-after'];
         await quotaManager.handleRateLimit(retryAfter);
+
         if (attempt <= 6) {
           ui.info(`Retrying stream after backoff (attempt ${attempt + 1}/6)...`);
           yield* this.stream(messages, attempt + 1);

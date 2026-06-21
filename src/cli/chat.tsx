@@ -628,9 +628,7 @@ export class ChatUI {
     // Viewport slicing
     if (this.totalContentLines > 0 && this.scrollOffset > 0) {
       const deltaLines = lines.length - this.totalContentLines;
-      if (deltaLines > 0) {
-        this.scrollOffset += deltaLines;
-      }
+      this.scrollOffset += deltaLines;
     }
     this.totalContentLines = lines.length;
 
