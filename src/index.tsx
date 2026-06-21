@@ -808,7 +808,9 @@ async function main() {
                   if (match) {
                     const planText = match[0];
                     msg.content = text.replace(PLAN_BLOCK_RE, '[Plan submitted for approval]');
-                    finalInputText = finalInputText + '\n\nApproved Plan to execute:\n' + planText.replace(/<!--\s*PLAN_START\s*-->/g, '').replace(/<!--\s*PLAN_END\s*-->/g, '');
+                    let cleanPlan = planText.replace(/<!--\s*PLAN_START\s*-->/g, '').replace(/<!--\s*PLAN_END\s*-->/g, '');
+                    cleanPlan = cleanPlan.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1').replace(/`(.*?)`/g, '$1');
+                    finalInputText = finalInputText + '\n\nApproved Plan to execute:\n' + cleanPlan;
                   }
                   break; // Stop at the most recent AI message
                 }

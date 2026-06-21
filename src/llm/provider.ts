@@ -5,7 +5,6 @@ import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { ChatOllama } from '@langchain/ollama';
 import { ChatMistralAI } from '@langchain/mistralai';
 import { ChatBedrockConverse } from '@langchain/aws';
-import { BedrockChat } from '@langchain/community/chat_models/bedrock';
 import { OttoConfig } from '../cli/configurator.js';
 import { Configurator } from '../cli/configurator.js';
 import { quotaManager } from './quota.js';
@@ -544,24 +543,17 @@ export class ProviderEngine {
         const useChatBedrock = !!entry?.useChatBedrock;
 
         if (useChatBedrock) {
-          this.primaryModel = new BedrockChat({
-            region,
-            credentials,
-            model,
-            temperature: 0,
-            maxRetries: 0
-          }).bindTools(tools) as any;
-          ui.info(`Switched to AWS Bedrock (ChatBedrock) - ${model} (${region})`);
-        } else {
-          this.primaryModel = new ChatBedrockConverse({
-            region,
-            credentials,
-            model,
-            temperature: 0,
-            maxRetries: 0
-          }).bindTools(tools) as any;
-          ui.info(`Switched to AWS Bedrock (Converse API) - ${model} (${region})`);
+          ui.warning('useChatBedrock is deprecated. O.T.T.O now exclusively uses the modern ChatBedrockConverse API.');
         }
+
+        this.primaryModel = new ChatBedrockConverse({
+          region,
+          credentials,
+          model,
+          temperature: 0,
+          maxRetries: 0
+        }).bindTools(tools) as any;
+        ui.info(`Switched to AWS Bedrock (Converse API) - ${model} (${region})`);
       } else {
         ui.warning(`Provider ${providerName} is not fully configured or supported yet.`);
         this.primaryModel = null;
