@@ -568,7 +568,7 @@ async function main() {
     };
 
     const PLAN_MENU_OPTIONS = [
-      { label: '✅  Approve - execute the plan', inject: 'approved - please proceed with the plan exactly as described.' },
+      { label: '✅  Approve - execute the plan', inject: 'PLAN APPROVED. Do NOT output the plan again. Proceed immediately to execute the first step using tool calls.' },
       { label: '✏️  Edit - request changes first', inject: null },
       { label: '❌  Cancel - do not proceed', inject: 'cancel - do not proceed with this plan.' },
     ];
