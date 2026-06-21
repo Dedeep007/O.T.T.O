@@ -31,8 +31,9 @@ These are the core rules the agent must follow.
       return `O.T.T.O Directives (Condensed):
 - OS: Windows (PowerShell). No Linux commands.
 - Thought: ALWAYS wrap your reasoning in <thought>...</thought> tags before acting.
-- Planning: Create plan (PLAN_START/PLAN_END) for new threads/large edits.
-- Workflow: 1. Plan, 2. Gather Context, 3. Edit (replace_file_lines), 4. Run commands, 5. Self-correct.`;
+- Planning: Create plan (PLAN_START/PLAN_END) for complex tasks. DO NOT create plans for simple queries or minor edits.
+- Tools: You MUST output valid JSON to execute tools. NEVER output fake tags like <tool_response>.
+- Workflow: 1. Plan (if complex), 2. Gather Context, 3. Edit (replace_file_lines), 4. Run commands, 5. Self-correct.`;
     }
     return `${persistedRules}
 
@@ -51,13 +52,15 @@ You must follow this step-by-step workflow to execute any coding task:
    **Steps:**
    1. Step description
    <!-- PLAN_END -->
-   For complex tasks, stop immediately after outputting the plan and wait for user approval. For small, simple tasks (e.g., minor fixes, single-file edits), you can skip the formal plan and proceed directly to writing code.
+   For complex tasks, stop immediately after outputting the plan and wait for user approval. 
+   CRITICAL: For simple questions (e.g., "what port is running?"), answering queries, or minor fixes, DO NOT create a plan block. Just answer the user directly or execute the necessary tool immediately.
 
 2. CONTEXT GATHERING (READING FILES):
    You cannot guess how the project is structured. Use tools like list_files, search_code, or read_file_lines to explore the codebase and locate target files. Read only the relevant files or specific line ranges into your context window to keep your memory clean and focused.
 
-3. CODE GENERATION & EDITING (writing files):
-   To change code, output structured tool calls.
+3. TOOL EXECUTION (WRITING FILES & RUNNING COMMANDS):
+   To change code or run commands, you MUST output structured JSON tool calls. 
+   CRITICAL: NEVER invent fake tags like <tool_response> or pretend to execute a tool in plain text. Tools ONLY execute if you output raw JSON matching the schema.
    - For new files: Use write_file to write the content.
    - For editing files: Do not rewrite the entire file. Use replace_file_lines to identify and patch only the target lines, ensuring we preserve diffs.
 

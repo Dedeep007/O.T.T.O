@@ -80,8 +80,8 @@ function stripToolBleed(text: string): string {
   if (!text) return text;
   let cleaned = text;
 
-  // 1. Remove <tool> or <tool_call> tags and their content
-  cleaned = cleaned.replace(/<(?:tool|tool_call)>[\s\S]*?(?:<\/(?:tool|tool_call)>|$)/gi, '');
+  // 1. Remove <tool>, <tool_call>, or <tool_response> tags and their content
+  cleaned = cleaned.replace(/<(?:tool|tool_call|tool_response)>[\s\S]*?(?:<\/(?:tool|tool_call|tool_response)>|$)/gi, '');
 
   // 2. Remove markdown JSON blocks if they look like a tool call
   const blockRegex = /```json\s*([\s\S]*?)(?:```|$)/gi;
