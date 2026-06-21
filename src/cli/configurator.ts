@@ -9,7 +9,7 @@ export interface OttoConfig {
     groq?:     { apiKey: string; apiKeys?: string[]; activeApiKey?: string; model?: string; models?: string[]; activeModel?: string; frequency_penalty: number };
     openai?:   { apiKey: string; apiKeys?: string[]; activeApiKey?: string; model?: string; models?: string[]; activeModel?: string; parallel_tool_calls: boolean };
     anthropic?:{ apiKey: string; apiKeys?: string[]; activeApiKey?: string; model?: string; models?: string[]; activeModel?: string; effort: string };
-    ollama?:   { baseUrl: string; model?: string; models?: string[]; activeModel?: string; num_ctx: number };
+    ollama?:   { baseUrl: string; model?: string; models?: string[]; activeModel?: string };
     gemini?:   { apiKey: string; apiKeys?: string[]; activeApiKey?: string; model?: string; models?: string[]; activeModel?: string };
     mistral?:  { apiKey: string; apiKeys?: string[]; activeApiKey?: string; model?: string; models?: string[]; activeModel?: string };
     bedrock?:  { accessKeyId?: string; secretAccessKey?: string; sessionToken?: string; region?: string; model?: string; models?: string[]; activeModel?: string; apiKey?: string; apiKeys?: string[]; activeApiKey?: string; useChatBedrock?: boolean };
@@ -149,7 +149,7 @@ export const Configurator = {
     } else if (primaryProvider === 'ollama') {
       const baseUrl = await input({ message: 'Enter your Ollama base URL (e.g. http://localhost:11434):', default: 'http://localhost:11434' });
       const model = await input({ message: 'Enter your Ollama model name (e.g. llama3):', default: 'llama3' });
-      providers.ollama = { baseUrl, model, num_ctx: 4096 };
+      providers.ollama = { baseUrl, model };
     } else if (primaryProvider === 'openai') {
       const apiKey = await input({ message: 'Enter your OpenAI API Key:' });
       const model = await input({ message: 'Enter OpenAI Model (e.g. gpt-4o):', default: 'gpt-4o' });
@@ -487,7 +487,7 @@ export const Configurator = {
     const config = Configurator.loadConfig();
     if (config) {
       if (!config.providers.ollama) {
-        config.providers.ollama = { baseUrl: url, num_ctx: 4096 };
+        config.providers.ollama = { baseUrl: url };
       } else {
         config.providers.ollama.baseUrl = url;
       }

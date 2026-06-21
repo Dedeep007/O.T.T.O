@@ -3,11 +3,8 @@ import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { executor } from '../security/executor.js';
-import { backgroundManager } from '../security/background.js';
-import { osController } from '../hardware/os.js';
-import { browserAutomation } from '../hardware/browser.js';
-import { captureWorkspaceSnapshot, formatWorkspaceChanges } from '../cli/workspaceDiff.js';
+import { executor } from '../../security/executor.js';
+import { formatWorkspaceChanges } from '../../cli/workspaceDiff.js';
 
 const EXCLUDED_DIRS = new Set(['node_modules', 'dist', 'dist-bundle', 'build', '.git', '.agents', '.codex']);
 const MAX_SEARCH_RESULTS = 40;
@@ -17,7 +14,6 @@ function resolveWorkspacePath(filePath: string): string {
   const root = process.cwd();
   const resolved = path.resolve(root, filePath);
   
-  // Allow reading background process logs in os.tmpdir()/otto-cli-logs
   const logDir = path.resolve(os.tmpdir(), 'otto-cli-logs');
   if (resolved.toLowerCase().startsWith(logDir.toLowerCase())) {
     return resolved;
@@ -64,29 +60,7 @@ function diffForSingleFile(filePath: string, before: string | undefined, after: 
   return formatWorkspaceChanges(beforeMap, afterMap);
 }
 
-const executeTerminalCommand = tool(
-  async ({ command, background }: { command: string, background?: boolean }) => {
-    try {
-      const beforeSnapshot = background ? null : captureWorkspaceSnapshot();
-      const res = await executor.executeCommand(command, background);
-      const afterSnapshot = background ? null : captureWorkspaceSnapshot();
-      const diffSummary = beforeSnapshot && afterSnapshot ? formatWorkspaceChanges(beforeSnapshot, afterSnapshot) : '';
-      return diffSummary ? `${res}\n\n${diffSummary}` : res;
-    } catch (e: any) {
-      return `Error executing command: ${e.message}`;
-    }
-  },
-  {
-    name: "execute_terminal_command",
-    description: "Executes a shell/terminal command natively on the user's OS from the current workspace directory. Use this for running build/test/compile commands. CRITICAL: Always check the exit code and stderr of the command to verify it succeeded. If starting a long-running server or watcher, set background: true. Do not use this to create or edit files; use write_file instead.",
-    schema: z.object({
-      command: z.string().describe("The exact shell command string to execute."),
-      background: z.boolean().optional().describe("If true, starts the process in the background and returns a task ID immediately, without waiting for completion. The process will be tracked and visible to the user under 'Manage Terminal Sessions' on the Home screen."),
-    }),
-  }
-);
-
-const writeFile = tool(
+export const writeFile = tool(
   async ({ filePath, content }: { filePath: string; content: string }) => {
     try {
       const resolved = resolveWorkspacePath(filePath);
@@ -118,7 +92,7 @@ const writeFile = tool(
   }
 );
 
-const searchCode = tool(
+export const searchCode = tool(
   async ({ query, dirPath = '.', caseSensitive = false }: { query: string; dirPath?: string; caseSensitive?: boolean }) => {
     try {
       const root = process.cwd();
@@ -174,7 +148,7 @@ const searchCode = tool(
   }
 );
 
-const readFileLines = tool(
+export const readFileLines = tool(
   async ({ filePath, startLine = 1, endLine }: { filePath: string; startLine?: number; endLine?: number }) => {
     try {
       const resolved = resolveWorkspacePath(filePath);
@@ -209,7 +183,7 @@ const readFileLines = tool(
   }
 );
 
-const readFile = tool(
+export const readFile = tool(
   async ({ filePath }: { filePath: string }) => {
     try {
       const resolved = resolveWorkspacePath(filePath);
@@ -236,7 +210,7 @@ const readFile = tool(
   }
 );
 
-const replaceFileLines = tool(
+export const replaceFileLines = tool(
   async ({ filePath, startLine, endLine, content }: { filePath: string; startLine: number; endLine: number; content: string }) => {
     try {
       const resolved = resolveWorkspacePath(filePath);
@@ -281,7 +255,7 @@ const replaceFileLines = tool(
   }
 );
 
-const listDirectory = tool(
+export const listDirectory = tool(
   async ({ dirPath = '.', depth = 1 }: { dirPath?: string; depth?: number }) => {
     try {
       const resolved = resolveWorkspacePath(dirPath);
@@ -327,94 +301,3 @@ const listDirectory = tool(
     }),
   }
 );
-
-const launchOsApp = tool(
-  async ({ appNameOrPath }: { appNameOrPath: string }) => {
-    try {
-      await osController.launchApp(appNameOrPath);
-      return `Successfully launched ${appNameOrPath}`;
-    } catch (e: any) {
-      return `Error launching app: ${e.message}`;
-    }
-  },
-  {
-    name: "launch_os_app",
-    description: "Launches an application or executable using the native OS process launcher. It must be in the allowedApps whitelist if not in full security mode.",
-    schema: z.object({
-      appNameOrPath: z.string().describe("The name or path of the app to launch (e.g. 'notepad', 'chrome', 'calc')."),
-    }),
-  }
-);
-
-const readBrowserAccessibility = tool(
-  async ({ url }: { url: string }) => {
-    try {
-      const paths = [
-        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-        path.join(process.env.LOCALAPPDATA || '', 'Google\\Chrome\\Application\\chrome.exe'),
-        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-        '/usr/bin/google-chrome',
-        '/usr/bin/chromium',
-        '/usr/bin/chromium-browser'
-      ];
-      let chromePath = '';
-      for (const p of paths) {
-        if (p && fs.existsSync(p)) {
-          chromePath = p;
-          break;
-        }
-      }
-      if (!chromePath) {
-        throw new Error('Google Chrome / Chromium could not be located in standard paths. Please ensure Chrome is installed.');
-      }
-      await browserAutomation.connect(chromePath);
-      const tree = await browserAutomation.getAccessibilityTree(url);
-      await browserAutomation.close();
-      return JSON.stringify(tree, null, 2);
-    } catch (e: any) {
-      return `Error scraping browser tree: ${e.message}`;
-    }
-  },
-  {
-    name: "read_browser_accessibility",
-    description: "Launches Chrome to navigate to a URL and extracts the semantic Accessibility Tree. Use this to read web pages visually.",
-    schema: z.object({
-      url: z.string().describe("The full URL to navigate to (e.g. 'https://example.com')."),
-    }),
-  }
-);
-
-const listBackgroundProcesses = tool(
-  async () => {
-    try {
-      const procs = backgroundManager.getProcesses();
-      if (procs.length === 0) {
-        return "No active background terminal processes running under O.T.T.O.";
-      }
-      return procs
-        .map(p => `- PID ${p.pid}: ${p.command} (running for ${Math.round((Date.now() - p.startTime) / 1000)}s)`)
-        .join('\n');
-    } catch (e: any) {
-      return `Error listing background processes: ${e.message}`;
-    }
-  },
-  {
-    name: "list_background_processes",
-    description: "Lists all active background terminal sessions running under O.T.T.O, including their PIDs and start times.",
-    schema: z.object({}),
-  }
-);
-
-export const tools = [
-  searchCode,
-  readFileLines,
-  readFile,
-  listDirectory,
-  replaceFileLines,
-  writeFile,
-  executeTerminalCommand,
-  launchOsApp,
-  readBrowserAccessibility,
-  listBackgroundProcesses
-];

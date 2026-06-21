@@ -260,24 +260,7 @@ export class PhoneOS {
 
     // ── Section Body / Dashboard Stats ────────────────────────────
     let hasBody = false;
-    
-    if (chatSession.pendingApprovals && chatSession.pendingApprovals.length > 0) {
-      out += '  ' + RED.bold(`[!] Pending Approvals: ${chatSession.pendingApprovals.length} command(s) waiting for your permission!`) + '\n';
-      for (const p of chatSession.pendingApprovals) {
-        out += '      ' + CYAN(p.cmd) + MUTED(` (Thread: ${p.threadId})`) + '\n';
-      }
-      out += '\n';
-      hasBody = true;
-    }
 
-    if (chatSession.pendingPlans && chatSession.pendingPlans.size > 0) {
-      out += '  ' + chalk.hex('#F59E0B').bold(`[!] Pending Plan Approvals: ${chatSession.pendingPlans.size} plan(s) waiting for your review!`) + '\n';
-      for (const threadId of chatSession.pendingPlans) {
-        out += '      ' + MUTED(`(Thread: ${threadId})`) + '\n';
-      }
-      out += '\n';
-      hasBody = true;
-    }
 
     if (view.subtitle) {
       out += '  ' + BOLD(WHITE(view.subtitle)) + '\n';
@@ -305,7 +288,8 @@ export class PhoneOS {
     const rows = process.stdout.rows || 24;
     const nonMenuHeight = 3 + 
       (this.history.length > 1 ? 2 : 0) +
-      ((chatSession.pendingApprovals && chatSession.pendingApprovals.length > 0) ? (6 + chatSession.pendingApprovals.length * 2) : 0) +
+      ((chatSession.pendingApprovals && chatSession.pendingApprovals.length > 0) ? 3 : 0) +
+      ((chatSession.pendingPlans && chatSession.pendingPlans.size > 0) ? 3 : 0) +
       (view.subtitle ? 1 : 0) +
       bodyLineCount +
       2;
@@ -343,9 +327,10 @@ export class PhoneOS {
         : '     ' + MUTED(plainLabel);
       
       const rawLen = 5 + plainLabel.length;
-      const space1 = Math.max(0, LABEL_COL_WIDTH - rawLen);
+      const space1 = Math.max(2, LABEL_COL_WIDTH - rawLen);
 
-      const descStrPlain = opt.description ? opt.description.slice(0, Math.max(0, W - LABEL_COL_WIDTH - 2)) : '';
+      const maxDescLen = Math.max(0, W - rawLen - space1 - 2);
+      const descStrPlain = opt.description ? opt.description.slice(0, maxDescLen) : '';
       const descLen = descStrPlain.length;
       
       const descStr = opt.description 

@@ -24,9 +24,7 @@ export class MemoryManager {
         else if (prov === 'mistral') providerDefault = 128000;
         else if (prov === 'bedrock') providerDefault = 200000;
         else if (prov === 'groq') providerDefault = 32768;
-        else if (prov === 'ollama') {
-          providerDefault = config.providers.ollama?.num_ctx || 8192;
-        }
+        else if (prov === 'ollama') providerDefault = 64000;
 
         if (model) {
           const limits = config.modelLimits?.[model];

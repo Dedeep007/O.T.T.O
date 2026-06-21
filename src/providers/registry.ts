@@ -10,7 +10,7 @@ import { Configurator } from '../cli/configurator.js';
 import { quotaManager } from './quota.js';
 import { ui } from '../cli/ui.js';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import { tools } from './tools.js';
+import { tools } from '../tools/registry.js';
 import { concat } from '@langchain/core/utils/stream';
 import { executor } from '../security/executor.js';
 import { memoryManager } from '../memory/budget.js';
@@ -420,7 +420,7 @@ function parseFallbackToolCalls(content: string, messages?: any[]): any[] | null
   return null;
 }
 
-export class ProviderEngine {
+export class ProviderRegistry {
   private config: OttoConfig;
   private primaryModel: BaseChatModel | null = null;
 
@@ -497,7 +497,8 @@ export class ProviderEngine {
           model,
           temperature: 0,
           maxRetries: 0,
-          streaming: true
+          streaming: true,
+          numCtx: this.config.defaults.maxCtx ?? 64000
         }).bindTools(tools) as any;
 
         const originalInvoke = rawModel.invoke.bind(rawModel);

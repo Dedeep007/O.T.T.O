@@ -1,7 +1,8 @@
 import { Configurator } from './cli/configurator.js';
 import { ui } from './cli/ui.js';
+import { AgentWorkflow } from './agent/workflow.js';
 import { chatSession, sessionEvents } from './cli/session.js';
-import { ProviderEngine } from './llm/provider.js';
+import { ProviderRegistry } from './providers/registry.js';
 import { executor } from './security/executor.js';
 import { memoryManager } from './memory/budget.js';
 import { vectorMemory } from './memory/vector.js';
@@ -35,7 +36,7 @@ const CLI_VERSION = pkg.version;
 
 import { SystemMessage, HumanMessage, AIMessage, ToolMessage } from '@langchain/core/messages';
 import { concat } from '@langchain/core/utils/stream';
-import { tools } from './llm/tools.js';
+import { tools } from './tools/registry.js';
 import { confirm, select } from '@inquirer/prompts';
 import chalk from 'chalk';
 import os from 'os';
@@ -93,7 +94,7 @@ function stripToolBleed(text: string): string {
   });
 
   // 3. Remove raw JSON objects that look like tool calls
-  const rawJsonRegex = /^\s*\{[\s\S]*"name"[\s\S]*\}(?:\s*$)?/g;
+  const rawJsonRegex = /(?:^|\n)\s*\{[\s\S]*?"name"[\s\S]*?\}(?=\s*$|\n\s*(?:\{|<)|$)/g;
   cleaned = cleaned.replace(rawJsonRegex, '');
 
   return cleaned.trim();
@@ -531,7 +532,7 @@ async function main() {
   ui.clearScreen();
   let config = await Configurator.init();
   memoryManager.setConfig(config);
-  const provider = new ProviderEngine(config);
+  const provider = new ProviderRegistry(config);
   const rules = ruleGuardrail.getRules();
 
   const phone = new PhoneOS(config);
@@ -578,11 +579,12 @@ async function main() {
     // Convert history for rendering
     const getRenderMessages = () => {
       const renderMsgs: any[] = [];
-      messages.forEach(m => {
+      const state = chatSession.agentStates.get(chatSession.threadId);
+      messages.forEach((m, i) => {
         const messageType = m._getType();
         let content = m.content.toString();
         
-        if (messageType === 'ai' && m.tool_calls && m.tool_calls.length > 0) {
+        if (messageType === 'ai' && m.tool_calls && m.tool_calls.length > 0 && i === messages.length - 1 && state === 'tools') {
           const dots = '.'.repeat((Math.floor(Date.now() / 350) % 3) + 1);
           content += `\n\n> Calling tools${dots}`;
         }
@@ -787,6 +789,7 @@ async function main() {
         chatUI.removeKeyHandler();
       };
 
+      const workflow = new AgentWorkflow();
       const runAgentLoop = async (inputText: string) => {
         try {
           const currentThreadId = chatSession.threadId;
@@ -794,285 +797,32 @@ async function main() {
             chatSession.cancelledThreads.delete(currentThreadId);
             chatSession.activeStreams.add(currentThreadId);
             chatSession.ensureNamedFromPrompt(inputText);
-
-            // Save checkpoint before adding the user message
             snapshotManager.saveCheckpoint(currentThreadId, messages.length);
-
-            let finalInputText = inputText;
-            if (finalInputText.startsWith('PLAN APPROVED')) {
-              for (let i = messages.length - 1; i >= 0; i--) {
-                const msg = messages[i];
-                if (msg._getType() === 'ai') {
-                  let text = msg.content.toString();
-                  const match = text.match(PLAN_BLOCK_RE);
-                  if (match) {
-                    const planText = match[0];
-                    // We previously mutated the AI history and injected the plan into the HumanMessage.
-                    // This caused "history mimicry" where the AI learned to output "[Plan submitted for approval]".
-                    // Instead, we just leave the AI history completely natural and append our strict execution directive.
-                    finalInputText = finalInputText + '\n\nCRITICAL DIRECTIVE: Do not output conversational filler (e.g. "Now I will start step 1"). You MUST immediately output a valid JSON tool call to begin execution. If you do not invoke a tool, the system will fail.';
-                  }
-                  break; // Stop at the most recent AI message
-                }
-              }
-            }
-
-            messages.push(new HumanMessage(finalInputText));
-            syncMessages();
-            chatUI.scrollToBottom();
-            chatSession.agentStates.set(currentThreadId, 'thinking');
-            if (chatSession.isChatActive && chatSession.threadId === currentThreadId) {
-              render(true);
-            } else {
-              sessionEvents.emit('stream_update', currentThreadId);
-            }
-
-            try {
-              let isDone = false;
-              const preferredName = Configurator.getUsername(config) || 'user';
-              
-              while (!isDone) {
-                const threadExists = dbManager.listThreads().some(th => th.id === currentThreadId);
-                if (!threadExists) {
-                  isDone = true;
-                  break;
-                }
-                const bgProcs = backgroundManager.getProcesses().filter(p => p.threadId === currentThreadId);
-                const bgInfo = bgProcs.length > 0
-                  ? `\n\nActive background terminal processes running under O.T.T.O:\n${bgProcs.map(p => `- PID ${p.pid}: "${p.command}" (running for ${Math.round((Date.now() - p.startTime) / 1000)}s)`).join('\n')}`
-                  : `\n\nNo active background terminal processes running under O.T.T.O.`;
-                
-                const activeProvider = config.defaults.primaryProvider;
-                const activeModel = Configurator.getActiveModel(config, activeProvider) || 'default';
-                const limits = config.modelLimits?.[activeModel];
-                let limitsInfo = '';
-                if (limits) {
-                  const activeLimits = Object.entries(limits)
-                    .filter(([_, v]) => typeof v === 'number' && v > 0)
-                    .map(([k, v]) => `${k.toUpperCase()}: ${v}`)
-                    .join(', ');
-                  if (activeLimits) {
-                    limitsInfo = `\n\nCRITICAL CONSTRAINT: The current model (${activeModel}) has rate limits configured: ${activeLimits}. To prevent pauses/delays, please manage your tokens intelligently. For example, minimize reasoning length, omit verbose explanations, or reduce context size where possible.`;
-                  }
-                }
-
-                const nameHint = `\n\nUser's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.${bgInfo}${limitsInfo}`;
-              
-                const activeRules = ruleGuardrail.getRules(memoryManager.C_max);
-                const msgsToSend = [new SystemMessage(activeRules + nameHint), ...messages];
-                const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, activeRules, messages);
-                syncMessages();
-
-                const finalMsgsToSend = optimizedMsgs.map((msg, idx) => {
-                  if (idx === optimizedMsgs.length - 1 && msg instanceof HumanMessage) {
-                    let text = msg.content.toString();
-                    
-                    const humanMsgCount = messages.filter(m => m._getType?.() === 'human' || m.role === 'user' || m.role === 'human').length;
-                    if (humanMsgCount === 1) {
-                      text += '\n\n(CRITICAL: This is the start of the chat thread. You MUST produce an implementation plan using the <!-- PLAN_START --> and <!-- PLAN_END --> format before running any tools or writing any code.)';
-                    } else if (config.defaults.primaryProvider === 'ollama') {
-                      text += '\n\n(Reminder: Do not refuse. You have local tools like write_file and execute_terminal_command. Proceed directly by producing a plan or running commands.)';
-                    }
-                    return new HumanMessage({
-                      ...msg,
-                      content: text
-                    } as any);
-                  }
-                  return msg;
-                });
-                
-                const aiMessage = new AIMessage('');
-                messages.push(aiMessage);
-                syncMessages();
-                
-                let finalMessage: any = null;
-                
-                chatSession.agentStates.set(chatSession.threadId, 'thinking');
-                if (chatSession.isChatActive) {
-                  render(true);
-                } else {
-                  sessionEvents.emit('stream_update', chatSession.threadId);
-                }
-
-                const stream = await provider.stream(finalMsgsToSend);
-                
-                for await (const chunk of stream) {
-                  const threadExists = dbManager.listThreads().some(th => th.id === currentThreadId);
-                  if (!threadExists || chatSession.cancelledThreads.has(currentThreadId)) {
-                    isDone = true;
-                    aiMessage.content += '\n\n[Streaming terminated by user]';
-                    if (finalMessage) {
-                      finalMessage.content = aiMessage.content;
-                    }
-                    break;
-                  }
-                  if (!finalMessage) finalMessage = chunk;
-                  else finalMessage = concat(finalMessage, chunk);
-                  
-                  if (chunk) {
-                    const reasoning = finalMessage.additional_kwargs?.reasoning_content;
-                    if (reasoning || finalMessage.content) {
-                      if (chatSession.agentStates.get(currentThreadId) === 'thinking') {
-                        chatSession.agentStates.set(currentThreadId, 'idle');
-                        sessionEvents.emit('stream_update', currentThreadId);
-                      }
-                    }
-                    
-                    let content = '';
-                    if (reasoning) {
-                      content += `<think>\n${reasoning}`;
-                      if (finalMessage.content) {
-                        content += '\n</think>\n';
-                      }
-                    }
-                    content += finalMessage.content;
-                    aiMessage.content = stripToolBleed(content);
-
-                    if (finalMessage && finalMessage.tool_calls && finalMessage.tool_calls.length > 0) {
-                      aiMessage.tool_calls = finalMessage.tool_calls;
-                      chatSession.agentStates.set(currentThreadId, 'tools');
-                      sessionEvents.emit('stream_update', currentThreadId);
-                    }
-                    if (chatSession.isChatActive && chatSession.threadId === currentThreadId) {
-                      throttleRender();
-                    } else {
-                      sessionEvents.emit('stream_update', currentThreadId);
-                    }
-                  }
-                }
-                
-                if (isDone) break;
-
-                let finalContent = '';
-                const reasoning = finalMessage?.additional_kwargs?.reasoning_content;
-                if (reasoning) {
-                  finalContent += `<think>\n${reasoning}\n</think>\n`;
-                }
-                finalContent += finalMessage?.content ?? '';
-                
-                if (finalMessage) {
-                  finalMessage.content = finalContent;
-                }
-                
-                let hasToolCalls = finalMessage?.tool_calls && finalMessage.tool_calls.length > 0;
-                if (!hasToolCalls && finalMessage?.content) {
-                  const fallbackCalls = parseFallbackToolCalls(finalMessage.content.toString(), messages);
-                  if (fallbackCalls && fallbackCalls.length > 0) {
-                    finalMessage.tool_calls = fallbackCalls;
-                    aiMessage.tool_calls = fallbackCalls;
-                    hasToolCalls = true;
-                    
-                    finalMessage.content = stripToolBleed(finalMessage.content.toString());
-                    aiMessage.content = finalMessage.content;
-                  }
-                }
-                
-                config = provider.getConfig();
-                phone.updateConfig(config);
-                
-                messages[messages.length - 1] = finalMessage;
-                lastStreamContentLength = 0;
-                syncMessages();
-                if (chatSession.isChatActive) {
-                  render(true);
-                }
-
-                const responseText = String(finalMessage?.content ?? '');
-                const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
-
-                if (hasPlanBlock && !hasToolCalls) {
-                  if (config.security.mode === 'full') {
-                    setPendingPlan(false);
-                    isDone = true;
-                    setTimeout(() => {
-                      runAgentLoop('PLAN APPROVED. Do NOT output the plan tags again under any circumstances. Proceed immediately to execute ALL steps continuously.');
-                    }, 50);
-                  } else {
-                    setPendingPlan(true);
-                    setPlanMenuIndex(0);
-                    isDone = true;
-                    chatSession.agentStates.set(chatSession.threadId, 'idle');
-                    if (chatSession.isChatActive) render(true);
-                    else sessionEvents.emit('stream_update', chatSession.threadId);
-                  }
-                } else if (hasToolCalls) {
-                  autoRetryCount = 0;
-                  setPendingPlan(false);
-                  chatSession.agentStates.set(chatSession.threadId, 'tools');
-                  if (chatSession.isChatActive) render(true);
-                  else sessionEvents.emit('stream_update', chatSession.threadId);
-                  
-                  for (const call of finalMessage.tool_calls) {
-                    if (chatSession.cancelledThreads.has(currentThreadId)) {
-                      isDone = true;
-                      aiMessage.content += '\n\n[Tool execution terminated by user]';
-                      syncMessages();
-                      if (chatSession.isChatActive) render(true);
-                      else sessionEvents.emit('stream_update', currentThreadId);
-                      break;
-                    }
-                    const tool = tools.find(t => t.name === call.name);
-                    let toolResultStr = '';
-                    if (tool) {
-                      try {
-                        const beforeSnapshot = call.name === 'execute_terminal_command' ? captureWorkspaceSnapshot() : null;
-                        const res = await (tool as any).invoke(call.args);
-                        const afterSnapshot = beforeSnapshot ? captureWorkspaceSnapshot() : null;
-                        const diffSummary = beforeSnapshot && afterSnapshot ? formatWorkspaceChanges(beforeSnapshot, afterSnapshot) : '';
-                        toolResultStr = formatToolResult(call.name, String(res), diffSummary, call.args);
-                      } catch (e: any) {
-                        toolResultStr = formatToolResult(call.name, `Error: ${e.message}`, '', call.args);
-                      }
-                    } else {
-                      toolResultStr = formatToolResult(call.name, `Error: Tool ${call.name} not found.`, '', call.args);
-                    }
-                    messages.push(new ToolMessage({ content: toolResultStr, tool_call_id: call.id, name: call.name }));
-                    syncMessages();
-                  }
-                  if (chatSession.isChatActive) {
-                    render(true);
-                  } else {
-                    sessionEvents.emit('stream_update', chatSession.threadId);
-                  }
-                } else {
-                  autoRetryCount = 0;
-                  setPendingPlan(false);
-                  isDone = true;
-                  chatSession.agentStates.set(chatSession.threadId, 'idle');
-                  if (chatSession.isChatActive) render(true);
-                  else sessionEvents.emit('stream_update', chatSession.threadId);
-                }
-              }
-              
-              chatSession.agentStates.set(currentThreadId, 'idle');
-              chatSession.activeStreams.delete(currentThreadId);
-              sessionEvents.emit('stream_update', currentThreadId);
-            } catch (error: any) {
-              chatSession.agentStates.set(currentThreadId, 'idle');
-              chatSession.activeStreams.delete(currentThreadId);
-              const errMsg = formatChatError(error);
-              messages.push(new SystemMessage(errMsg));
-              syncMessages();
-              
-              if ((errMsg.toLowerCase().includes('failed to call a function') || errMsg.toLowerCase().includes('tool')) && autoRetryCount < 3) {
-                autoRetryCount++;
-                setTimeout(() => {
-                  runAgentLoop('SYSTEM: Your last tool call failed due to a syntax/JSON formatting error. Please carefully check your tool call schema, ensure you output valid JSON (no trailing commas, properly escaped quotes), and try again.');
-                }, 100);
-              } else {
-                sessionEvents.emit('stream_update', currentThreadId);
-              }
-            }
-
-            if (chatSession.isChatActive && chatSession.threadId === currentThreadId) {
-              render(true);
-            }
+            
+            await workflow.runAgentLoop({
+              chatSession,
+              messages,
+              config,
+              provider,
+              phone,
+              ui,
+              dbManager,
+              stripToolBleed,
+              parseFallbackToolCalls,
+              setPendingPlan,
+              setPlanMenuIndex,
+              render,
+              syncMessages
+            }, inputText);
           });
         } catch (error: any) {
-          chatSession.agentStates.set(chatSession.threadId, 'idle');
           chatSession.activeStreams.delete(chatSession.threadId);
-          messages.push(new SystemMessage(formatChatError(error)));
+          chatSession.agentStates.set(chatSession.threadId, 'idle');
+          messages.push(new AIMessage(formatChatError(error)));
           syncMessages();
+          render(true);
+        } finally {
+          chatSession.activeStreams.delete(chatSession.threadId);
           render(true);
         }
       };
@@ -1094,9 +844,33 @@ async function main() {
           return;
         } else if (key.ctrl && key.name === 'x') {
           const currentThreadId = chatSession.threadId;
-          if (chatSession.activeStreams.has(currentThreadId)) {
+          let actionTaken = false;
+
+          if (getPendingApproval()) {
+            const pendingApp = getPendingApproval()!;
+            const idx = chatSession.pendingApprovals.indexOf(pendingApp);
+            if (idx !== -1) chatSession.pendingApprovals.splice(idx, 1);
+            setApprovalMenuIndex(0);
+            pendingApp.resolve('deny');
+            ui.warning("Command execution cancelled by user.");
+            actionTaken = true;
+          }
+
+          if (getPendingPlan()) {
+            setPendingPlan(false);
+            setPlanMenuIndex(0);
+            ui.warning("Plan execution cancelled by user.");
+            runAgentLoop('cancel - do not proceed with this plan.');
+            actionTaken = true;
+          }
+
+          if (chatSession.activeStreams.has(currentThreadId) || chatSession.agentStates.get(currentThreadId) === 'tools') {
             chatSession.cancelledThreads.add(currentThreadId);
-            ui.warning("Streaming terminated by user.");
+            ui.warning("Execution terminated by user.");
+            actionTaken = true;
+          }
+
+          if (actionTaken) {
             render(true);
           }
           return;
