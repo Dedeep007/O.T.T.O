@@ -76,6 +76,29 @@ function isToolCallFormat(obj: any): boolean {
 }
 
 type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral' | 'bedrock';
+function stripToolBleed(text: string): string {
+  if (!text) return text;
+  let cleaned = text;
+
+  // 1. Remove <tool> or <tool_call> tags and their content
+  cleaned = cleaned.replace(/<(?:tool|tool_call)>[\s\S]*?(?:<\/(?:tool|tool_call)>|$)/gi, '');
+
+  // 2. Remove markdown JSON blocks if they look like a tool call
+  const blockRegex = /```json\s*([\s\S]*?)(?:```|$)/gi;
+  cleaned = cleaned.replace(blockRegex, (match, inner) => {
+    if (inner.includes('"name"') || inner.includes('write_file') || inner.includes('execute_terminal_command')) {
+      return '';
+    }
+    return match;
+  });
+
+  // 3. Remove raw JSON objects that look like tool calls
+  const rawJsonRegex = /^\s*\{[\s\S]*"name"[\s\S]*\}(?:\s*$)?/g;
+  cleaned = cleaned.replace(rawJsonRegex, '');
+
+  return cleaned.trim();
+}
+
 function parseInvalidWriteFileJson(jsonStr: string): any | null {
   if (!jsonStr.includes('write_file')) return null;
 
@@ -93,15 +116,14 @@ function parseInvalidWriteFileJson(jsonStr: string): any | null {
   if (startQuoteIdx === -1) return null;
 
   let endQuoteIdx = -1;
-  for (let i = jsonStr.length - 1; i > startQuoteIdx; i--) {
+  for (let i = startQuoteIdx + 1; i < jsonStr.length; i++) {
+    if (jsonStr[i] === '\\') {
+      i++; // skip escaped character
+      continue;
+    }
     if (jsonStr[i] === '"') {
-      const tail = jsonStr.substring(i + 1).trim();
-      if (/^[\s,}]*$/.test(tail)) {
-        if (tail.includes('}')) {
-          endQuoteIdx = i;
-          break;
-        }
-      }
+      endQuoteIdx = i;
+      break;
     }
   }
 
@@ -883,7 +905,7 @@ async function main() {
                       }
                     }
                     content += finalMessage.content;
-                    aiMessage.content = content;
+                    aiMessage.content = stripToolBleed(content);
 
                     if (finalMessage && finalMessage.tool_calls && finalMessage.tool_calls.length > 0) {
                       aiMessage.tool_calls = finalMessage.tool_calls;
@@ -919,22 +941,8 @@ async function main() {
                     aiMessage.tool_calls = fallbackCalls;
                     hasToolCalls = true;
                     
-                    const rawTrimmed = finalMessage.content.toString().trim();
-                    try {
-                      JSON.parse(sanitizeJsonString(rawTrimmed));
-                      finalMessage.content = '';
-                      aiMessage.content = '';
-                    } catch {
-                      const blockRegex = /^```json\s*([\s\S]*?)\s*```$/i;
-                      const match = rawTrimmed.match(blockRegex);
-                      if (match) {
-                        try {
-                          JSON.parse(sanitizeJsonString(match[1].trim()));
-                          finalMessage.content = '';
-                          aiMessage.content = '';
-                        } catch {}
-                      }
-                    }
+                    finalMessage.content = stripToolBleed(finalMessage.content.toString());
+                    aiMessage.content = finalMessage.content;
                   }
                 }
                 

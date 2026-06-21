@@ -78,7 +78,7 @@ const executeTerminalCommand = tool(
   },
   {
     name: "execute_terminal_command",
-    description: "Executes a shell/terminal command natively on the user's OS from the current workspace directory. Use this for running build/test/compile commands. If starting a long-running server or watcher, set background: true. Do not use this to create or edit files; use write_file instead.",
+    description: "Executes a shell/terminal command natively on the user's OS from the current workspace directory. Use this for running build/test/compile commands. CRITICAL: Always check the exit code and stderr of the command to verify it succeeded. If starting a long-running server or watcher, set background: true. Do not use this to create or edit files; use write_file instead.",
     schema: z.object({
       command: z.string().describe("The exact shell command string to execute."),
       background: z.boolean().optional().describe("If true, starts the process in the background and returns a task ID immediately, without waiting for completion. The process will be tracked and visible to the user under 'Manage Terminal Sessions' on the Home screen."),
@@ -269,7 +269,7 @@ const replaceFileLines = tool(
   },
   {
     name: "replace_file_lines",
-    description: "Replaces an exact 1-based inclusive line range in a workspace file. Use after search_code and read_file_lines to make small targeted edits without rewriting the whole file.",
+    description: "Replaces an exact 1-based inclusive line range in a workspace file. CRITICAL: NEVER guess line numbers. ALWAYS use read_file_lines or search_code first to find the exact start and end line numbers before using this tool. Make small targeted edits rather than rewriting the whole file.",
     schema: z.object({
       filePath: z.string().describe("Workspace-relative file path, for example src/index.ts."),
       startLine: z.number().int().min(1).describe("1-based first line to replace."),

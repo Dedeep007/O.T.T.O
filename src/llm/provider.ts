@@ -70,15 +70,14 @@ function parseInvalidWriteFileJson(jsonStr: string): any | null {
   if (startQuoteIdx === -1) return null;
 
   let endQuoteIdx = -1;
-  for (let i = jsonStr.length - 1; i > startQuoteIdx; i--) {
+  for (let i = startQuoteIdx + 1; i < jsonStr.length; i++) {
+    if (jsonStr[i] === '\\') {
+      i++; // skip escaped character
+      continue;
+    }
     if (jsonStr[i] === '"') {
-      const tail = jsonStr.substring(i + 1).trim();
-      if (/^[\s,}]*$/.test(tail)) {
-        if (tail.includes('}')) {
-          endQuoteIdx = i;
-          break;
-        }
-      }
+      endQuoteIdx = i;
+      break;
     }
   }
 
