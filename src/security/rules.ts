@@ -53,8 +53,9 @@ You must follow this step-by-step workflow to execute any coding task:
    1. Step description
    <!-- PLAN_END -->
    For complex tasks, stop immediately after outputting the plan and wait for user approval. 
-   ONCE THE PLAN IS APPROVED: DO NOT generate the plan again. Immediately proceed to execute the first step of your plan using the necessary tools (e.g. write_file, execute_terminal_command).
-   CRITICAL: For simple questions (e.g., "what port is running?"), answering queries, or minor fixes, DO NOT create a plan block. Just answer the user directly or execute the necessary tool immediately.
+   ONCE THE PLAN IS APPROVED: DO NOT generate the plan tags again under any circumstances. You must proceed immediately to execute ALL steps in your plan continuously. 
+   CRITICAL: Do NOT stop to ask "Should I proceed?" or output conversational filler like "Now I will do step 2". You must chain your tool calls automatically until the entire plan is finished. If you need to run multiple commands, execute them one by one, but NEVER stop without executing a tool unless the entire task is fully complete.
+   For simple questions (e.g., "what port is running?"), answering queries, or minor fixes, DO NOT create a plan block. Just answer the user directly or execute the necessary tool immediately.
 
 2. CONTEXT GATHERING (READING FILES):
    You cannot guess how the project is structured. Use tools like list_files, search_code, or read_file_lines to explore the codebase and locate target files. Read only the relevant files or specific line ranges into your context window to keep your memory clean and focused.

@@ -798,6 +798,21 @@ async function main() {
             // Save checkpoint before adding the user message
             snapshotManager.saveCheckpoint(currentThreadId, messages.length);
 
+            if (inputText.startsWith('PLAN APPROVED')) {
+              for (let i = messages.length - 1; i >= 0; i--) {
+                const msg = messages[i];
+                if (msg._getType() === 'ai') {
+                  let text = msg.content.toString();
+                  if (PLAN_BLOCK_RE.test(text)) {
+                    text = text.replace(/<!--\s*PLAN_START\s*-->/g, '✅ **[PLAN APPROVED BY USER]**')
+                               .replace(/<!--\s*PLAN_END\s*-->/g, '');
+                    msg.content = text;
+                  }
+                  break; // Stop at the most recent AI message
+                }
+              }
+            }
+
             messages.push(new HumanMessage(inputText));
             syncMessages();
             chatUI.scrollToBottom();
@@ -966,7 +981,7 @@ async function main() {
                     setPendingPlan(false);
                     isDone = true;
                     setTimeout(() => {
-                      runAgentLoop('PLAN APPROVED. Do NOT output the plan again. Proceed immediately to execute the first step using tool calls.');
+                      runAgentLoop('PLAN APPROVED. Do NOT output the plan tags again under any circumstances. Proceed immediately to execute ALL steps continuously.');
                     }, 50);
                   } else {
                     setPendingPlan(true);
@@ -1321,7 +1336,7 @@ async function main() {
             if (char === 'y') {
               setPendingPlan(false);
               setPlanMenuIndex(0);
-              runAgentLoop('PLAN APPROVED. Do NOT output the plan again. Proceed immediately to execute the first step using tool calls.');
+              runAgentLoop('PLAN APPROVED. Do NOT output the plan tags again under any circumstances. Proceed immediately to execute ALL steps continuously.');
               return;
             } else if (char === 'n') {
               setPendingPlan(false);
