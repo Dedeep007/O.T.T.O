@@ -540,6 +540,7 @@ async function main() {
   const startChat = async () => {
     const messages = chatSession.getMessages();
     let currentInput = '';
+    let autoRetryCount = 0;
     const getIsStreaming = () => chatSession.activeStreams.has(chatSession.threadId);
     let isPrompting = false;
     let lastStreamContentLength = 0;
@@ -964,7 +965,7 @@ async function main() {
                     setPendingPlan(false);
                     isDone = true;
                     setTimeout(() => {
-                      runAgentLoop('approved — please proceed with the plan exactly as described.');
+                      runAgentLoop('PLAN APPROVED. Do NOT output the plan again. Proceed immediately to execute the first step using tool calls.');
                     }, 50);
                   } else {
                     setPendingPlan(true);
@@ -975,6 +976,7 @@ async function main() {
                     else sessionEvents.emit('stream_update', chatSession.threadId);
                   }
                 } else if (hasToolCalls) {
+                  autoRetryCount = 0;
                   setPendingPlan(false);
                   chatSession.agentStates.set(chatSession.threadId, 'tools');
                   if (chatSession.isChatActive) render(true);
@@ -1013,6 +1015,7 @@ async function main() {
                     sessionEvents.emit('stream_update', chatSession.threadId);
                   }
                 } else {
+                  autoRetryCount = 0;
                   setPendingPlan(false);
                   isDone = true;
                   chatSession.agentStates.set(chatSession.threadId, 'idle');
@@ -1027,9 +1030,18 @@ async function main() {
             } catch (error: any) {
               chatSession.agentStates.set(currentThreadId, 'idle');
               chatSession.activeStreams.delete(currentThreadId);
-              messages.push(new SystemMessage(formatChatError(error)));
+              const errMsg = formatChatError(error);
+              messages.push(new SystemMessage(errMsg));
               syncMessages();
-              sessionEvents.emit('stream_update', currentThreadId);
+              
+              if ((errMsg.toLowerCase().includes('failed to call a function') || errMsg.toLowerCase().includes('tool')) && autoRetryCount < 3) {
+                autoRetryCount++;
+                setTimeout(() => {
+                  runAgentLoop('SYSTEM: Your last tool call failed due to a syntax/JSON formatting error. Please carefully check your tool call schema, ensure you output valid JSON (no trailing commas, properly escaped quotes), and try again.');
+                }, 100);
+              } else {
+                sessionEvents.emit('stream_update', currentThreadId);
+              }
             }
 
             if (chatSession.isChatActive && chatSession.threadId === currentThreadId) {
@@ -1308,7 +1320,7 @@ async function main() {
             if (char === 'y') {
               setPendingPlan(false);
               setPlanMenuIndex(0);
-              runAgentLoop('approved - please proceed with the plan exactly as described.');
+              runAgentLoop('PLAN APPROVED. Do NOT output the plan again. Proceed immediately to execute the first step using tool calls.');
               return;
             } else if (char === 'n') {
               setPendingPlan(false);

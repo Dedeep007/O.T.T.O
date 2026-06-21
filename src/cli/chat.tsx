@@ -381,10 +381,10 @@ export class ChatUI {
 
       let rawContent = msg.content;
 
-      const thinkMatch = rawContent.match(/<think>([\s\S]*?)(?:<\/think>|$)/);
+      const thinkMatch = rawContent.match(/<(?:think|thought)>([\s\S]*?)(?:<\/(?:think|thought)>|$)/);
       if (thinkMatch) {
         const thinkStr = thinkMatch[1].trim();
-        rawContent = rawContent.replace(/<think>[\s\S]*?(?:<\/think>|$)/, '').trim();
+        rawContent = rawContent.replace(/<(?:think|thought)>[\s\S]*?(?:<\/(?:think|thought)>|$)/, '').trim();
 
         const thinkLines = thinkStr.split('\n');
         const total = thinkLines.length;
