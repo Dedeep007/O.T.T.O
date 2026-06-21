@@ -1,6 +1,6 @@
 {
   "name": "o.t.t.o",
-  "version": "1.1.78",
+  "version": "1.1.79",
   "description": "Orchestrated Task & Tool Operator",
   "main": "dist/index.js",
   "type": "module",

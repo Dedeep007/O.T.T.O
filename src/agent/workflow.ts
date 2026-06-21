@@ -194,6 +194,15 @@ export class AgentWorkflow {
       }
     } else {
       const strippedContent = ctx.stripToolBleed(finalMessage?.content?.toString() || '');
+      
+      if (strippedContent.includes('failed_generation') && strippedContent.includes('Failed to call a function')) {
+        ctx.messages.push(new HumanMessage('SYSTEM: Your previous tool call failed due to a native API generation error. This usually happens when writing large files with the native tool format. Please output your tool call as a raw markdown JSON block instead of using the native function calling format. Our system will parse the JSON block automatically.'));
+        ctx.syncMessages();
+        if (ctx.chatSession.isChatActive) ctx.render(true);
+        await this.runAgentLoop(ctx, undefined, depth + 1);
+        return;
+      }
+
       if (!strippedContent.trim() && finalMessage?.content?.toString().includes('<think>')) {
         // The AI generated a think block but stopped without outputting text or tools
         ctx.messages.push(new HumanMessage('SYSTEM: You stopped generating without executing a tool or saying anything to the user. Proceed with your tool calls or respond to the user.'));
