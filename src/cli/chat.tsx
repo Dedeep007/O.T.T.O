@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Box, Text, useInput } from 'ink';
 import chalk from 'chalk';
-import { marked } from 'marked';
-import TerminalRenderer from 'marked-terminal';
+import { marked, Marked } from 'marked';
+import { markedTerminal } from 'marked-terminal';
 import fs from 'fs';
 import path from 'path';
 
@@ -164,19 +164,16 @@ function renderMarkdownWithOttoStyles(content: string, width: number, diffsExpan
     }
   );
 
-  class CustomRenderer extends TerminalRenderer {}
+  const myMarked = new Marked();
+  myMarked.use(markedTerminal({
+    width,
+    reflowText: true,
+    codespan: chalk.hex('#F5C400'),
+    strong: chalk.white.bold,
+    em: chalk.italic,
+  }) as any);
 
-  marked.setOptions({
-    renderer: new CustomRenderer({
-      width,
-      reflowText: true,
-      codespan: chalk.hex('#F5C400'),
-      strong: chalk.white.bold,
-      em: chalk.italic,
-    }) as any
-  });
-
-  const parsed = marked.parse(withPlaceholders) as string;
+  const parsed = myMarked.parse(withPlaceholders) as string;
   return parsed.replace(/\u0000DIFF(\d+)\u0000/g, (_m, idx) => placeholders[Number(idx)]);
 }
 

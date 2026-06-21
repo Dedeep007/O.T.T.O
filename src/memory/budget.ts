@@ -134,7 +134,10 @@ export class MemoryManager {
         return new HumanMessage(truncatedContent);
       }
       if (message instanceof AIMessage) {
-        return new AIMessage(truncatedContent);
+        const msgOpts: any = { content: truncatedContent };
+        if ((message as any).tool_calls) msgOpts.tool_calls = (message as any).tool_calls;
+        if ((message as any).invalid_tool_calls) msgOpts.invalid_tool_calls = (message as any).invalid_tool_calls;
+        return new AIMessage(msgOpts);
       }
       if (message instanceof ToolMessage) {
         return new ToolMessage({
@@ -155,6 +158,7 @@ export class MemoryManager {
       maxTokens: workingBudget,
       tokenCounter: (msgs: BaseMessage[]) => msgs.reduce((acc, m) => acc + this.estimateTokens(m.content.toString()), 0),
       strategy: 'last',
+      startOn: 'human',
       allowPartial: false,
       includeSystem: false
     });
