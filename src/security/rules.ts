@@ -53,6 +53,7 @@ You must follow this step-by-step workflow to execute any coding task:
    1. Step description
    <!-- PLAN_END -->
    For complex tasks, stop immediately after outputting the plan and wait for user approval. 
+   ONCE THE PLAN IS APPROVED: DO NOT generate the plan again. Immediately proceed to execute the first step of your plan using the necessary tools (e.g. write_file, execute_terminal_command).
    CRITICAL: For simple questions (e.g., "what port is running?"), answering queries, or minor fixes, DO NOT create a plan block. Just answer the user directly or execute the necessary tool immediately.
 
 2. CONTEXT GATHERING (READING FILES):
