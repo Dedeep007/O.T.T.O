@@ -88,7 +88,7 @@ function renderDiffBlock(codeStr: string, diffWidth: number, isExpanded: boolean
 
   const bar = (bg: string) => chalk.bgHex(bg)('  ');
   const row = (bg: string, fg: string, text: string) =>
-    chalk.bgHex(bg).hex(fg)(padVisible(` ${text}`, diffWidth - 2));
+    chalk.bgHex(bg).hex(fg)(padVisible(text, diffWidth - 2));
 
   const allLines = codeStr.split('\n');
   const total = allLines.length;
@@ -101,19 +101,33 @@ function renderDiffBlock(codeStr: string, diffWidth: number, isExpanded: boolean
   }
 
   toRender.forEach(line => {
-    if (line.startsWith('+++') || line.startsWith('---')) {
-      output += chalk.bgHex('#1E293B').hex('#CBD5E1')(padVisible(` ${line}`, diffWidth)) + '\n';
-    } else if (line.startsWith('@@')) {
-      output += chalk.bgHex('#0C4A6E').hex('#67E8F9')(padVisible(` ${line}`, diffWidth)) + '\n';
-    } else if (line.startsWith('+')) {
-      output += bar('#22C55E') + row('#14532D', '#BBF7D0', line) + '\n';
-    } else if (line.startsWith('-')) {
-      output += bar('#EF4444') + row('#7F1D1D', '#FECACA', line) + '\n';
-    } else if (line.startsWith('... (')) {
-      output += chalk.bgHex('#374151').hex('#FBBF24')(padVisible(` ${line}`, diffWidth)) + '\n';
-    } else {
-      output += chalk.bgHex('#0F172A').hex('#94A3B8')(padVisible(` ${line}`, diffWidth)) + '\n';
+    const maxLen = diffWidth - 4;
+    const subLines: string[] = [];
+    let current = line;
+    while (current.length > maxLen) {
+      subLines.push(current.substring(0, maxLen));
+      current = current.substring(maxLen);
     }
+    subLines.push(current);
+
+    subLines.forEach((sl, idx) => {
+      const isFirst = idx === 0;
+      let displayLine = isFirst ? ' ' + sl : '   ' + sl;
+
+      if (line.startsWith('+++') || line.startsWith('---')) {
+        output += chalk.bgHex('#1E293B').hex('#CBD5E1')(padVisible(displayLine, diffWidth)) + '\n';
+      } else if (line.startsWith('@@')) {
+        output += chalk.bgHex('#0C4A6E').hex('#67E8F9')(padVisible(displayLine, diffWidth)) + '\n';
+      } else if (line.startsWith('+')) {
+        output += bar('#22C55E') + row('#14532D', '#BBF7D0', displayLine) + '\n';
+      } else if (line.startsWith('-')) {
+        output += bar('#EF4444') + row('#7F1D1D', '#FECACA', displayLine) + '\n';
+      } else if (line.startsWith('... (')) {
+        output += chalk.bgHex('#374151').hex('#FBBF24')(padVisible(displayLine, diffWidth)) + '\n';
+      } else {
+        output += chalk.bgHex('#0F172A').hex('#94A3B8')(padVisible(displayLine, diffWidth)) + '\n';
+      }
+    });
   });
   return output + '\n';
 }
