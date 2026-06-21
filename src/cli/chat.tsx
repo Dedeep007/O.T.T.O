@@ -297,7 +297,18 @@ export class ChatUI {
     } = this.currentData;
 
     const lines: string[] = [];
-    const push = (line: string = '') => lines.push(line);
+    let currentPrefix = '';
+    const push = (line: string = '') => {
+      if (currentPrefix) {
+        if (line.startsWith('  ')) {
+          lines.push('  ' + currentPrefix + line.substring(2));
+        } else {
+          lines.push('  ' + currentPrefix + line);
+        }
+      } else {
+        lines.push(line);
+      }
+    };
 
     push(this.DIM('-'.repeat(this.W)));
 
@@ -348,17 +359,25 @@ export class ChatUI {
       }
 
       if (msg.role === 'tool') {
+        currentPrefix = '';
         push('  ' + chalk.bgHex('#1F2937').white.bold(' TOOL '));
+        currentPrefix = this.MUTED('│  ');
         const rendered = renderMarkdownWithOttoStyles(msg.content, this.W - 4, diffsExpanded);
         rendered.trim().split('\n').forEach(line => push('  ' + line));
+        currentPrefix = '';
         push('');
         return;
       }
 
+      currentPrefix = '';
       const header = msg.role === 'user'
         ? '  ' + chalk.bgHex('#374151').white.bold(' YOU ')
         : this.AI_TAG('  O.T.T.O');
       push(header);
+
+      if (msg.role === 'assistant' || msg.role === 'tool') {
+        currentPrefix = this.MUTED('│  ');
+      }
 
       let rawContent = msg.content;
 
@@ -497,18 +516,25 @@ export class ChatUI {
         }
       }
 
+      currentPrefix = '';
       push('');
     });
 
     if (delayMessage) {
       const dots = '.'.repeat((Math.floor(Date.now() / 350) % 3) + 1);
+      currentPrefix = '';
       push(this.AI_TAG('  O.T.T.O'));
+      currentPrefix = this.MUTED('│  ');
       push('  ' + chalk.hex('#FBBF24')(`${delayMessage}${dots}`));
+      currentPrefix = '';
       push('');
     } else if (isThinking) {
       const dots = '.'.repeat((Math.floor(Date.now() / 350) % 3) + 1);
+      currentPrefix = '';
       push(this.AI_TAG('  O.T.T.O'));
+      currentPrefix = this.MUTED('│  ');
       push('  ' + chalk.hex('#A78BFA')(`thinking${dots}`));
+      currentPrefix = '';
       push('');
     }
 
