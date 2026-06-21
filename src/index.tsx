@@ -807,10 +807,10 @@ async function main() {
                   const match = text.match(PLAN_BLOCK_RE);
                   if (match) {
                     const planText = match[0];
-                    msg.content = text.replace(PLAN_BLOCK_RE, '[Plan submitted for approval]');
-                    let cleanPlan = planText.replace(/<!--\s*PLAN_START\s*-->/g, '').replace(/<!--\s*PLAN_END\s*-->/g, '');
-                    cleanPlan = cleanPlan.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1').replace(/`(.*?)`/g, '$1');
-                    finalInputText = finalInputText + '\n\nApproved Plan to execute:\n' + cleanPlan;
+                    // We previously mutated the AI history and injected the plan into the HumanMessage.
+                    // This caused "history mimicry" where the AI learned to output "[Plan submitted for approval]".
+                    // Instead, we just leave the AI history completely natural and append our strict execution directive.
+                    finalInputText = finalInputText + '\n\nCRITICAL DIRECTIVE: Do not output conversational filler (e.g. "Now I will start step 1"). You MUST immediately output a valid JSON tool call to begin execution. If you do not invoke a tool, the system will fail.';
                   }
                   break; // Stop at the most recent AI message
                 }
