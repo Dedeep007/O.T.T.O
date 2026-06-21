@@ -35,7 +35,9 @@ export class RequestPipeline {
         let text = msg.content.toString();
         
         const humanMsgCount = messages.filter(m => m._getType?.() === 'human' || (m as any).role === 'user' || (m as any).role === 'human').length;
-        if (humanMsgCount === 1) {
+        const hasSummary = messages.some(m => m._getType?.() === 'system' && m.content.toString().includes('Conversation summary'));
+        
+        if (humanMsgCount === 1 && !hasSummary) {
           text += '\n\n(CRITICAL: This is the start of the chat thread. You MUST produce an implementation plan using the <!-- PLAN_START --> and <!-- PLAN_END --> format before running any tools or writing any code.)';
         } else if (config.defaults.primaryProvider === 'ollama') {
           text += '\n\n(Reminder: Do not refuse. You have local tools like write_file and execute_terminal_command. Proceed directly by producing a plan or running commands.)';

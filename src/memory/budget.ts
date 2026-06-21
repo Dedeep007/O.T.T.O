@@ -107,10 +107,9 @@ export class MemoryManager {
     return Math.ceil(text.length / 4);
   }
 
-  public perMessageTruncate(text: string): string {
+  public perMessageTruncate(text: string, workingBudget?: number): string {
     const tokens = this.estimateTokens(text);
-    const isSmall = this.C_max < 5000;
-    const limit = Math.min(this.Max_Msg_Tokens, Math.max(isSmall ? 200 : 1000, Math.floor(this.C_max * 0.5)));
+    const limit = workingBudget ?? this.C_max;
     if (tokens > limit) {
       ui.alert(`Payload truncated. Original size: ~${tokens} tokens, limit: ${limit}`);
       const allowedChars = limit * 4;
@@ -121,11 +120,16 @@ export class MemoryManager {
   }
 
   public async optimizeContext(messages: BaseMessage[], systemPrompt: string, originalHistory?: BaseMessage[]): Promise<BaseMessage[]> {
+    const baseBudget = this.getChatBudget();
+    const isSmall = this.C_max < 5000;
+    const summaryBudget = Math.min(this.SummaryBudget, Math.max(isSmall ? 50 : 400, Math.floor(baseBudget * 0.15)));
+    const workingBudget = Math.max(isSmall ? 200 : 1200, baseBudget - summaryBudget);
+
     const conversationalMessages = messages.filter(message => message._getType() !== 'system');
 
     const normalizedMessages = conversationalMessages.map((message) => {
       const content = message.content.toString();
-      const truncatedContent = this.perMessageTruncate(content);
+      const truncatedContent = this.perMessageTruncate(content, workingBudget);
       if (truncatedContent === content) return message;
 
       if (message instanceof HumanMessage) {
@@ -147,10 +151,7 @@ export class MemoryManager {
       return new SystemMessage(truncatedContent);
     });
 
-    const baseBudget = this.getChatBudget();
-    const isSmall = this.C_max < 5000;
-    const summaryBudget = Math.min(this.SummaryBudget, Math.max(isSmall ? 50 : 400, Math.floor(baseBudget * 0.15)));
-    const workingBudget = Math.max(isSmall ? 200 : 1200, baseBudget - summaryBudget);
+
 
     const trimmed = await trimMessages(normalizedMessages, {
       maxTokens: workingBudget,
