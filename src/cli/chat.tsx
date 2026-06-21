@@ -66,20 +66,25 @@ function padVisible(str: string, width: number): string {
 }
 
 function wrapText(text: string, maxWidth: number, indent: number): string[] {
-  const words = text.split(' ');
   const lines: string[] = [];
-  let currentLine = '';
+  const rawLines = text.split('\n');
 
-  words.forEach(word => {
-    if (stripAnsi(currentLine + word).length > maxWidth - indent) {
-      lines.push(' '.repeat(indent) + currentLine.trim());
-      currentLine = word + ' ';
-    } else {
-      currentLine += word + ' ';
-    }
+  rawLines.forEach(rawLine => {
+    const words = rawLine.split(' ');
+    let currentLine = '';
+
+    words.forEach(word => {
+      if (stripAnsi(currentLine + word).length > maxWidth - indent) {
+        lines.push(' '.repeat(indent) + currentLine.trim());
+        currentLine = word + ' ';
+      } else {
+        currentLine += word + ' ';
+      }
+    });
+
+    if (currentLine) lines.push(' '.repeat(indent) + currentLine.trim());
   });
 
-  if (currentLine) lines.push(' '.repeat(indent) + currentLine.trim());
   return lines;
 }
 

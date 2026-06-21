@@ -742,6 +742,7 @@ async function main() {
 
       const onPendingApproval = () => {
         if (chatSession.isChatActive) {
+          chatUI.scrollToBottom();
           render(true);
         }
       };
@@ -1271,15 +1272,15 @@ async function main() {
           render(getIsStreaming());
         } else if (key.name === 'pageup') {
           autocompleteState = null;
-          if (!getPendingPlan() && !getPendingApproval()) chatUI.scrollUp(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
+          chatUI.scrollUp(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
           render(getIsStreaming());
         } else if (key.name === 'pagedown') {
           autocompleteState = null;
-          if (!getPendingPlan() && !getPendingApproval()) chatUI.scrollDown(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
+          chatUI.scrollDown(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
           render(getIsStreaming());
         } else if (key.name === 'end') {
           autocompleteState = null;
-          if (!getPendingPlan() && !getPendingApproval()) chatUI.scrollToBottom();
+          chatUI.scrollToBottom();
           render(getIsStreaming());
         } else if (key.name === 'backspace' || str === '\x7f' || str === '\x08') {
           autocompleteState = null;
