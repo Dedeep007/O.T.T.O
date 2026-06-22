@@ -4,3 +4,4 @@ dist/
 .ottorc
 *.log
 .DS_Store
+scratch/
