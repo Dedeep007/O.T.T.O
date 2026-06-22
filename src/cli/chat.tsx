@@ -91,9 +91,8 @@ function wrapText(text: string, maxWidth: number, indent: number): string[] {
 function renderDiffBlock(codeStr: string, diffWidth: number, isExpanded: boolean): string {
   let output = '\n';
 
-  const bar = (bg: string) => chalk.bgHex(bg)('  ');
   const row = (bg: string, fg: string, text: string) =>
-    chalk.bgHex(bg).hex(fg)(padVisible(text, diffWidth - 2));
+    chalk.bgHex(bg).hex(fg)(padVisible(text, diffWidth));
 
   const allLines = codeStr.split('\n');
   const total = allLines.length;
@@ -106,7 +105,7 @@ function renderDiffBlock(codeStr: string, diffWidth: number, isExpanded: boolean
   }
 
   toRender.forEach(line => {
-    const maxLen = diffWidth - 4;
+    const maxLen = diffWidth;
     const subLines: string[] = [];
     let current = line;
     while (current.length > maxLen) {
@@ -116,21 +115,22 @@ function renderDiffBlock(codeStr: string, diffWidth: number, isExpanded: boolean
     subLines.push(current);
 
     subLines.forEach((sl, idx) => {
-      const isFirst = idx === 0;
-      let displayLine = isFirst ? ' ' + sl : '   ' + sl;
-
+      let displayLine = sl;
+      
       if (line.startsWith('+++') || line.startsWith('---')) {
-        output += chalk.bgHex('#1E293B').hex('#CBD5E1')(padVisible(displayLine, diffWidth)) + '\n';
+        output += chalk.bgHex('#0d1929').hex('#888888')(padVisible(displayLine, diffWidth)) + '\n';
       } else if (line.startsWith('@@')) {
-        output += chalk.bgHex('#0C4A6E').hex('#67E8F9')(padVisible(displayLine, diffWidth)) + '\n';
+        output += chalk.bgHex('#1a3a5c').hex('#4a9eff')(padVisible(displayLine, diffWidth)) + '\n';
       } else if (line.startsWith('+')) {
-        output += bar('#22C55E') + row('#14532D', '#BBF7D0', displayLine) + '\n';
+        const textPart = padVisible(' ' + displayLine, diffWidth - 1);
+        output += chalk.bgHex('#4ecc8a')(' ') + chalk.bgHex('#1a3d1a').hex('#4ecc8a')(textPart) + '\n';
       } else if (line.startsWith('-')) {
-        output += bar('#EF4444') + row('#7F1D1D', '#FECACA', displayLine) + '\n';
+        const textPart = padVisible(' ' + displayLine, diffWidth - 1);
+        output += chalk.bgHex('#cc4e4e')(' ') + chalk.bgHex('#3d1515').hex('#ff6b6b')(textPart) + '\n';
       } else if (line.startsWith('... (')) {
-        output += chalk.bgHex('#374151').hex('#FBBF24')(padVisible(displayLine, diffWidth)) + '\n';
+        output += chalk.bgHex('#0d1929').hex('#FBBF24')(padVisible(' ' + displayLine, diffWidth)) + '\n';
       } else {
-        output += chalk.bgHex('#0F172A').hex('#94A3B8')(padVisible(displayLine, diffWidth)) + '\n';
+        output += chalk.bgHex('#0d1929').hex('#6a8a6a')(padVisible(' ' + displayLine, diffWidth)) + '\n';
       }
     });
   });
@@ -154,7 +154,7 @@ function renderMarkdownWithOttoStyles(content: string, width: number, diffsExpan
         let output = '\n';
         const lines = codeStr.replace(/\n$/, '').split('\n');
         lines.forEach(line => {
-          output += chalk.bgHex('#0F172A').hex('#CBD5E1')(padVisible(` ${line}`, diffWidth)) + '\n';
+          output += chalk.bgHex('#0d1929').hex('#888888')(padVisible(` ${line}`, diffWidth)) + '\n';
         });
 
         const key = `\u0000DIFF${placeholders.length}\u0000`;
@@ -299,17 +299,8 @@ export class ChatUI {
     } = this.currentData;
 
     const lines: string[] = [];
-    let currentPrefix = '';
     const push = (line: string = '') => {
-      if (currentPrefix) {
-        if (line.startsWith('  ')) {
-          lines.push('  ' + currentPrefix + line.substring(2));
-        } else {
-          lines.push('  ' + currentPrefix + line);
-        }
-      } else {
-        lines.push(line);
-      }
+      lines.push(line);
     };
 
     push(this.DIM('-'.repeat(this.W)));
@@ -355,301 +346,132 @@ export class ChatUI {
 
     messages.forEach((msg: any) => {
       if (msg.role === 'system') {
-        push('  ' + chalk.bgHex('#374151').white(' SYSTEM ') + ' ' + this.MUTED(msg.content));
+        push('  ' + chalk.bgHex('#2a2a2a').hex('#888')(' SYSTEM ') + ' ' + chalk.hex('#555')(msg.content));
         push('');
         return;
       }
 
       if (msg.role === 'tool') {
-        currentPrefix = '';
-        push('  ' + chalk.bgHex('#1F2937').white.bold(' TOOL '));
-        currentPrefix = this.MUTED('│  ');
-        const rendered = renderMarkdownWithOttoStyles(msg.content, this.W - 4, diffsExpanded);
-        rendered.trim().split('\n').forEach(line => push('  ' + line));
-        currentPrefix = '';
+        const rendered = renderMarkdownWithOttoStyles(msg.content, this.W, diffsExpanded);
+        rendered.trim().split('\n').forEach(line => push(line));
         push('');
         return;
       }
 
-      currentPrefix = '';
       const header = msg.role === 'user'
-        ? '  ' + chalk.bgHex('#374151').white.bold(' YOU ')
-        : this.AI_TAG('  O.T.T.O');
+        ? '  ' + chalk.bgHex('#2a2a2a').hex('#888')(' YOU ')
+        : '  ' + chalk.hex('#f5c542').bold('O.T.T.O');
       push(header);
-
-      if (msg.role === 'assistant' || msg.role === 'tool') {
-        currentPrefix = this.MUTED('│  ');
-      }
+      push('');
 
       let rawContent = msg.content;
 
       const thinkMatch = rawContent.match(/<(?:think|thought)>([\s\S]*?)(?:<\/(?:think|thought)>|$)/);
       if (thinkMatch) {
-        const thinkStr = thinkMatch[1].trim();
         rawContent = rawContent.replace(/<(?:think|thought)>[\s\S]*?(?:<\/(?:think|thought)>|$)/, '').trim();
-
-        const thinkLines = thinkStr.split('\n');
-        const total = thinkLines.length;
-
+        const thinkLines = thinkMatch[1].trim().split('\n');
         if (!diffsExpanded) {
-          push('  ' + chalk.hex('#A78BFA')(`🧠  Reasoning Process (${total} lines) [Press Ctrl+E to Expand]`));
-          push('');
+          push('  ' + chalk.hex('#555555')(`[ Reasoning Process (${thinkLines.length} lines) - Press Ctrl+E to Expand ]`));
         } else {
-          push('  ' + this.MUTED('|-- ') + chalk.hex('#A78BFA')('Reasoning Process'));
-          
-          thinkLines.forEach((line: string) => {
-            const formattedLine = line.trim()
-              .replace(/^(#{1,6})\s+(.*)$/g, (_m, _p1, p2) => chalk.white.bold(p2))
-              .replace(/^(\d+\.)\s+(.*)$/g, (_m, p1, p2) => chalk.white.bold(p1) + ' ' + p2)
-              .replace(/^([*-])\s+(.*)$/g, (_m, p1, p2) => chalk.white.bold(p1) + ' ' + p2)
-              .replace(/\*\*(.*?)\*\*/g, (_m, p1) => chalk.white.bold(p1))
-              .replace(/\*(.*?)\*/g, (_m, p1) => chalk.white.italic(p1))
-              .replace(/`(.*?)`/g, (_m, p1) => chalk.hex('#F5C400')(p1));
-
-            const wrapped = wrapText(formattedLine, this.W - 5, 0);
-            wrapped.forEach(wl => push('  ' + this.MUTED('| ') + this.MUTED(wl)));
-          });
-
-          push('  ' + this.MUTED('`--'));
-          push('');
+          thinkLines.forEach((l: string) => push('  ' + chalk.hex('#555555')(l)));
         }
+        push('');
+      }
 
-        if (msg.content.includes('<think>') && !msg.content.includes('</think>')) {
-          push('  ' + chalk.hex('#A78BFA')('  🧠  Thinking...'));
-          push('');
-        }
+      if (msg.content.includes('<think>') && !msg.content.includes('</think>')) {
+        push('  ' + chalk.hex('#555555')('Thinking...'));
+        push('');
       }
 
       if (rawContent.trim()) {
-        if (msg.role === 'user') {
-          const wrappedLines = wrapText(rawContent, this.W, 2);
-          wrappedLines.forEach(line => push(chalk.white(line)));
-        } else {
-          const PLAN_RE = /<!--\s*PLAN_START\s*-->([\s\S]*?)<!--\s*PLAN_END\s*-->/;
-          const planMatch = rawContent.match(PLAN_RE);
-
-          if (planMatch) {
-            const beforePlan = rawContent.slice(0, rawContent.indexOf('<!-- PLAN_START')).trim();
-            if (beforePlan) {
-              const rendered = renderMarkdownWithOttoStyles(beforePlan, this.W - 4, diffsExpanded);
-              rendered.trim().split('\n').forEach(line => push('  ' + line));
-              push('');
-            }
-
-            const planContent = planMatch[1].trim();
-            const planWidth = Math.min(this.W - 6, 86);
-            const boxBorder = chalk.hex('#F5C400');
-            const stepColor = chalk.hex('#22D3EE');
-            const fileColor = chalk.hex('#86EFAC');
-
-            const boxRow = (styledContent: string, bgHex?: string) => {
-              const visLen = getStringWidth(styledContent);
-              const pad = ' '.repeat(Math.max(0, planWidth - visLen));
-              const inner = bgHex
-                ? chalk.bgHex(bgHex)(styledContent + pad)
-                : styledContent + pad;
-              return '  ' + boxBorder('║') + inner + boxBorder('║');
-            };
-
-            push('  ' + boxBorder('╔' + '═'.repeat(planWidth) + '╗'));
-            push(boxRow(chalk.hex('#F5C400').bold(' 📋 IMPLEMENTATION PLAN '), '#1a1200'));
-            push('  ' + boxBorder('╠' + '═'.repeat(planWidth) + '╣'));
-
-            planContent.split('\n').forEach((line: string) => {
-              const stripped = line.trim();
-              if (!stripped || stripped.startsWith('##')) return;
-
-              let formattedLine = stripped
-                .replace(/\*\*(.*?)\*\*/g, (_m, p1) => chalk.white.bold(p1))
-                .replace(/\*(.*?)\*/g, (_m, p1) => chalk.white.italic(p1))
-                .replace(/`(.*?)`/g, (_m, p1) => chalk.hex('#F5C400')(p1));
-
-              let styledText: string;
-              if (/^\d+\./.test(stripped)) {
-                styledText = stepColor(' ' + formattedLine);
-              } else if (stripped.startsWith('- `') || stripped.startsWith('- \\`') || stripped.startsWith('- ') || stripped.startsWith('* ')) {
-                styledText = fileColor(' ' + formattedLine);
-              } else {
-                styledText = chalk.hex('#D1D5DB')(' ' + formattedLine);
-              }
-
-              const visibleText = stripAnsi(styledText);
-              if (visibleText.length <= planWidth) {
-                push(boxRow(styledText));
-              } else {
-                wrapText(visibleText.trim(), planWidth - 2, 0).forEach(wl => {
-                  push(boxRow(' ' + chalk.hex('#D1D5DB')(wl.trim())));
-                });
-              }
-            });
-
-
-            push('  ' + boxBorder('╚' + '═'.repeat(planWidth) + '╝'));
-            push('');
-
-            const afterPlan = rawContent.slice(rawContent.indexOf('<!-- PLAN_END -->') + '<!-- PLAN_END -->'.length).trim();
-            if (afterPlan) {
-              const rendered = renderMarkdownWithOttoStyles(afterPlan, this.W - 4, diffsExpanded);
-              rendered.trim().split('\n').forEach(line => push('  ' + line));
-            }
-          } else {
-            let processedContent = rawContent;
-            processedContent = processedContent.replace(/^[*\s]*\u25cf\s*([A-Za-z_]+)\(([^)]*)\)/gm, (_match: any, tool: any, args: any) => {
-              return chalk.dim('/- ') + chalk.white.bold(tool) + chalk.dim('(' + args + ')');
-            });
-            processedContent = processedContent.replace(/^[*\s]*\u2514\s*(.*)/gm, (_match: any, details: any) => {
-              return chalk.dim('\\- ' + details);
-            });
-
-            const rendered = renderMarkdownWithOttoStyles(processedContent, this.W - 4, diffsExpanded);
-            const renderedLines = rendered.trim().split('\n');
-            const isTerminal = msg.role === 'tool' && rawContent.includes('> `');
-            
-            if (msg.role === 'tool' && !diffsExpanded && !isTerminal && renderedLines.length > 15) {
-              const top = renderedLines.slice(0, 5);
-              const bottom = renderedLines.slice(renderedLines.length - 3);
-              const contracted = [
-                ...top, 
-                chalk.hex('#FBBF24')(`  ... (${renderedLines.length - 8} hidden lines) [Press Ctrl+E to Expand] ...`), 
-                ...bottom
-              ];
-              contracted.forEach(line => push('  ' + line));
-            } else {
-              renderedLines.forEach(line => push('  ' + line));
-            }
-          }
-        }
+        const processedContent = rawContent.replace(/`([^`]+)`/g, (_m: any, p1: string) => chalk.hex('#f5c542')(p1));
+        const rendered = renderMarkdownWithOttoStyles(processedContent, this.W, diffsExpanded);
+        rendered.trim().split('\n').forEach(line => {
+           if (line.includes('\x1B[48;2;13;25;41m') || line.includes('\x1B[48;5;17m')) { 
+             push(line);
+           } else {
+             push('  ' + line);
+           }
+        });
       }
 
-      currentPrefix = '';
       push('');
     });
 
     if (delayMessage) {
       const dots = '.'.repeat((Math.floor(Date.now() / 350) % 3) + 1);
-      currentPrefix = '';
-      push(this.AI_TAG('  O.T.T.O'));
-      currentPrefix = this.MUTED('│  ');
-      push('  ' + chalk.hex('#FBBF24')(`${delayMessage}${dots}`));
-      currentPrefix = '';
+      push('  ' + chalk.hex('#f5c542').bold('O.T.T.O'));
+      push('');
+      push('  ' + chalk.hex('#555555')(`${delayMessage}${dots}`));
       push('');
     } else if (isThinking) {
       const dots = '.'.repeat((Math.floor(Date.now() / 350) % 3) + 1);
-      currentPrefix = '';
-      push(this.AI_TAG('  O.T.T.O'));
-      currentPrefix = this.MUTED('│  ');
-      push('  ' + chalk.hex('#A78BFA')(`thinking${dots}`));
-      currentPrefix = '';
+      push('  ' + chalk.hex('#f5c542').bold('O.T.T.O'));
+      push('');
+      push('  ' + chalk.hex('#555555')(`Thinking${dots}`));
       push('');
     }
 
     if (pendingApproval) {
-      const menuWidth = Math.min(this.W - 6, 70);
-      const border = chalk.hex('#FB7185');
-      const titleColor = chalk.bgHex('#4C0519').hex('#FDA4AF');
-      const totalInnerWidth = menuWidth + 2;
-      
-      const boxRow = (styledContent: string, bgHex?: string) => {
-        const visLen = getStringWidth(styledContent);
-        const pad = ' '.repeat(Math.max(0, totalInnerWidth - visLen));
-        const inner = bgHex
-          ? chalk.bgHex(bgHex)(styledContent + pad)
-          : styledContent + pad;
-        return '  ' + border('│') + inner + border('│');
-      };
-
-      push('  ' + border('┌' + '─'.repeat(totalInnerWidth) + '┐'));
-      push(boxRow(titleColor.bold(' 🛡️  SECURITY APPROVAL REQUIRED '), '#4C0519'));
-      push('  ' + border('├' + '─'.repeat(totalInnerWidth) + '┤'));
-      
+      push('  ' + chalk.bgHex('#2a2a2a').hex('#888')(' SYSTEM ') + chalk.hex('#f5c542')(' SECURITY APPROVAL REQUIRED'));
+      push('');
       const actionType = pendingApproval.type === 'app' ? 'launch application' : 'execute command';
-      const promptText = `The agent wants to ${actionType}:`;
-      push(boxRow(' ' + chalk.white(promptText)));
-      
-      const cmdStrWrapped = wrapText(pendingApproval.commandStr, totalInnerWidth - 4, 0);
-      cmdStrWrapped.forEach(line => {
-        push(boxRow('   ' + chalk.hex('#FDA4AF').bold(line.trim())));
-      });
-      
-      push('  ' + border('├' + '─'.repeat(totalInnerWidth) + '┤'));
-
+      push('  ' + chalk.hex('#bbb')(`The agent wants to ${actionType}:`));
+      push('  ' + chalk.hex('#f5c542').bold(pendingApproval.commandStr));
+      push('');
       const menuItems = [
-        { label: 'Approve for now', color: chalk.hex('#4ADE80') },
-        { label: `Approve always (whitelist '${pendingApproval.cmd}')`, color: chalk.hex('#38BDF8') },
-        { label: 'Don\'t approve', color: chalk.hex('#F87171') },
+        { label: 'Approve for now', color: chalk.hex('#4ecc8a') },
+        { label: `Approve always (whitelist '${pendingApproval.cmd}')`, color: chalk.hex('#4eccc8') },
+        { label: 'Don\'t approve', color: chalk.hex('#ff6b6b') },
       ];
-
       menuItems.forEach((item, idx) => {
         const isSelected = idx === approvalMenuIndex;
-        const cursor = isSelected
-          ? border.bold(' > ')
-          : ' '.repeat(getStringWidth(' > '));
-        const cursorWidth = getStringWidth(cursor);
-        const paddedLabel = ansiPadEnd(item.label, totalInnerWidth - cursorWidth);
-        const label = isSelected
-          ? chalk.bgHex('#2E050E')(item.color.bold(paddedLabel))
-          : chalk.hex('#9CA3AF')(paddedLabel);
-        push('  ' + border('│') + cursor + label + border('│'));
+        const prefix = isSelected ? chalk.hex('#f5c542').bold(' > ') : '   ';
+        const label = isSelected ? chalk.bgHex('#141414').hex('#f5c542').bold(item.label) : chalk.hex('#aaa')(item.label);
+        push('  ' + prefix + label);
       });
-      
-      push('  ' + border('└' + '─'.repeat(totalInnerWidth) + '┘'));
       push('');
     }
 
     if (pendingPlan) {
-      const menuWidth = Math.min(this.W - 6, 60);
-      const border    = chalk.hex('#F5C400');
+      push('  ' + chalk.bgHex('#2a2a2a').hex('#888')(' SYSTEM ') + chalk.hex('#f5c542')(' PENDING PLAN'));
+      push('');
       const menuItems = [
-        { label: '\u2705  Approve - execute the plan',    color: chalk.hex('#4ADE80') },
-        { label: '\u270f\ufe0f  Edit - request changes first', color: chalk.hex('#FBBF24') },
-        { label: '\u274c  Cancel - do not proceed',       color: chalk.hex('#F87171') },
+        { label: 'Approve - execute the plan', color: chalk.hex('#4ecc8a') },
+        { label: 'Edit - request changes first', color: chalk.hex('#f5c542') },
+        { label: 'Cancel - do not proceed', color: chalk.hex('#ff6b6b') },
       ];
-
-      const totalInnerWidth = menuWidth + 2;
-      push('  ' + border('┌' + '─'.repeat(totalInnerWidth) + '┐'));
       menuItems.forEach((item, idx) => {
         const isSelected = idx === planMenuIndex;
-        const cursor  = isSelected
-          ? chalk.hex('#F5C400').bold(' \u25b6 ')
-          : ' '.repeat(getStringWidth(' \u25b6 '));
-        const cursorWidth = getStringWidth(cursor);
-        const paddedLabel = ansiPadEnd(item.label, totalInnerWidth - cursorWidth);
-        const label   = isSelected
-          ? chalk.bgHex('#1a1200')(item.color.bold(paddedLabel))
-          : chalk.hex('#6B7280')(paddedLabel);
-        push('  ' + border('│') + cursor + label + border('│'));
+        const prefix = isSelected ? chalk.hex('#f5c542').bold(' > ') : '   ';
+        const label = isSelected ? chalk.bgHex('#141414').hex('#f5c542').bold(item.label) : chalk.hex('#aaa')(item.label);
+        push('  ' + prefix + label);
       });
-      push('  ' + border('└' + '─'.repeat(totalInnerWidth) + '┘'));
       push('');
     }
 
-    push(this.DIM('-'.repeat(this.W)));
-
-    // Viewport slicing
     if (this.totalContentLines > 0 && this.scrollOffset > 0) {
       const deltaLines = lines.length - this.totalContentLines;
       this.scrollOffset += deltaLines;
     }
     this.totalContentLines = lines.length;
 
-    const viewH     = Math.max(1, (process.stdout.rows || 24) - 1);
+    const viewH = Math.max(1, (process.stdout.rows || 24) - 2);
     const maxOffset = Math.max(0, lines.length - viewH);
     this.scrollOffset = Math.min(this.scrollOffset, maxOffset);
 
     const viewStart = maxOffset - this.scrollOffset;
-    const visible   = lines.slice(viewStart, viewStart + viewH);
+    const visible = lines.slice(viewStart, viewStart + viewH);
 
     const linesAbove = viewStart;
     const linesBelow = this.scrollOffset;
 
     if (linesAbove > 0 && visible.length > 0) {
-      visible[0] = this.MUTED(
-        `  ↑ ${linesAbove} line${linesAbove !== 1 ? 's' : ''} above` +
-        chalk.hex('#4B5563')('  (↑/↓ scroll  PgUp/PgDn page  End to snap)')
-      );
+      visible[0] = chalk.hex('#555')(`↑ ${linesAbove} lines above `) + chalk.hex('#666')('(↑/↓ scroll  PgUp/PgDn page  End to snap)');
+      visible.splice(1, 0, chalk.hex('#1a1a1a')('─'.repeat(this.W)));
     }
     if (linesBelow > 0 && visible.length > 1) {
-      visible[visible.length - 1] = this.MUTED(`  ↓ ${linesBelow} line${linesBelow !== 1 ? 's' : ''} below`);
+      visible[visible.length - 1] = chalk.hex('#444')(`↓ ${linesBelow} lines below`);
     }
 
     let outStr = '';
@@ -657,60 +479,22 @@ export class ChatUI {
       outStr += line + '\x1B[K\n';
     }
 
-    // Prompt line assembly
-    const promptPrefix = '  ' + this.BRAND('>') + ' ';
-    const scrollHint   = linesBelow > 0
-      ? this.MUTED('  [scrolled \u2014 End to return]')
-      : '';
+    const promptPrefix = chalk.bgHex('#0a0a0a').hex('#f5c542').bold(' > ');
+    const isEditing = !isThinking && !pendingApproval && !pendingPlan && !delayMessage;
+    const cursor = isEditing && (Math.floor(Date.now() / 1000) % 2 === 0) ? chalk.bgHex('#0a0a0a').hex('#f5c542')('█') : chalk.bgHex('#0a0a0a')(' ');
+    
     let placeholder = '';
     if (currentInput.length === 0) {
-      if (pendingApproval) {
-        placeholder = chalk.hex('#FB7185')('\u2191\u2193 choose  \u21b5 confirm');
-      } else if (pendingPlan) {
-        placeholder = chalk.hex('#F5C400')('\u2191\u2193 choose  \u21b5 confirm');
-      } else if (telemetry.isStreaming || isThinking) {
-        placeholder = chalk.hex('#FB7185')('Press [Ctrl+X] to terminate streaming');
+      if (pendingApproval || pendingPlan) {
+        placeholder = chalk.bgHex('#0a0a0a').hex('#444')('↑↓ choose  ↵ confirm');
       } else {
-        placeholder = this.MUTED('Type your message... (esc to menu)');
+        placeholder = chalk.bgHex('#0a0a0a').hex('#444')('Type your message... (esc to menu)');
       }
-    } else if (/[@][^\s]*$/.test(currentInput)) {
-      try {
-        const match = currentInput.match(/@([^\s]*)$/);
-        const prefix = match ? match[1] : '';
-        
-        let dir = '.';
-        let filePrefix = prefix;
-        if (prefix.includes('/') || prefix.includes('\\')) {
-          const normalized = prefix.replace(/\\/g, '/');
-          const lastSlash = normalized.lastIndexOf('/');
-          dir = prefix.slice(0, lastSlash);
-          filePrefix = prefix.slice(lastSlash + 1);
-        }
-        
-        const fullDir = path.resolve(process.cwd(), dir);
-        if (fs.existsSync(fullDir) && fs.statSync(fullDir).isDirectory()) {
-          const entries = fs.readdirSync(fullDir, { withFileTypes: true })
-            .filter((e: any) => {
-              if (e.name.startsWith('.') && !filePrefix.startsWith('.')) return false;
-              if (e.name === 'node_modules') return false;
-              return e.name.toLowerCase().startsWith(filePrefix.toLowerCase());
-            })
-            .map((e: any) => e.isDirectory() ? e.name + '/' : e.name);
-            
-          if (entries.length > 0) {
-            placeholder = this.MUTED('  [Press Tab to cycle: ' + entries.slice(0, 5).join(', ') + (entries.length > 5 ? '...' : '') + ']');
-          }
-        }
-      } catch (e) {}
     }
+    
+    const scrollHint = linesBelow > 0 ? chalk.bgHex('#0a0a0a').hex('#333')('  [scrolled — End to return]') : '';
 
-    let cursor = '';
-    const isEditing = !isThinking && !pendingApproval && !pendingPlan && !delayMessage;
-    if (isEditing) {
-      cursor = chalk.hex('#F5C400')('█');
-    }
-
-    outStr += promptPrefix + chalk.white(currentInput) + cursor + placeholder + scrollHint;
+    outStr += chalk.bgHex('#0a0a0a')(padVisible(promptPrefix + chalk.white(currentInput) + cursor + placeholder + scrollHint, this.W));
     return outStr;
   }
 }

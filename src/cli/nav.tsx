@@ -1,16 +1,28 @@
 import React, { useState, useEffect } from 'react';
 import { Box, Text, useInput, useApp } from 'ink';
-import * as readline from 'readline';
-import { ui } from './ui.js';
 import chalk from 'chalk';
 import { memoryManager } from '../memory/budget.js';
 import { OttoConfig } from './configurator.js';
 import { chatSession } from './session.js';
+import { ui } from './ui.js';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
 const pkg = require('../../package.json');
 const CLI_VERSION = pkg.version;
+
+// THEME
+const THEME = {
+  bg: '#0a0a0a',
+  gold: '#f5c542',
+  text: '#aaaaaa',
+  desc: '#555555',
+  dim: '#333333',
+  green: '#4ecc8a',
+  cyan: '#4eccc8',
+  hoverBg: '#141414',
+  border: '#1a1a1a'
+};
 
 export interface PhoneMenuOption {
   label: string;
@@ -28,9 +40,7 @@ export interface PhoneView {
   onResize?: () => void;
 }
 
-// ─── Utilities ────────────────────────────────────────────────────────────────
 function strip(s: string) { return s.replace(/\x1B\[[0-9;]*m/g, ''); }
-function vlen(s: string)  { return strip(s).length; }
 
 export class PhoneOS {
   public history: PhoneView[]    = [];
@@ -53,9 +63,7 @@ export class PhoneOS {
   showNotification(msg: string, type: 'success' | 'warning' | 'error' | 'info' | 'alert' = 'success', timeoutMs: number = 2000) {
     this.notification = msg;
     this.notificationType = type;
-    if (this.notificationTimeout) {
-      clearTimeout(this.notificationTimeout);
-    }
+    if (this.notificationTimeout) clearTimeout(this.notificationTimeout);
     this.notify();
     this.notificationTimeout = setTimeout(() => {
       this.notification = '';
@@ -70,9 +78,7 @@ export class PhoneOS {
     };
   }
 
-  notify() {
-    this.listeners.forEach(l => l());
-  }
+  notify() { this.listeners.forEach(l => l()); }
 
   updateConfig(c: OttoConfig) { 
     this.config = c; 
@@ -80,15 +86,10 @@ export class PhoneOS {
     this.notify();
   }
 
-  registerCtrlKHandler(handler: () => void) {
-    this.ctrlKHandler = handler;
-  }
+  registerCtrlKHandler(handler: () => void) { this.ctrlKHandler = handler; }
+  getCtrlKHandler() { return this.ctrlKHandler; }
 
-  public getCtrlKHandler() {
-    return this.ctrlKHandler;
-  }
-
-  public goBack() {
+  goBack() {
     if (this.history.length > 1) {
       this.forward.push(this.history.pop()!);
       this.cursor = 0;
@@ -98,7 +99,7 @@ export class PhoneOS {
     }
   }
 
-  public async select() {
+  async select() {
     const view = this.history[this.history.length - 1];
     if (!view || !view.options.length) return;
     const opt = view.options[this.cursor];
@@ -133,242 +134,203 @@ export class PhoneOS {
     this.notify();
   }
 
-  render() {
-    this.notify();
-  }
+  render() { this.notify(); }
 
-  drawToString(): string {
-    const view = this.history[this.history.length - 1];
-    if (!view) return '';
-
-    let out = '';
-    const stats  = memoryManager.getBudgetStatsForMessages(chatSession.getMessages());
-    const ratio  = stats.max > 0 ? Math.min(stats.filled / stats.max, 1) : 0;
-    const pct    = Math.round(ratio * 100);
-    const prov   = this.config.defaults.primaryProvider;
-    const providerConfig = (this.config.providers as any)[prov];
-    const hasKey = !!(providerConfig?.activeApiKey || providerConfig?.apiKey || providerConfig?.apiKeys?.length);
-    const mem    = process.memoryUsage();
-    const ramMB  = Math.round(mem.rss / 1024 / 1024);
-    const W = process.stdout.columns ? Math.max(Math.min(process.stdout.columns - 8, 150), 60) : 95;
-
-    // Palette
-    const GOLD  = chalk.hex('#F5C400');
-    const CYAN  = chalk.hex('#56CFE1');
-    const GREEN = chalk.hex('#57CC99');
-    const RED   = chalk.hex('#EF233C');
-    const PURP  = chalk.hex('#9D4EDD');
-    const MUTED = chalk.hex('#6B7280');
-    const DIM   = chalk.hex('#374151');
-    const WHITE = chalk.white;
-    const BOLD  = chalk.bold;
-    
-    const BG_HL = chalk.bgHex('#374151'); 
-
-    // ── Header Box ────────────────────────────────────────────────
-    const hLine = GOLD('═'.repeat(W));
-    out += GOLD(' ╔') + hLine + GOLD('╗\n');
-
-    const isOllama = prov === 'ollama';
-    const isLocal = isOllama && !!providerConfig?.baseUrl;
-    const dot = (hasKey || isLocal) ? GREEN('●') : RED('●');
-    const provPill = dot + ' ' + CYAN.bold(prov.toUpperCase());
-    const provLen = 2 + prov.length;
-
-    let barChalk = GREEN;
-    if (ratio > 0.55) barChalk = chalk.hex('#F4A261');
-    if (ratio > 0.85) barChalk = RED;
-    
-    const BAR = 6;
-    const fill = Math.round(ratio * BAR);
-    const ctxBar = barChalk('▰'.repeat(fill)) + DIM('▱'.repeat(BAR - fill));
-    const pctStr = `${pct}%`;
-    const ctxUsageStr = `${stats.filled}/${stats.max}`;
-    const ctxPill = MUTED('ctx ') + ctxBar + ' ' + MUTED(ctxUsageStr) + ' ' + MUTED(pctStr);
-    const ctxLen = 4 + BAR + 1 + ctxUsageStr.length + 1 + pctStr.length;
-
-    const ramStr = `${ramMB}mb`;
-    const ramPill = MUTED('ram ') + WHITE(ramStr);
-    const ramLen = 4 + ramStr.length;
-
-    const secStr = this.config.security.mode;
-    const secPill = MUTED('Security: ') + PURP(secStr);
-    const secLen = 10 + secStr.length;
-
-    const rightParts = [provPill];
-    const rightLens = [provLen];
-    if (this.config.defaults.showContextBar !== false) {
-      rightParts.push(ctxPill);
-      rightLens.push(ctxLen);
-    }
-    rightParts.push(ramPill, secPill);
-    rightLens.push(ramLen, secLen);
-
-    const rightStr = rightParts.join('  ') + '  ';
-    const rightTotLen = rightLens.reduce((a, b) => a + b, 0) + (Math.max(0, rightParts.length - 1) * 2) + 2;
-
-    const titleFull = `Orchestrated Task & Tool Operator v${CLI_VERSION}`;
-    const titleShort = `O.T.T.O v${CLI_VERSION}`;
-    
-    let leftStr = '  ' + GOLD.bold(titleFull) + '   ';
-    let leftLen = 2 + titleFull.length + 3;
-
-    if (W < leftLen + rightTotLen) {
-      leftStr = '  ' + GOLD.bold(titleShort) + '   ';
-      leftLen = 2 + titleShort.length + 3;
-    }
-
-    const midSpace = Math.max(0, W - leftLen - rightTotLen);
-    const content = leftStr + ' '.repeat(midSpace) + rightStr;
-    const spaces = Math.max(0, W - vlen(content));
-    out += GOLD(' ║') + content + ' '.repeat(spaces) + GOLD('║\n');
-    out += GOLD(' ╚') + hLine + GOLD('╝\n');
-
-    // ── Breadcrumbs ───────────────────────────────────────────────
-    if (this.history.length > 1) {
-      const crumbs = this.history.map((v, i) =>
-        i === this.history.length - 1
-          ? WHITE.bold(v.title)
-          : MUTED(v.title)
-      ).join(MUTED(' › '));
-      out += '  ' + crumbs + '\n';
-    }
-
-    if (this.notification) {
-      let bg = '#1F2937';
-      let fg = '#10B981';
-      let icon = '✓';
-      if (this.notificationType === 'warning') {
-        bg = '#78350F';
-        fg = '#FBBF24';
-        icon = '⚠';
-      } else if (this.notificationType === 'error') {
-        bg = '#450A0A';
-        fg = '#F87171';
-        icon = '✘';
-      } else if (this.notificationType === 'info') {
-        bg = '#1E3A8A';
-        fg = '#60A5FA';
-        icon = 'ℹ';
-      } else if (this.notificationType === 'alert') {
-        bg = '#581C87';
-        fg = '#C084FC';
-        icon = '🔔';
-      }
-      out += '  ' + chalk.bgHex(bg).hex(fg).bold(`  ${icon} ${this.notification}  `) + '\n';
-    }
-
-    // ── Section Body / Dashboard Stats ────────────────────────────
-    let hasBody = false;
-
-
-    if (view.subtitle) {
-      out += '  ' + BOLD(WHITE(view.subtitle)) + '\n';
-      hasBody = true;
-    }
-
-    let bodyLineCount = 0;
-    if (view.renderBody) {
-      const bodyLines: string[] = [];
-      const orig = console.log;
-      console.log = (...a: any[]) => a.join(' ').split('\n').forEach(l => bodyLines.push(l));
-      try { view.renderBody(); } finally { console.log = orig; }
-      bodyLineCount = bodyLines.length;
-      for (const l of bodyLines) out += l + '\n';
-      hasBody = true;
-    }
-
-    // ── Menu Box ──────────────────────────────────────────────────
-    const hBoxLine = GOLD('═'.repeat(W));
-    out += GOLD(' ╔') + hBoxLine + GOLD('╗\n');
-
-    const LABEL_COL_WIDTH = 28;
-    
-    // Dynamic menu rows calculation to fit the terminal window
-    const rows = process.stdout.rows || 24;
-    const nonMenuHeight = 3 + 
-      (this.history.length > 1 ? 2 : 0) +
-      ((chatSession.pendingApprovals && chatSession.pendingApprovals.length > 0) ? 3 : 0) +
-      ((chatSession.pendingPlans && chatSession.pendingPlans.size > 0) ? 3 : 0) +
-      (view.subtitle ? 1 : 0) +
-      bodyLineCount +
-      2;
-    const maxMenuOptions = Math.max(3, rows - nonMenuHeight - 3);
-    const MAX_OPTIONS = Math.min(10, maxMenuOptions);
-    
-    let startIdx = 0;
-    let endIdx = view.options.length;
-    
-    if (view.options.length > MAX_OPTIONS) {
-      startIdx = Math.max(0, this.cursor - Math.floor(MAX_OPTIONS / 2));
-      endIdx = startIdx + MAX_OPTIONS;
-      if (endIdx > view.options.length) {
-        endIdx = view.options.length;
-        startIdx = Math.max(0, endIdx - MAX_OPTIONS);
-      }
-    }
-
-    const printIndicator = (char: string) => {
-      const padLeft = Math.floor((W - 1) / 2);
-      const padRight = Math.max(0, W - 1 - padLeft);
-      out += GOLD(' ║') + ' '.repeat(padLeft) + MUTED(char) + ' '.repeat(padRight) + GOLD('║\n');
-    };
-
-    if (startIdx > 0) printIndicator('▲');
-
-    const visibleOptions = view.options.slice(startIdx, endIdx);
-    visibleOptions.forEach((opt, idx) => {
-      const realIdx = startIdx + idx;
-      const isSel = realIdx === this.cursor;
-      const plainLabel = strip(opt.label);
-
-      const prefix = isSel 
-        ? '  ' + GOLD('█') + '  ' + GOLD.bold(plainLabel) 
-        : '     ' + MUTED(plainLabel);
-      
-      const rawLen = 5 + plainLabel.length;
-      const space1 = Math.max(2, LABEL_COL_WIDTH - rawLen);
-
-      const maxDescLen = Math.max(0, W - rawLen - space1 - 2);
-      const descStrPlain = opt.description ? opt.description.slice(0, maxDescLen) : '';
-      const descLen = descStrPlain.length;
-      
-      const descStr = opt.description 
-        ? (isSel ? MUTED(descStrPlain) : DIM(descStrPlain)) 
-        : '';
-        
-      const space2 = Math.max(0, W - rawLen - space1 - descLen);
-
-      const rowAnsi = prefix + ' '.repeat(space1) + descStr + ' '.repeat(space2);
-      const coloredRow = isSel ? BG_HL(rowAnsi) : rowAnsi;
-
-      out += GOLD(' ║') + coloredRow + GOLD('║\n');
-    });
-
-    if (endIdx < view.options.length) printIndicator('▼');
-
-    out += GOLD(' ╚') + hBoxLine + GOLD('╝\n');
-
-    if (chatSession.pendingApprovals && chatSession.pendingApprovals.length > 0) {
-      const uniqueThreads = Array.from(new Set(chatSession.pendingApprovals.map(p => p.threadId)));
-      const threadList = uniqueThreads.map(id => chalk.hex('#22D3EE').bold(id)).join(', ');
-      out += '\n';
-      out += '  ' + chalk.hex('#EF4444').bold('⚠️  PENDING APPROVAL: ') + chalk.white(`Agent needs command approval in thread(s): ${threadList}`) + '\n';
-      out += '     Please choose "Enter Chat" or select the corresponding thread to approve.\n';
-    }
-
-    if (chatSession.pendingPlans && chatSession.pendingPlans.size > 0) {
-      const threadList = Array.from(chatSession.pendingPlans).map(id => chalk.hex('#22D3EE').bold(id)).join(', ');
-      out += '\n';
-      out += '  ' + chalk.hex('#F59E0B').bold('📋 PENDING PLAN: ') + chalk.white(`Agent proposed a plan in thread(s): ${threadList}`) + '\n';
-      out += '     Please choose "Enter Chat" to review and approve the plan.\n';
-    }
-
-    return out;
-  }
+  drawToString(): string { return ''; }
 }
 
-function PhoneOSInput({ phone, exit }: { phone: PhoneOS; exit: () => void }) {
+const Topbar = ({ config }: { config: OttoConfig }) => {
+  const stats  = memoryManager.getBudgetStatsForMessages(chatSession.getMessages());
+  const ratio  = stats.max > 0 ? Math.min(stats.filled / stats.max, 1) : 0;
+  const pct    = Math.round(ratio * 100);
+  const prov   = config.defaults.primaryProvider;
+  const providerConfig = (config.providers as any)[prov];
+  const hasKey = !!(providerConfig?.activeApiKey || providerConfig?.apiKey || providerConfig?.apiKeys?.length);
+  const isLocal = prov === 'ollama' && !!providerConfig?.baseUrl;
+  const isGreen = hasKey || isLocal;
+  
+  const mem = process.memoryUsage();
+  const ramMB = Math.round(mem.rss / 1024 / 1024);
+
+  const fill = Math.round(ratio * 6);
+  const ctxBar = Array(6).fill(0).map((_, i) => (
+    <Text key={i} color={i < fill ? THEME.gold : '#222'}>▰</Text>
+  ));
+
+  return (
+    <Box paddingX={2} borderBottomColor={THEME.gold} borderStyle="single" borderTop={false} borderLeft={false} borderRight={false} alignItems="center">
+      <Text color={THEME.gold} bold>orchestrated task & tool operator</Text>
+      <Text color={THEME.dim}> · </Text>
+      <Text color={isGreen ? THEME.green : THEME.gold}>● </Text>
+      <Text color={THEME.text}>{prov.toLowerCase()}</Text>
+      
+      {config.defaults.showContextBar !== false && (
+        <Box marginLeft={2} alignItems="center">
+          <Text color={THEME.dim}>ctx </Text>
+          <Box marginLeft={1} marginRight={1}>{ctxBar}</Box>
+          <Text color={THEME.dim}> {stats.filled}/{stats.max} </Text>
+          <Text color={THEME.gold}>{pct}%</Text>
+        </Box>
+      )}
+
+      <Box marginLeft={2}>
+        <Text color={THEME.dim}>ram </Text>
+        <Text color={THEME.text}>{ramMB}mb</Text>
+      </Box>
+
+      <Box flexGrow={1} />
+
+      <Box marginRight={2}>
+        <Text color={THEME.dim}>security </Text>
+        <Text color={THEME.gold}>{config.security.mode}</Text>
+      </Box>
+
+      <Text color={THEME.dim}>v{CLI_VERSION}</Text>
+    </Box>
+  );
+};
+
+const MainPanel = ({ config }: { config: OttoConfig }) => {
+  const model = config.providers[config.defaults.primaryProvider]?.activeModel || 'unknown';
+  const cwd = process.cwd();
+
+  const logo = [
+    " ██████╗ ████████╗████████╗ ██████╗",
+    "██╔═══██╗╚══██╔══╝╚══██╔══╝██╔═══██╗",
+    "██║   ██║   ██║      ██║   ██║   ██║",
+    "██║   ██║   ██║      ██║   ██║   ██║",
+    "╚██████╔╝   ██║      ██║   ╚██████╔╝",
+    " ╚═════╝    ╚═╝      ╚═╝    ╚═════╝"
+  ].join("\n");
+
+  return (
+    <Box borderBottomColor={THEME.border} borderStyle="single" borderTop={false} borderLeft={false} borderRight={false}>
+      <Box width="50%" paddingY={1} paddingX={3} flexDirection="column" borderRightColor={THEME.border} borderStyle="single" borderTop={false} borderBottom={false} borderLeft={false}>
+        <Box marginBottom={1}>
+          <Text color={THEME.dim}>o.t.t.o </Text>
+          <Text color={THEME.border}>──────────────────</Text>
+        </Box>
+        <Box marginBottom={1}>
+          <Text color={THEME.desc}>welcome back, </Text>
+          <Text color={THEME.text}>{config.profile?.username || 'user'}</Text>
+        </Box>
+        <Box marginBottom={1}>
+          <Text color={THEME.gold}>{logo}</Text>
+        </Box>
+        <Box flexDirection="column">
+          <Box><Box width={7}><Text color={THEME.dim} wrap="truncate-end">model</Text></Box><Text color={THEME.text}>{model} </Text><Text color={THEME.dim}>· </Text><Text color={THEME.green}>active</Text></Box>
+          <Box><Box width={7}><Text color={THEME.dim} wrap="truncate-end">path</Text></Box><Text color={THEME.text}>{cwd}</Text></Box>
+        </Box>
+      </Box>
+
+      <Box width="50%" paddingY={1} paddingX={3} flexDirection="column">
+        <Box flexDirection="column" marginBottom={1}>
+          <Box marginBottom={1}><Text color={THEME.gold}>[ system status ]</Text></Box>
+          <Box><Box width={10}><Text color={THEME.dim} wrap="truncate-end">agent</Text></Box><Text color={THEME.green}>● ready</Text></Box>
+          <Box><Box width={10}><Text color={THEME.dim} wrap="truncate-end">security</Text></Box><Text color={THEME.gold}>● {config.security.mode}</Text></Box>
+          <Box><Box width={10}><Text color={THEME.dim} wrap="truncate-end">thread</Text></Box><Text color={THEME.cyan}>● {chatSession.threadId}</Text></Box>
+        </Box>
+
+        <Box flexDirection="column">
+          <Box marginBottom={1} marginTop={1}><Text color={THEME.gold}>[ navigation ]</Text></Box>
+          <Box>
+            <Box width="50%"><Box width={5}><Text color={THEME.gold} wrap="truncate-end">↑↓</Text></Box><Text color={THEME.desc}>navigate</Text></Box>
+            <Box width="50%"><Box width={5}><Text color={THEME.gold} wrap="truncate-end">↵</Text></Box><Text color={THEME.desc}>select</Text></Box>
+          </Box>
+          <Box>
+            <Box width="50%"><Box width={5}><Text color={THEME.gold} wrap="truncate-end">↔</Text></Box><Text color={THEME.desc}>switch</Text></Box>
+            <Box width="50%"><Box width={5}><Text color={THEME.gold} wrap="truncate-end">^C</Text></Box><Text color={THEME.desc}>quit</Text></Box>
+          </Box>
+        </Box>
+      </Box>
+    </Box>
+  );
+};
+
+const MenuPanel = ({ phone, view }: { phone: PhoneOS, view: PhoneView }) => {
+  const visibleCount = Math.max(3, (process.stdout.rows || 24) - 20);
+  
+  let startIdx = 0;
+  let endIdx = view.options.length;
+  
+  if (view.options.length > visibleCount) {
+    startIdx = Math.max(0, phone.cursor - Math.floor(visibleCount / 2));
+    endIdx = startIdx + visibleCount;
+    if (endIdx > view.options.length) {
+      endIdx = view.options.length;
+      startIdx = Math.max(0, endIdx - visibleCount);
+    }
+  }
+
+  const visibleOptions = view.options.slice(startIdx, endIdx);
+
+  return (
+    <Box flexDirection="column">
+      <Box paddingX={3} paddingBottom={1} borderBottomColor={THEME.border} borderStyle="single" borderTop={false} borderLeft={false} borderRight={false}>
+        <Text color={THEME.text}>menu </Text><Text color={THEME.dim}>— select an action</Text>
+      </Box>
+      
+      {startIdx > 0 && <Box justifyContent="center"><Text color={THEME.dim}>▲</Text></Box>}
+      
+      {visibleOptions.map((opt, idx) => {
+        const realIdx = startIdx + idx;
+        const isActive = realIdx === phone.cursor;
+        
+        return (
+          <Box 
+            key={realIdx}
+            paddingX={2} 
+            paddingY={0}
+          >
+            <Box width={2}><Text backgroundColor={isActive ? THEME.hoverBg : undefined} color={isActive ? THEME.gold : THEME.bg}>{isActive ? '┃' : ' '}</Text></Box>
+            <Box width={30}>
+              <Text color={isActive ? THEME.gold : THEME.text} bold={isActive}>{strip(opt.label).toLowerCase().padEnd(28)}</Text>
+            </Box>
+            <Box>
+              <Text color={isActive ? THEME.desc : THEME.dim}>{opt.description ? strip(opt.description).toLowerCase().padEnd(80) : ' '.repeat(80)}</Text>
+            </Box>
+          </Box>
+        );
+      })}
+      
+      {endIdx < view.options.length && (
+        <Box justifyContent="center" borderTopColor="#131313" borderStyle="single" borderBottom={false} borderLeft={false} borderRight={false}>
+          <Text color="#2a2a2a">▼</Text>
+        </Box>
+      )}
+    </Box>
+  );
+};
+
+export function PhoneOSApp({ phone }: { phone: PhoneOS }) {
+  const [, forceUpdate] = useState(0);
+  const { exit } = useApp();
+
+  useEffect(() => {
+    let lastViewId = '';
+    return phone.subscribe(() => {
+      const activeView = phone.history[phone.history.length - 1];
+      const activeViewId = activeView ? activeView.id : '';
+      if (activeViewId !== lastViewId) {
+        lastViewId = activeViewId;
+        ui.clearScreen();
+      }
+      forceUpdate(prev => prev + 1);
+    });
+  }, [phone]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      const view = phone.history[phone.history.length - 1];
+      if (view && view.onResize) view.onResize();
+      phone.render();
+    };
+    process.stdout.on('resize', handleResize);
+    return () => {
+      process.stdout.off('resize', handleResize);
+    };
+  }, [phone]);
+
   useInput((input, key) => {
     if (!phone.active) return;
 
@@ -380,9 +342,7 @@ function PhoneOSInput({ phone, exit }: { phone: PhoneOS; exit: () => void }) {
 
     if (key.ctrl && input === 'k') {
       const handler = phone.getCtrlKHandler();
-      if (handler) {
-        handler();
-      }
+      if (handler) handler();
       return;
     }
 
@@ -409,46 +369,67 @@ function PhoneOSInput({ phone, exit }: { phone: PhoneOS; exit: () => void }) {
       phone.select();
     }
   });
-  return null;
-}
 
-export function PhoneOSApp({ phone }: { phone: PhoneOS }) {
-  const [, forceUpdate] = useState(0);
-  const { exit } = useApp();
+  const view = phone.history[phone.history.length - 1];
+  if (!view) return null;
 
-  useEffect(() => {
-    let lastViewId = '';
-    return phone.subscribe(() => {
-      const activeView = phone.history[phone.history.length - 1];
-      const activeViewId = activeView ? activeView.id : '';
-      if (activeViewId !== lastViewId) {
-        lastViewId = activeViewId;
-        ui.clearScreen();
-      }
-      forceUpdate(prev => prev + 1);
-    });
-  }, [phone]);
-
-  useEffect(() => {
-    const handleResize = () => {
-      const view = phone.history[phone.history.length - 1];
-      if (view && view.onResize) {
-        view.onResize();
-      }
-      phone.render();
-    };
-    process.stdout.on('resize', handleResize);
-    return () => {
-      process.stdout.off('resize', handleResize);
-    };
-  }, [phone]);
-
-  const isTTY = !!(process.stdin && process.stdin.isTTY);
+  let bodyLines: string[] = [];
+  if (view.renderBody) {
+    const orig = console.log;
+    console.log = (...a: any[]) => a.join(' ').split('\n').forEach(l => bodyLines.push(l));
+    try { view.renderBody(); } finally { console.log = orig; }
+  }
 
   return (
-    <Box flexDirection="column">
-      <Text>{phone.drawToString()}</Text>
-      {isTTY && <PhoneOSInput phone={phone} exit={exit} />}
+    <Box flexDirection="column" width="100%">
+      <Topbar config={phone.config} />
+      <MainPanel config={phone.config} />
+      
+      {phone.history.length > 1 && (
+        <Box paddingX={3} paddingTop={1}>
+          <Text color={THEME.dim}>
+            {phone.history.map(v => strip(v.title).toLowerCase()).join(' › ')}
+          </Text>
+        </Box>
+      )}
+
+      {view.subtitle && (
+        <Box paddingX={3} paddingTop={1}>
+          <Text color={THEME.text} bold>{strip(view.subtitle).toLowerCase()}</Text>
+        </Box>
+      )}
+
+      {bodyLines.length > 0 && (
+        <Box paddingX={3} paddingTop={1} flexDirection="column">
+          {bodyLines.map((l, i) => <Text key={i}>{l}</Text>)}
+        </Box>
+      )}
+
+      <Box marginTop={1} flexDirection="column">
+        <MenuPanel phone={phone} view={view} />
+      </Box>
+
+      {phone.notification && (
+        <Box paddingX={3} marginTop={1}>
+          <Text color={phone.notificationType === 'error' ? '#EF4444' : '#10B981'} bold>
+            {phone.notificationType === 'error' ? '✘ ' : '✓ '} {phone.notification.toLowerCase()}
+          </Text>
+        </Box>
+      )}
+
+      {chatSession.pendingApprovals?.length > 0 && (
+        <Box paddingX={3} marginTop={1}>
+          <Text color="#EF4444" bold>⚠️ pending approval: </Text>
+          <Text color="#fff">agent needs command approval</Text>
+        </Box>
+      )}
+
+      {chatSession.pendingPlans?.size > 0 && (
+        <Box paddingX={3} marginTop={1}>
+          <Text color="#F59E0B" bold>📋 pending plan: </Text>
+          <Text color="#fff">agent proposed a plan</Text>
+        </Box>
+      )}
     </Box>
   );
 }
