@@ -492,25 +492,30 @@ const AgentMessage = ({ msg, isThinking, diffsExpanded, width }: { msg: string, 
     const thinkLines = thinkMatch[1].trim().split('\n');
     thinkBlock = diffsExpanded ? (
       <Box flexDirection="column" marginBottom={1}>
-        {thinkLines.map((l, i) => <Text key={i} color="#5a5040" backgroundColor="#161407">{l}</Text>)}
+        {thinkLines.map((l, i) => <Text key={i} color="#777777" backgroundColor="#161407">{l}</Text>)}
       </Box>
     ) : (
-      <Box marginBottom={1}><Text color="#5a5040" backgroundColor="#161407">[ Reasoning Process ({thinkLines.length} lines) - Press Ctrl+E to Expand ]</Text></Box>
+      <Box marginBottom={1}><Text color="#777777" backgroundColor="#161407">[ Reasoning Process ({thinkLines.length} lines) - Press Ctrl+E to Expand ]</Text></Box>
     );
   }
+
+  // Filter out leaked JSON tool payloads
+  rawContent = rawContent.replace(/```(?:json)?\s*\{\s*"name"\s*:[\s\S]*?"arguments"\s*:[\s\S]*?\}\s*```/g, '');
+  rawContent = rawContent.replace(/\{\s*"name"\s*:[\s\S]*?"arguments"\s*:[\s\S]*?\}/g, '');
+  rawContent = rawContent.trim();
 
   return (
     <Box flexDirection="column" marginBottom={1}>
       <Text backgroundColor="#161407">
-        <Text color="#c9a800">◆ </Text><Text color="#7a6a1a">otto</Text>
+        <Text color="#c9a800">◆ </Text><Text color="#d4b43f">otto</Text>
       </Text>
       {thinkBlock}
       {msg.includes('<think>') && !msg.includes('</think>') && (
-        <Text color="#5a5040" backgroundColor="#161407">Thinking...</Text>
+        <Text color="#777777" backgroundColor="#161407">Thinking...</Text>
       )}
       {rawContent && (
         <Box paddingLeft={1} paddingRight={1}>
-           <Text>{renderMarkdownWithOttoStyles(rawContent.replace(/`([^`]+)`/g, (_m: any, p1: string) => chalk.hex('#c9a800')(p1)), Math.max(10, width - 4), diffsExpanded).trim()}</Text>
+           <Text color="#d4d4d4">{renderMarkdownWithOttoStyles(rawContent.replace(/`([^`]+)`/g, (_m: any, p1: string) => chalk.hex('#f5c542')(p1)), Math.max(10, width - 4), diffsExpanded).trim()}</Text>
         </Box>
       )}
     </Box>
@@ -520,9 +525,9 @@ const AgentMessage = ({ msg, isThinking, diffsExpanded, width }: { msg: string, 
 const UserMessage = ({ msg }: { msg: string }) => {
   return (
     <Box flexDirection="column" alignItems="flex-end" marginBottom={1} width="100%">
-      <Text backgroundColor="#1c1c1c" color="#484848"> you </Text>
+      <Text backgroundColor="#1c1c1c" color="#888888"> you </Text>
       <Box paddingLeft={1} paddingRight={1}>
-        <Text color="#d4d4d4">{msg.trim()}</Text>
+        <Text color="#f0f0f0">{msg.trim()}</Text>
       </Box>
     </Box>
   );

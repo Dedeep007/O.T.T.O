@@ -38,19 +38,19 @@ export function createTaskBoardView(phone: PhoneOS): PhoneView {
       const inprog = tasks.filter(t => t.status === 'IN PROGRESS');
       const done = tasks.filter(t => t.status === 'DONE');
 
-      const W = 22; // Column width
+      const W = 24; // Column width
       const formatCol = (title: string, color: any, items: Task[]) => {
-        let str = color.bold(` ┌─ ${title.padEnd(W - 4, ' ')} ┐\n`);
+        let str = color(`┌─ ${title.padEnd(W - 4, ' ')} ┐\n`);
         if (items.length === 0) {
           const paddedEmpty = 'Empty'.padEnd(W - 4, ' ');
-          str += color(` │ `) + chalk.dim(paddedEmpty) + color(` │\n`);
+          str += color(`│ `) + chalk.dim(paddedEmpty) + color(` │\n`);
         }
         items.forEach(t => {
           let truncTitle = t.title.length > W - 6 ? t.title.substring(0, W - 9) + '...' : t.title;
           const paddedText = ('● ' + truncTitle).padEnd(W - 4, ' ');
-          str += color(` │ `) + chalk.white(paddedText) + color(` │\n`);
+          str += color(`│ `) + chalk.white(paddedText) + color(` │\n`);
         });
-        str += color(` └${'─'.repeat(W - 2)}┘`);
+        str += color(`└${'─'.repeat(W - 2)}┘`);
         return str.split('\n');
       };
 
