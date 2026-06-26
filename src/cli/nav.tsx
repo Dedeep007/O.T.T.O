@@ -32,6 +32,23 @@ export interface PhoneView {
 function strip(s: string) { return s.replace(/\x1B\[[0-9;]*m/g, ''); }
 function vlen(s: string)  { return strip(s).length; }
 
+// Resize-safe width/height readers. No artificial floor: we report the
+// terminal's true usable size (clamped only so repeat()/padding never go
+// negative). Below COMPACT_BREAKPOINT the caller switches to a 1-column
+// layout instead of squeezing the wide layout into too little space.
+const ABS_MIN_W = 20;
+const COMPACT_BREAKPOINT = 70;
+
+function getTermWidth(margin: number, cap: number): { W: number; compact: boolean } {
+  const cols = process.stdout.columns || (95 + margin);
+  const W = Math.max(ABS_MIN_W, Math.min(cols - margin, cap));
+  return { W, compact: W < COMPACT_BREAKPOINT };
+}
+
+function getTermRows(): number {
+  return Math.max(1, process.stdout.rows || 24);
+}
+
 export class PhoneOS {
   public history: PhoneView[]    = [];
   public forward:  PhoneView[]   = [];
@@ -150,150 +167,128 @@ export class PhoneOS {
     const hasKey = !!(providerConfig?.activeApiKey || providerConfig?.apiKey || providerConfig?.apiKeys?.length);
     const mem    = process.memoryUsage();
     const ramMB  = Math.round(mem.rss / 1024 / 1024);
-    const W = process.stdout.columns ? Math.max(Math.min(process.stdout.columns - 8, 150), 60) : 95;
+    const { W, compact } = getTermWidth(4, 150);
 
-    // Palette
-    const GOLD  = chalk.hex('#F5C400');
-    const CYAN  = chalk.hex('#56CFE1');
-    const GREEN = chalk.hex('#57CC99');
-    const RED   = chalk.hex('#EF233C');
-    const PURP  = chalk.hex('#9D4EDD');
-    const MUTED = chalk.hex('#6B7280');
-    const DIM   = chalk.hex('#374151');
-    const WHITE = chalk.white;
-    const BOLD  = chalk.bold;
-    
-    const BG_HL = chalk.bgHex('#374151'); 
+    const GOLD  = chalk.hex('#f5c542');
+    const MUTED = chalk.hex('#555555');
+    const DIM   = chalk.hex('#333333');
+    const TEXT  = chalk.hex('#dddddd');
+    const CYAN  = chalk.hex('#4eccc8');
+    const GREEN = chalk.hex('#4ecc8a');
+    const RED   = chalk.hex('#ff6b6b');
 
-    // ── Header Box ────────────────────────────────────────────────
-    const hLine = GOLD('═'.repeat(W));
-    out += GOLD(' ╔') + hLine + GOLD('╗\n');
-
+    // ── Header Box (Borderless) ────────────────────────────────────────────────
     const isOllama = prov === 'ollama';
     const isLocal = isOllama && !!providerConfig?.baseUrl;
     const dot = (hasKey || isLocal) ? GREEN('●') : RED('●');
-    const provPill = dot + ' ' + CYAN.bold(prov.toUpperCase());
-    const provLen = 2 + prov.length;
-
-    let barChalk = GREEN;
-    if (ratio > 0.55) barChalk = chalk.hex('#F4A261');
-    if (ratio > 0.85) barChalk = RED;
+    const provPill = dot + ' ' + GOLD.bold(prov.toUpperCase());
     
-    const BAR = 6;
+    let barChalk = GOLD;
+    if (ratio > 0.75) barChalk = RED;
+    const BAR = 7;
     const fill = Math.round(ratio * BAR);
-    const ctxBar = barChalk('▰'.repeat(fill)) + DIM('▱'.repeat(BAR - fill));
-    const pctStr = `${pct}%`;
-    const ctxUsageStr = `${stats.filled}/${stats.max}`;
-    const ctxPill = MUTED('ctx ') + ctxBar + ' ' + MUTED(ctxUsageStr) + ' ' + MUTED(pctStr);
-    const ctxLen = 4 + BAR + 1 + ctxUsageStr.length + 1 + pctStr.length;
+    const ctxBar = barChalk('■'.repeat(fill)) + DIM('■'.repeat(BAR - fill));
+    const ctxPill = MUTED('ctx ') + ctxBar + ' ' + GOLD(`${stats.filled}/${stats.max} ${pct}%`);
+    const ramPill = MUTED('ram ') + TEXT(`${ramMB}mb`);
+    const secPill = MUTED('security ') + GOLD(this.config.security.mode);
+    const verPill = DIM(`v${CLI_VERSION}`);
 
-    const ramStr = `${ramMB}mb`;
-    const ramPill = MUTED('ram ') + WHITE(ramStr);
-    const ramLen = 4 + ramStr.length;
-
-    const secStr = this.config.security.mode;
-    const secPill = MUTED('Security: ') + PURP(secStr);
-    const secLen = 10 + secStr.length;
-
-    const rightParts = [provPill];
-    const rightLens = [provLen];
-    if (this.config.defaults.showContextBar !== false) {
-      rightParts.push(ctxPill);
-      rightLens.push(ctxLen);
-    }
-    rightParts.push(ramPill, secPill);
-    rightLens.push(ramLen, secLen);
-
-    const rightStr = rightParts.join('  ') + '  ';
-    const rightTotLen = rightLens.reduce((a, b) => a + b, 0) + (Math.max(0, rightParts.length - 1) * 2) + 2;
-
-    const titleFull = `Orchestrated Task & Tool Operator v${CLI_VERSION}`;
-    const titleShort = `O.T.T.O v${CLI_VERSION}`;
-    
-    let leftStr = '  ' + GOLD.bold(titleFull) + '   ';
-    let leftLen = 2 + titleFull.length + 3;
-
-    if (W < leftLen + rightTotLen) {
-      leftStr = '  ' + GOLD.bold(titleShort) + '   ';
-      leftLen = 2 + titleShort.length + 3;
+    if (compact) {
+      out += GOLD.bold('O.T.T.O\n');
+      out += `${provPill}  ${ctxPill}\n`;
+      out += `${ramPill}  ${secPill}\n`;
+    } else {
+      const topRows = [
+        GOLD.bold('Orchestrated'),
+        GOLD.bold('Task & Tool'),
+        GOLD.bold('Operator')
+      ];
+      const rightRow = `${provPill}   ${ctxPill}   ${ramPill}      ${secPill}   ${verPill}`;
+      out += topRows[0] + ' '.repeat(Math.max(0, W - vlen(topRows[0]) - vlen(rightRow))) + rightRow + '\n';
+      out += topRows[1] + '\n';
+      out += topRows[2] + '\n';
     }
 
-    const midSpace = Math.max(0, W - leftLen - rightTotLen);
-    const content = leftStr + ' '.repeat(midSpace) + rightStr;
-    const spaces = Math.max(0, W - vlen(content));
-    out += GOLD(' ║') + content + ' '.repeat(spaces) + GOLD('║\n');
-    out += GOLD(' ╚') + hLine + GOLD('╝\n');
-
-    // ── Breadcrumbs ───────────────────────────────────────────────
-    if (this.history.length > 1) {
-      const crumbs = this.history.map((v, i) =>
-        i === this.history.length - 1
-          ? WHITE.bold(v.title)
-          : MUTED(v.title)
-      ).join(MUTED(' › '));
-      out += '  ' + crumbs + '\n';
-    }
+    out += GOLD('─'.repeat(W)) + '\n\n';
 
     if (this.notification) {
-      let bg = '#1F2937';
-      let fg = '#10B981';
-      let icon = '✓';
-      if (this.notificationType === 'warning') {
-        bg = '#78350F';
-        fg = '#FBBF24';
-        icon = '⚠';
-      } else if (this.notificationType === 'error') {
-        bg = '#450A0A';
-        fg = '#F87171';
-        icon = '✘';
-      } else if (this.notificationType === 'info') {
-        bg = '#1E3A8A';
-        fg = '#60A5FA';
-        icon = 'ℹ';
-      } else if (this.notificationType === 'alert') {
-        bg = '#581C87';
-        fg = '#C084FC';
-        icon = '🔔';
+      let bg = '#1a1a1a';
+      let fg = '#4ecc8a';
+      if (this.notificationType === 'warning') { fg = '#f5c542'; }
+      else if (this.notificationType === 'error') { fg = '#ff6b6b'; }
+      out += chalk.bgHex(bg).hex(fg).bold(` ${this.notification} \n\n`);
+    }
+
+    // ── Dashboard Body ────────────────────────────────────────────
+    if (view.id === 'home') {
+      const username = process.env.USER || process.env.USERNAME || 'User';
+      const logoLines = [
+        "██████╗ ████████╗████████╗ ██████╗ ",
+        "██╔═══██╗╚══██╔══╝╚══██╔══╝██╔═══██╗",
+        "██║   ██║   ██║      ██║   ██║   ██║",
+        "██║   ██║   ██║      ██║   ██║   ██║",
+        "╚██████╔╝   ██║      ██║   ╚██████╔╝",
+        " ╚═════╝    ╚═╝      ╚═╝    ╚═════╝ "
+      ];
+      
+      const model = this.config.providers[prov]?.model || 'default';
+      const threads = chatSession.getMessages().length > 0 ? chatSession.threadId : 'none';
+
+      const leftRows = [
+        MUTED('O.T.T.O'),
+        MUTED(`welcome back, ${username}`),
+        '',
+        ...logoLines.map(l => GOLD(l)),
+        '',
+        MUTED('model ') + TEXT(`${model} `) + GREEN('active'),
+        MUTED('path ') + TEXT(process.cwd())
+      ];
+
+      const rightRows = [
+        GOLD.bold('[ system status ]'),
+        '',
+        MUTED('agent      ') + GREEN('● ready'),
+        MUTED('security   ') + GOLD(`● ${this.config.security.mode}`),
+        MUTED('thread     ') + CYAN(`● ${threads}`),
+        '',
+        GOLD.bold('[ navigation ]'),
+        '',
+        GOLD('↑↓') + MUTED(' navigate      ') + GOLD('↵') + MUTED(' select'),
+        GOLD('←→') + MUTED(' switch        ') + GOLD('^C') + MUTED(' quit')
+      ];
+
+      if (compact) {
+        leftRows.forEach(r => out += r + '\n');
+        out += '\n';
+        rightRows.forEach(r => out += r + '\n');
+      } else {
+        const leftWidth = Math.max(40, Math.floor(W * 0.5));
+        const maxLen = Math.max(leftRows.length, rightRows.length);
+        for (let i = 0; i < maxLen; i++) {
+          const l = leftRows[i] || '';
+          const r = rightRows[i] || '';
+          const lPad = Math.max(0, leftWidth - vlen(l));
+          out += l + ' '.repeat(lPad) + DIM('│ ') + r + '\n';
+        }
       }
-      out += '  ' + chalk.bgHex(bg).hex(fg).bold(`  ${icon} ${this.notification}  `) + '\n';
+    } else {
+      if (view.subtitle) {
+        out += GOLD.bold(view.subtitle) + '\n\n';
+      }
+      if (view.renderBody) {
+        const orig = console.log;
+        console.log = (...a: any[]) => out += a.join(' ') + '\n';
+        try { view.renderBody(); } finally { console.log = orig; }
+      }
     }
 
-    // ── Section Body / Dashboard Stats ────────────────────────────
-    let hasBody = false;
+    out += '\n' + DIM('─'.repeat(W)) + '\n';
+    out += GOLD.bold(view.title.toLowerCase()) + MUTED('   — select an action\n\n');
 
-
-    if (view.subtitle) {
-      out += '  ' + BOLD(WHITE(view.subtitle)) + '\n';
-      hasBody = true;
-    }
-
-    let bodyLineCount = 0;
-    if (view.renderBody) {
-      const bodyLines: string[] = [];
-      const orig = console.log;
-      console.log = (...a: any[]) => a.join(' ').split('\n').forEach(l => bodyLines.push(l));
-      try { view.renderBody(); } finally { console.log = orig; }
-      bodyLineCount = bodyLines.length;
-      for (const l of bodyLines) out += l + '\n';
-      hasBody = true;
-    }
-
-    // ── Menu Box ──────────────────────────────────────────────────
-    const hBoxLine = GOLD('═'.repeat(W));
-    out += GOLD(' ╔') + hBoxLine + GOLD('╗\n');
-
-    const LABEL_COL_WIDTH = 28;
-    
-    // Dynamic menu rows calculation to fit the terminal window
-    const rows = process.stdout.rows || 24;
-    const nonMenuHeight = 3 + 
-      (this.history.length > 1 ? 2 : 0) +
-      ((chatSession.pendingApprovals && chatSession.pendingApprovals.length > 0) ? 3 : 0) +
-      ((chatSession.pendingPlans && chatSession.pendingPlans.size > 0) ? 3 : 0) +
-      (view.subtitle ? 1 : 0) +
-      bodyLineCount +
-      2;
-    const maxMenuOptions = Math.max(3, rows - nonMenuHeight - 3);
+    // ── Menu List ──────────────────────────────────────────────────
+    const rows = getTermRows();
+    const nonMenuHeight = out.split('\n').length + 5; 
+    const maxMenuOptions = Math.max(3, rows - nonMenuHeight);
     const MAX_OPTIONS = Math.min(10, maxMenuOptions);
     
     let startIdx = 0;
@@ -308,60 +303,40 @@ export class PhoneOS {
       }
     }
 
-    const printIndicator = (char: string) => {
-      const padLeft = Math.floor((W - 1) / 2);
-      const padRight = Math.max(0, W - 1 - padLeft);
-      out += GOLD(' ║') + ' '.repeat(padLeft) + MUTED(char) + ' '.repeat(padRight) + GOLD('║\n');
-    };
+    if (startIdx > 0) out += MUTED('  ▲\n');
 
-    if (startIdx > 0) printIndicator('▲');
-
+    const LABEL_COL_WIDTH = 25;
     const visibleOptions = view.options.slice(startIdx, endIdx);
+
     visibleOptions.forEach((opt, idx) => {
       const realIdx = startIdx + idx;
       const isSel = realIdx === this.cursor;
-      const plainLabel = strip(opt.label);
+      const plainLabel = strip(opt.label).toLowerCase();
+      const plainDesc = (opt.description || '').toLowerCase();
 
-      const prefix = isSel 
-        ? '  ' + GOLD('█') + '  ' + GOLD.bold(plainLabel) 
-        : '     ' + MUTED(plainLabel);
-      
-      const rawLen = 5 + plainLabel.length;
-      const space1 = Math.max(2, LABEL_COL_WIDTH - rawLen);
+      const prefix = isSel ? GOLD('▌ ') : '  ';
+      const label = isSel ? GOLD.bold(plainLabel) : TEXT(plainLabel);
+      const desc = isSel ? MUTED(plainDesc) : DIM(plainDesc);
 
-      const maxDescLen = Math.max(0, W - rawLen - space1 - 2);
-      const descStrPlain = opt.description ? opt.description.slice(0, maxDescLen) : '';
-      const descLen = descStrPlain.length;
-      
-      const descStr = opt.description 
-        ? (isSel ? MUTED(descStrPlain) : DIM(descStrPlain)) 
-        : '';
-        
-      const space2 = Math.max(0, W - rawLen - space1 - descLen);
+      const space1 = Math.max(1, LABEL_COL_WIDTH - plainLabel.length);
+      const space2 = Math.max(0, W - plainLabel.length - space1 - plainDesc.length - 2);
 
-      const rowAnsi = prefix + ' '.repeat(space1) + descStr + ' '.repeat(space2);
-      const coloredRow = isSel ? BG_HL(rowAnsi) : rowAnsi;
+      let bgStr = prefix + label + ' '.repeat(space1) + desc + ' '.repeat(space2);
+      if (isSel) bgStr = chalk.bgHex('#141414')(bgStr);
 
-      out += GOLD(' ║') + coloredRow + GOLD('║\n');
+      out += bgStr + '\n';
     });
 
-    if (endIdx < view.options.length) printIndicator('▼');
-
-    out += GOLD(' ╚') + hBoxLine + GOLD('╝\n');
+    if (endIdx < view.options.length) out += MUTED('  ▼\n');
 
     if (chatSession.pendingApprovals && chatSession.pendingApprovals.length > 0) {
       const uniqueThreads = Array.from(new Set(chatSession.pendingApprovals.map(p => p.threadId)));
-      const threadList = uniqueThreads.map(id => chalk.hex('#22D3EE').bold(id)).join(', ');
-      out += '\n';
-      out += '  ' + chalk.hex('#EF4444').bold('⚠️  PENDING APPROVAL: ') + chalk.white(`Agent needs command approval in thread(s): ${threadList}`) + '\n';
-      out += '     Please choose "Enter Chat" or select the corresponding thread to approve.\n';
+      out += `\n  ${RED.bold('⚠️ PENDING APPROVAL')} ${TEXT(`in threads: ${uniqueThreads.join(', ')}`)}\n`;
     }
 
     if (chatSession.pendingPlans && chatSession.pendingPlans.size > 0) {
-      const threadList = Array.from(chatSession.pendingPlans).map(id => chalk.hex('#22D3EE').bold(id)).join(', ');
-      out += '\n';
-      out += '  ' + chalk.hex('#F59E0B').bold('📋 PENDING PLAN: ') + chalk.white(`Agent proposed a plan in thread(s): ${threadList}`) + '\n';
-      out += '     Please choose "Enter Chat" to review and approve the plan.\n';
+      const threadList = Array.from(chatSession.pendingPlans).join(', ');
+      out += `\n  ${GOLD.bold('📋 PENDING PLAN')} ${TEXT(`in threads: ${threadList}`)}\n`;
     }
 
     return out;

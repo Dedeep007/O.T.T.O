@@ -547,9 +547,10 @@ async function main() {
     let lastStreamContentLength = 0;
     let autocompleteState: {
       originalInput: string;
-      lastAtIdx: number;
+      lastAtIdx?: number;
       matches: string[];
       matchIdx: number;
+      isCommand?: boolean;
     } | null = null;
     
     const getPendingPlan = () => chatSession.pendingPlans.has(chatSession.threadId);
@@ -584,19 +585,17 @@ async function main() {
         const messageType = m._getType();
         let content = m.content.toString();
         
-        if (messageType === 'ai' && m.tool_calls && m.tool_calls.length > 0 && i === messages.length - 1 && state === 'tools') {
-          const dots = '.'.repeat((Math.floor(Date.now() / 350) % 3) + 1);
-          content += `\n\n> Calling tools${dots}`;
-        }
+        let toolInfo: any;
+        let toolCalls = (m as any).tool_calls;
 
         if (messageType === 'tool') {
           let args = {};
           const toolName = (m as any).name || 'tool';
           const toolCallId = (m as any).tool_call_id;
           if (toolCallId) {
-            for (let i = messages.indexOf(m) - 1; i >= 0; i--) {
-              if (messages[i]._getType() === 'ai' && (messages[i] as any).tool_calls) {
-                const tc = (messages[i] as any).tool_calls.find((c: any) => c.id === toolCallId);
+            for (let j = messages.indexOf(m) - 1; j >= 0; j--) {
+              if (messages[j]._getType() === 'ai' && (messages[j] as any).tool_calls) {
+                const tc = (messages[j] as any).tool_calls.find((c: any) => c.id === toolCallId);
                 if (tc) {
                   args = tc.args;
                   break;
@@ -604,19 +603,23 @@ async function main() {
               }
             }
           }
+          const isError = content.includes('ENOENT') || content.startsWith('Error:');
+          toolInfo = {
+             name: toolName,
+             args,
+             status: isError ? 'error' : 'done',
+             rawOutput: content
+          };
           content = formatToolResult(toolName, content, '', args);
         }
         
-        if (content.trim() || (m as any).tool_calls?.length > 0) {
+        if (content.trim() || toolCalls?.length > 0) {
           renderMsgs.push({
-            role: messageType === 'human'
-              ? 'user'
-              : messageType === 'tool'
-                ? 'tool'
-                : messageType === 'system'
-                  ? 'system'
-                  : 'ai',
-            content
+            role: messageType === 'human' ? 'user' : messageType === 'tool' ? 'tool' : messageType === 'system' ? 'system' : 'ai',
+            content,
+            toolInfo,
+            toolCalls,
+            state: (i === messages.length - 1) ? state : undefined
           });
         }
       });
@@ -884,10 +887,26 @@ async function main() {
             const state = autocompleteState;
             state.matchIdx = (state.matchIdx + 1) % state.matches.length;
             const completed = state.matches[state.matchIdx];
-            const before = state.originalInput.slice(0, state.lastAtIdx + 1);
-            currentInput = before + completed;
+            const before = state.originalInput.slice(0, state.lastAtIdx !== undefined ? state.lastAtIdx + 1 : 0);
+            currentInput = state.isCommand ? completed : (before + completed);
             render();
             return;
+          }
+
+          if (currentInput.startsWith('/')) {
+            const cmds = ['/plan', '/rewind', '/goal', '/grill-me', '/learn', '/schedule'];
+            const matches = cmds.filter(c => c.startsWith(currentInput.toLowerCase()));
+            if (matches.length > 0) {
+              autocompleteState = {
+                originalInput: currentInput,
+                matches,
+                matchIdx: 0,
+                isCommand: true
+              };
+              currentInput = matches[0];
+              render();
+              return;
+            }
           }
 
           const lastAtIdx = currentInput.lastIndexOf('@');
@@ -2377,86 +2396,6 @@ async function main() {
   const createHomeView = (): PhoneView => ({
     id: 'home',
     title: 'Home',
-    renderBody: () => {
-      const W = process.stdout.columns ? Math.max(Math.min(process.stdout.columns - 8, 150), 60) : 95;
-      const isCompact = (process.stdout.columns && process.stdout.columns < 85) || (process.stdout.rows && process.stdout.rows < 28);
-      const threads = dbManager.listThreads();
-      const model = (config.providers as any)[config.defaults.primaryProvider]?.model || 'Default Model';
-
-      // Sleek Text Logo (ANSI Shadow Block Font)
-      const logoLines = [
-        "  ██████╗ ████████╗████████╗ ██████╗ ",
-        " ██╔═══██╗╚══██╔══╝╚══██╔══╝██╔═══██╗",
-        " ██║   ██║   ██║      ██║   ██║   ██║",
-        " ██║   ██║   ██║      ██║   ██║   ██║",
-        " ╚██████╔╝   ██║      ██║   ╚██████╔╝",
-        "  ╚═════╝    ╚═╝      ╚═╝    ╚═════╝ "
-      ];
-
-      const borderDim = chalk.hex('#F5C400');
-      const textDim = chalk.hex('#6B7280');
-      const accent = chalk.hex('#56CFE1');
-      const purple = chalk.hex('#9D4EDD');
-      const displayName = Configurator.getUsername(config) || 'user';
-      const isDefaultName = !config.profile?.username;
-
-      if (isCompact) {
-        console.log(borderDim(` ┌─ O.T.T.O v${CLI_VERSION} ` + '─'.repeat(Math.max(0, W - 12 - CLI_VERSION.length)) + '┐'));
-        console.log(borderDim(' │ ') + chalk.whiteBright(`Welcome back, ${displayName}!`).padEnd(Math.max(0, W - 1)) + borderDim('│'));
-        if (isDefaultName) {
-          console.log(borderDim(' │ ') + chalk.hex('#F59E0B')('⚠  Go to Settings › Profile to set your username').padEnd(Math.max(0, W - 1)) + borderDim('│'));
-        }
-        console.log(borderDim(' └' + '─'.repeat(W) + '┘'));
-        return;
-      }
-
-      const vlen = (s: string) => s.replace(/\x1B\[[0-9;]*m/g, '').length;
-      const leftWidth = Math.max(40, Math.floor(W * 0.55));
-      const rightWidth = W - leftWidth;
-
-      const drawRow = (left: string, right: string, leftColor: any, rightColor: any) => {
-        const lPad = Math.max(0, leftWidth - vlen(left));
-        const rPad = Math.max(0, rightWidth - vlen(right));
-        console.log(borderDim(' │') + leftColor(left) + ' '.repeat(lPad) + rightColor(right) + ' '.repeat(rPad) + borderDim('│'));
-      };
-
-      const rightRows = [
-        '',
-        chalk.hex('#F5C400').bold('  [ SYSTEM STATUS ]'),
-        `    Agent    ${chalk.green('● Ready')}`,
-        `    Security ${purple('● ' + config.security.mode)}`,
-        `    Thread   ${accent('● ' + (threads.length > 0 ? chatSession.threadId : 'None'))}`,
-        '',
-        chalk.hex('#F5C400').bold('  [ NAVIGATION ]'),
-        `    ${textDim('↑↓')} Navigate   ${textDim('↵')} Select`,
-        `    ${textDim('←→')} Switch     ${textDim('^C')} Quit`,
-        ''
-      ];
-
-      console.log(borderDim(` ┌─ O.T.T.O v${CLI_VERSION} ` + '─'.repeat(Math.max(0, W - 12 - CLI_VERSION.length)) + '┐'));
-
-      drawRow(`      Welcome back, ${displayName}!`, rightRows[0], chalk.white, chalk.white);
-      if (isDefaultName) {
-        drawRow(`      ${chalk.hex('#F59E0B')('⚠')} ${chalk.hex('#6B7280')('Go to Settings › Profile to set your username')}`, rightRows[1], chalk.white, chalk.white);
-      } else {
-        drawRow('', rightRows[1], chalk.white, chalk.white);
-      }
-      
-      drawRow(`   ${logoLines[0]}`, rightRows[2], borderDim, chalk.white);
-      drawRow(`   ${logoLines[1]}`, rightRows[3], borderDim, chalk.white);
-      drawRow(`   ${logoLines[2]}`, rightRows[4], borderDim, chalk.white);
-      drawRow(`   ${logoLines[3]}`, rightRows[5], borderDim, chalk.white);
-      drawRow(`   ${logoLines[4]}`, rightRows[6], borderDim, chalk.white);
-      drawRow(`   ${logoLines[5]}`, rightRows[7], borderDim, chalk.white);
-
-      drawRow(`    ${model} ·(active)`, rightRows[8], textDim, chalk.white);
-      
-      let pth = process.cwd();
-      if (pth.length > leftWidth - 4) pth = '...' + pth.slice(-(leftWidth - 7));
-      drawRow(`    ${pth}`, rightRows[9], textDim, chalk.white);
-
-      console.log(borderDim(' └' + '─'.repeat(W) + '┘'));
-    },
     options: [
       {
         label: 'Enter Chat',

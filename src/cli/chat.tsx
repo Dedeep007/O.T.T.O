@@ -9,6 +9,14 @@ import path from 'path';
 export interface ChatMessage {
   role: 'user' | 'ai' | 'system' | 'tool';
   content: string;
+  toolInfo?: {
+    name: string;
+    args: any;
+    status: 'running' | 'done' | 'error';
+    rawOutput?: string;
+  };
+  toolCalls?: any[];
+  state?: string;
 }
 
 export interface ChatTelemetry {
@@ -65,6 +73,19 @@ function padVisible(str: string, width: number): string {
   return str + ' '.repeat(Math.max(0, width - getStringWidth(str)));
 }
 
+// Resize-safe width reader. No artificial floor: report the terminal's
+// true usable width (clamped only so repeat()/padding never go negative).
+// Below COMPACT_BREAKPOINT the renderer switches the header to a stacked
+// 1-column layout instead of squeezing into too little horizontal space.
+const ABS_MIN_W = 20;
+const COMPACT_BREAKPOINT = 70;
+
+function getTermWidth(margin: number, cap: number): { W: number; compact: boolean } {
+  const cols = process.stdout.columns || (72 + margin);
+  const W = Math.max(ABS_MIN_W, Math.min(cols - margin, cap));
+  return { W, compact: W < COMPACT_BREAKPOINT };
+}
+
 function wrapText(text: string, maxWidth: number, indent: number): string[] {
   const lines: string[] = [];
   const rawLines = text.split('\n');
@@ -91,10 +112,6 @@ function wrapText(text: string, maxWidth: number, indent: number): string[] {
 function renderDiffBlock(codeStr: string, diffWidth: number, isExpanded: boolean): string {
   let output = '\n';
 
-  const bar = (bg: string) => chalk.bgHex(bg)('  ');
-  const row = (bg: string, fg: string, text: string) =>
-    chalk.bgHex(bg).hex(fg)(padVisible(text, diffWidth - 2));
-
   const allLines = codeStr.split('\n');
   const total = allLines.length;
 
@@ -105,35 +122,141 @@ function renderDiffBlock(codeStr: string, diffWidth: number, isExpanded: boolean
     toRender = [...top, `... (${total - 10} hidden lines) [Press Ctrl+E to Expand] ...`, ...bottom];
   }
 
-  toRender.forEach(line => {
-    const maxLen = diffWidth - 4;
-    const subLines: string[] = [];
-    let current = line;
-    while (current.length > maxLen) {
-      subLines.push(current.substring(0, maxLen));
-      current = current.substring(maxLen);
-    }
-    subLines.push(current);
+  let oldLineNum = 0;
+  let newLineNum = 0;
+  let inHunk = false;
 
+  for (let i = 0; i < toRender.length; i++) {
+    const line = toRender[i];
+
+    const hunkMatch = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunkMatch) {
+      oldLineNum = parseInt(hunkMatch[1], 10);
+      newLineNum = parseInt(hunkMatch[2], 10);
+      inHunk = true;
+      output += chalk.bgHex('#0a0a0a').hex('#555555')(padVisible(line, diffWidth)) + '\n';
+      continue;
+    }
+
+    if (line.startsWith('+++') || line.startsWith('---')) {
+      output += chalk.bgHex('#0a0a0a').hex('#555555')(padVisible(line, diffWidth)) + '\n';
+      continue;
+    }
+
+    if (line.startsWith('... (')) {
+      output += chalk.bgHex('#1a1a1a').hex('#f5c542')(padVisible(line, diffWidth)) + '\n';
+      continue;
+    }
+
+    let linePrefix = '';
+    let displayLine = line;
+    let bgColor = '#0a0a0a'; 
+    let fgColor = '#D1D5DB';
+    let lineNumColor = '#555555';
+    let currentLineNum = 0;
+    
+    let highlightRanges: {start: number, end: number, bg: string, fg: string}[] = [];
+
+    if (line.startsWith('+')) {
+      currentLineNum = newLineNum++;
+      bgColor = '#052e16'; 
+      fgColor = '#A7F3D0';
+      lineNumColor = '#4ADE80';
+      displayLine = line.substring(1);
+      linePrefix = '+ ';
+      
+      if (i > 0 && toRender[i-1].startsWith('-')) {
+        const prevLine = toRender[i-1].substring(1);
+        let start = 0;
+        while(start < displayLine.length && start < prevLine.length && displayLine[start] === prevLine[start]) start++;
+        let endNew = displayLine.length - 1;
+        let endOld = prevLine.length - 1;
+        while(endNew >= start && endOld >= start && displayLine[endNew] === prevLine[endOld]) {
+          endNew--;
+          endOld--;
+        }
+        if (start <= endNew) {
+          highlightRanges.push({ start, end: endNew + 1, bg: '#14532d', fg: '#ffffff' });
+        }
+      }
+    } else if (line.startsWith('-')) {
+      currentLineNum = oldLineNum++;
+      bgColor = '#3f1111';
+      fgColor = '#FECACA';
+      lineNumColor = '#ef4444';
+      displayLine = line.substring(1);
+      linePrefix = '- ';
+      
+      if (i + 1 < toRender.length && toRender[i+1].startsWith('+')) {
+        const nextLine = toRender[i+1].substring(1);
+        let start = 0;
+        while(start < displayLine.length && start < nextLine.length && displayLine[start] === nextLine[start]) start++;
+        let endOld = displayLine.length - 1;
+        let endNew = nextLine.length - 1;
+        while(endOld >= start && endNew >= start && displayLine[endOld] === nextLine[endNew]) {
+          endOld--;
+          endNew--;
+        }
+        if (start <= endOld) {
+          highlightRanges.push({ start, end: endOld + 1, bg: '#7f1d1d', fg: '#ffffff' });
+        }
+      }
+    } else {
+      if (inHunk) {
+        currentLineNum = newLineNum++;
+        oldLineNum++; 
+      }
+      bgColor = '#0a0a0a';
+      fgColor = '#D1D5DB';
+      lineNumColor = '#555555';
+      if (line.startsWith(' ')) {
+        displayLine = line.substring(1);
+      }
+      linePrefix = '  ';
+    }
+
+    const numStr = String(currentLineNum).padStart(3, ' ');
+    const maxContentLen = diffWidth - 7; // 3 for num, 1 space, 2 for prefix, 1 space pad
+    
+    const subLines: string[] = [];
+    let current = displayLine;
+    while (current.length > maxContentLen) {
+      subLines.push(current.substring(0, maxContentLen));
+      current = current.substring(maxContentLen);
+    }
+    if (current.length > 0 || subLines.length === 0) {
+      subLines.push(current);
+    }
+
+    let charOffset = 0;
     subLines.forEach((sl, idx) => {
       const isFirst = idx === 0;
-      let displayLine = isFirst ? ' ' + sl : '   ' + sl;
-
-      if (line.startsWith('+++') || line.startsWith('---')) {
-        output += chalk.bgHex('#1E293B').hex('#CBD5E1')(padVisible(displayLine, diffWidth)) + '\n';
-      } else if (line.startsWith('@@')) {
-        output += chalk.bgHex('#0C4A6E').hex('#67E8F9')(padVisible(displayLine, diffWidth)) + '\n';
-      } else if (line.startsWith('+')) {
-        output += bar('#22C55E') + row('#14532D', '#BBF7D0', displayLine) + '\n';
-      } else if (line.startsWith('-')) {
-        output += bar('#EF4444') + row('#7F1D1D', '#FECACA', displayLine) + '\n';
-      } else if (line.startsWith('... (')) {
-        output += chalk.bgHex('#374151').hex('#FBBF24')(padVisible(displayLine, diffWidth)) + '\n';
+      const numPart = isFirst ? chalk.hex(lineNumColor)(numStr + ' ') : '    ';
+      const prefixPart = isFirst ? chalk.hex(lineNumColor)(linePrefix) : '  ';
+      
+      let styledSl = '';
+      if (highlightRanges.length > 0) {
+        for (let c = 0; c < sl.length; c++) {
+          const globalIdx = charOffset + c;
+          const hRange = highlightRanges.find(r => globalIdx >= r.start && globalIdx < r.end);
+          if (hRange) {
+             styledSl += chalk.bgHex(hRange.bg).hex(hRange.fg)(sl[c]);
+          } else {
+             styledSl += chalk.hex(fgColor)(sl[c]);
+          }
+        }
       } else {
-        output += chalk.bgHex('#0F172A').hex('#94A3B8')(padVisible(displayLine, diffWidth)) + '\n';
+        styledSl = chalk.hex(fgColor)(sl);
       }
+      charOffset += sl.length;
+      
+      const visibleLen = 4 + 2 + sl.length; 
+      const padLen = Math.max(0, diffWidth - visibleLen);
+      
+      const styledLine = numPart + prefixPart + styledSl + ' '.repeat(padLen);
+      output += chalk.bgHex(bgColor)(styledLine) + '\n';
     });
-  });
+  }
   return output + '\n';
 }
 
@@ -179,6 +302,7 @@ function renderMarkdownWithOttoStyles(content: string, width: number, diffsExpan
 
 export class ChatUI {
   public W = 72;
+  public compact = false;
   public lastLineCount = 0;
   public scrollOffset = 0;
   public totalContentLines = 0;
@@ -282,436 +406,7 @@ export class ChatUI {
   }
 
   drawToString(): string {
-    if (!this.currentData) return '';
-    this.W = process.stdout.columns ? Math.max(Math.min(process.stdout.columns - 4, 120), 60) : 72;
-    const {
-      messages,
-      currentInput,
-      telemetry,
-      model,
-      isThinking,
-      pendingPlan,
-      planMenuIndex,
-      diffsExpanded,
-      delayMessage,
-      pendingApproval,
-      approvalMenuIndex
-    } = this.currentData;
-
-    const lines: string[] = [];
-    let currentPrefix = '';
-    const push = (line: string = '') => {
-      if (currentPrefix) {
-        if (line.startsWith('  ')) {
-          lines.push('  ' + currentPrefix + line.substring(2));
-        } else {
-          lines.push('  ' + currentPrefix + line);
-        }
-      } else {
-        lines.push(line);
-      }
-    };
-
-    push(this.DIM('-'.repeat(this.W)));
-
-    const leftHeader = '  ' + this.BRAND('OTTO') + '  ';
-    const ctxPercent = telemetry.ctxMax > 0
-      ? Math.round((Math.min(telemetry.ctxUsed / telemetry.ctxMax, 1)) * 100)
-      : 0;
-    const ctxSummary = telemetry.showContextBar
-      ? `ctx: ${telemetry.ctxUsed}/${telemetry.ctxMax} (${ctxPercent}%)`
-      : 'ctx: hidden';
-    const rightHeader = this.MUTED(`${ctxSummary}  |  ram: ${telemetry.ramMB}mb  |  ${model}`) + '  ';
-    const spaces = Math.max(0, this.W - stripAnsi(leftHeader).length - stripAnsi(rightHeader).length);
-
-    push(leftHeader + ' '.repeat(spaces) + rightHeader);
-    push(this.DIM('-'.repeat(this.W)));
-    if (this.notification) {
-      let bg = '#1F2937';
-      let fg = '#10B981';
-      let icon = '✓';
-      if (this.notificationType === 'warning') {
-        bg = '#78350F';
-        fg = '#FBBF24';
-        icon = '⚠';
-      } else if (this.notificationType === 'error') {
-        bg = '#450A0A';
-        fg = '#F87171';
-        icon = '✘';
-      } else if (this.notificationType === 'info') {
-        bg = '#1E3A8A';
-        fg = '#60A5FA';
-        icon = 'ℹ';
-      } else if (this.notificationType === 'alert') {
-        bg = '#581C87';
-        fg = '#C084FC';
-        icon = '🔔';
-      }
-      push('  ' + chalk.bgHex(bg).hex(fg).bold(`  ${icon} ${this.notification}  `));
-      push('');
-    } else {
-      push('');
-    }
-
-    messages.forEach((msg: any) => {
-      if (msg.role === 'system') {
-        push('  ' + chalk.bgHex('#374151').white(' SYSTEM ') + ' ' + this.MUTED(msg.content));
-        push('');
-        return;
-      }
-
-      if (msg.role === 'tool') {
-        currentPrefix = '';
-        push('  ' + chalk.bgHex('#1F2937').white.bold(' TOOL '));
-        currentPrefix = this.MUTED('│  ');
-        const rendered = renderMarkdownWithOttoStyles(msg.content, this.W - 4, diffsExpanded);
-        rendered.trim().split('\n').forEach(line => push('  ' + line));
-        currentPrefix = '';
-        push('');
-        return;
-      }
-
-      currentPrefix = '';
-      const header = msg.role === 'user'
-        ? '  ' + chalk.bgHex('#374151').white.bold(' YOU ')
-        : this.AI_TAG('  O.T.T.O');
-      push(header);
-
-      if (msg.role === 'assistant' || msg.role === 'tool') {
-        currentPrefix = this.MUTED('│  ');
-      }
-
-      let rawContent = msg.content;
-
-      const thinkMatch = rawContent.match(/<(?:think|thought)>([\s\S]*?)(?:<\/(?:think|thought)>|$)/);
-      if (thinkMatch) {
-        const thinkStr = thinkMatch[1].trim();
-        rawContent = rawContent.replace(/<(?:think|thought)>[\s\S]*?(?:<\/(?:think|thought)>|$)/, '').trim();
-
-        const thinkLines = thinkStr.split('\n');
-        const total = thinkLines.length;
-
-        if (!diffsExpanded) {
-          push('  ' + chalk.hex('#A78BFA')(`🧠  Reasoning Process (${total} lines) [Press Ctrl+E to Expand]`));
-          push('');
-        } else {
-          push('  ' + this.MUTED('|-- ') + chalk.hex('#A78BFA')('Reasoning Process'));
-          
-          thinkLines.forEach((line: string) => {
-            const formattedLine = line.trim()
-              .replace(/^(#{1,6})\s+(.*)$/g, (_m, _p1, p2) => chalk.white.bold(p2))
-              .replace(/^(\d+\.)\s+(.*)$/g, (_m, p1, p2) => chalk.white.bold(p1) + ' ' + p2)
-              .replace(/^([*-])\s+(.*)$/g, (_m, p1, p2) => chalk.white.bold(p1) + ' ' + p2)
-              .replace(/\*\*(.*?)\*\*/g, (_m, p1) => chalk.white.bold(p1))
-              .replace(/\*(.*?)\*/g, (_m, p1) => chalk.white.italic(p1))
-              .replace(/`(.*?)`/g, (_m, p1) => chalk.hex('#F5C400')(p1));
-
-            const wrapped = wrapText(formattedLine, this.W - 5, 0);
-            wrapped.forEach(wl => push('  ' + this.MUTED('| ') + this.MUTED(wl)));
-          });
-
-          push('  ' + this.MUTED('`--'));
-          push('');
-        }
-
-        if (msg.content.includes('<think>') && !msg.content.includes('</think>')) {
-          push('  ' + chalk.hex('#A78BFA')('  🧠  Thinking...'));
-          push('');
-        }
-      }
-
-      if (rawContent.trim()) {
-        if (msg.role === 'user') {
-          const wrappedLines = wrapText(rawContent, this.W, 2);
-          wrappedLines.forEach(line => push(chalk.white(line)));
-        } else {
-          const PLAN_RE = /<!--\s*PLAN_START\s*-->([\s\S]*?)<!--\s*PLAN_END\s*-->/;
-          const planMatch = rawContent.match(PLAN_RE);
-
-          if (planMatch) {
-            const beforePlan = rawContent.slice(0, rawContent.indexOf('<!-- PLAN_START')).trim();
-            if (beforePlan) {
-              const rendered = renderMarkdownWithOttoStyles(beforePlan, this.W - 4, diffsExpanded);
-              rendered.trim().split('\n').forEach(line => push('  ' + line));
-              push('');
-            }
-
-            const planContent = planMatch[1].trim();
-            const planWidth = Math.min(this.W - 6, 86);
-            const boxBorder = chalk.hex('#F5C400');
-            const stepColor = chalk.hex('#22D3EE');
-            const fileColor = chalk.hex('#86EFAC');
-
-            const boxRow = (styledContent: string, bgHex?: string) => {
-              const visLen = getStringWidth(styledContent);
-              const pad = ' '.repeat(Math.max(0, planWidth - visLen));
-              const inner = bgHex
-                ? chalk.bgHex(bgHex)(styledContent + pad)
-                : styledContent + pad;
-              return '  ' + boxBorder('║') + inner + boxBorder('║');
-            };
-
-            push('  ' + boxBorder('╔' + '═'.repeat(planWidth) + '╗'));
-            push(boxRow(chalk.hex('#F5C400').bold(' 📋 IMPLEMENTATION PLAN '), '#1a1200'));
-            push('  ' + boxBorder('╠' + '═'.repeat(planWidth) + '╣'));
-
-            planContent.split('\n').forEach((line: string) => {
-              const stripped = line.trim();
-              if (!stripped || stripped.startsWith('##')) return;
-
-              let formattedLine = stripped
-                .replace(/\*\*(.*?)\*\*/g, (_m, p1) => chalk.white.bold(p1))
-                .replace(/\*(.*?)\*/g, (_m, p1) => chalk.white.italic(p1))
-                .replace(/`(.*?)`/g, (_m, p1) => chalk.hex('#F5C400')(p1));
-
-              let styledText: string;
-              if (/^\d+\./.test(stripped)) {
-                styledText = stepColor(' ' + formattedLine);
-              } else if (stripped.startsWith('- `') || stripped.startsWith('- \\`') || stripped.startsWith('- ') || stripped.startsWith('* ')) {
-                styledText = fileColor(' ' + formattedLine);
-              } else {
-                styledText = chalk.hex('#D1D5DB')(' ' + formattedLine);
-              }
-
-              const visibleText = stripAnsi(styledText);
-              if (visibleText.length <= planWidth) {
-                push(boxRow(styledText));
-              } else {
-                wrapText(visibleText.trim(), planWidth - 2, 0).forEach(wl => {
-                  push(boxRow(' ' + chalk.hex('#D1D5DB')(wl.trim())));
-                });
-              }
-            });
-
-
-            push('  ' + boxBorder('╚' + '═'.repeat(planWidth) + '╝'));
-            push('');
-
-            const afterPlan = rawContent.slice(rawContent.indexOf('<!-- PLAN_END -->') + '<!-- PLAN_END -->'.length).trim();
-            if (afterPlan) {
-              const rendered = renderMarkdownWithOttoStyles(afterPlan, this.W - 4, diffsExpanded);
-              rendered.trim().split('\n').forEach(line => push('  ' + line));
-            }
-          } else {
-            let processedContent = rawContent;
-            processedContent = processedContent.replace(/^[*\s]*\u25cf\s*([A-Za-z_]+)\(([^)]*)\)/gm, (_match: any, tool: any, args: any) => {
-              return chalk.dim('/- ') + chalk.white.bold(tool) + chalk.dim('(' + args + ')');
-            });
-            processedContent = processedContent.replace(/^[*\s]*\u2514\s*(.*)/gm, (_match: any, details: any) => {
-              return chalk.dim('\\- ' + details);
-            });
-
-            const rendered = renderMarkdownWithOttoStyles(processedContent, this.W - 4, diffsExpanded);
-            const renderedLines = rendered.trim().split('\n');
-            const isTerminal = msg.role === 'tool' && rawContent.includes('> `');
-            
-            if (msg.role === 'tool' && !diffsExpanded && !isTerminal && renderedLines.length > 15) {
-              const top = renderedLines.slice(0, 5);
-              const bottom = renderedLines.slice(renderedLines.length - 3);
-              const contracted = [
-                ...top, 
-                chalk.hex('#FBBF24')(`  ... (${renderedLines.length - 8} hidden lines) [Press Ctrl+E to Expand] ...`), 
-                ...bottom
-              ];
-              contracted.forEach(line => push('  ' + line));
-            } else {
-              renderedLines.forEach(line => push('  ' + line));
-            }
-          }
-        }
-      }
-
-      currentPrefix = '';
-      push('');
-    });
-
-    if (delayMessage) {
-      const dots = '.'.repeat((Math.floor(Date.now() / 350) % 3) + 1);
-      currentPrefix = '';
-      push(this.AI_TAG('  O.T.T.O'));
-      currentPrefix = this.MUTED('│  ');
-      push('  ' + chalk.hex('#FBBF24')(`${delayMessage}${dots}`));
-      currentPrefix = '';
-      push('');
-    } else if (isThinking) {
-      const dots = '.'.repeat((Math.floor(Date.now() / 350) % 3) + 1);
-      currentPrefix = '';
-      push(this.AI_TAG('  O.T.T.O'));
-      currentPrefix = this.MUTED('│  ');
-      push('  ' + chalk.hex('#A78BFA')(`thinking${dots}`));
-      currentPrefix = '';
-      push('');
-    }
-
-    if (pendingApproval) {
-      const menuWidth = Math.min(this.W - 6, 70);
-      const border = chalk.hex('#FB7185');
-      const titleColor = chalk.bgHex('#4C0519').hex('#FDA4AF');
-      const totalInnerWidth = menuWidth + 2;
-      
-      const boxRow = (styledContent: string, bgHex?: string) => {
-        const visLen = getStringWidth(styledContent);
-        const pad = ' '.repeat(Math.max(0, totalInnerWidth - visLen));
-        const inner = bgHex
-          ? chalk.bgHex(bgHex)(styledContent + pad)
-          : styledContent + pad;
-        return '  ' + border('│') + inner + border('│');
-      };
-
-      push('  ' + border('┌' + '─'.repeat(totalInnerWidth) + '┐'));
-      push(boxRow(titleColor.bold(' 🛡️  SECURITY APPROVAL REQUIRED '), '#4C0519'));
-      push('  ' + border('├' + '─'.repeat(totalInnerWidth) + '┤'));
-      
-      const actionType = pendingApproval.type === 'app' ? 'launch application' : 'execute command';
-      const promptText = `The agent wants to ${actionType}:`;
-      push(boxRow(' ' + chalk.white(promptText)));
-      
-      const cmdStrWrapped = wrapText(pendingApproval.commandStr, totalInnerWidth - 4, 0);
-      cmdStrWrapped.forEach(line => {
-        push(boxRow('   ' + chalk.hex('#FDA4AF').bold(line.trim())));
-      });
-      
-      push('  ' + border('├' + '─'.repeat(totalInnerWidth) + '┤'));
-
-      const menuItems = [
-        { label: 'Approve for now', color: chalk.hex('#4ADE80') },
-        { label: `Approve always (whitelist '${pendingApproval.cmd}')`, color: chalk.hex('#38BDF8') },
-        { label: 'Don\'t approve', color: chalk.hex('#F87171') },
-      ];
-
-      menuItems.forEach((item, idx) => {
-        const isSelected = idx === approvalMenuIndex;
-        const cursor = isSelected
-          ? border.bold(' > ')
-          : ' '.repeat(getStringWidth(' > '));
-        const cursorWidth = getStringWidth(cursor);
-        const paddedLabel = ansiPadEnd(item.label, totalInnerWidth - cursorWidth);
-        const label = isSelected
-          ? chalk.bgHex('#2E050E')(item.color.bold(paddedLabel))
-          : chalk.hex('#9CA3AF')(paddedLabel);
-        push('  ' + border('│') + cursor + label + border('│'));
-      });
-      
-      push('  ' + border('└' + '─'.repeat(totalInnerWidth) + '┘'));
-      push('');
-    }
-
-    if (pendingPlan) {
-      const menuWidth = Math.min(this.W - 6, 60);
-      const border    = chalk.hex('#F5C400');
-      const menuItems = [
-        { label: '\u2705  Approve - execute the plan',    color: chalk.hex('#4ADE80') },
-        { label: '\u270f\ufe0f  Edit - request changes first', color: chalk.hex('#FBBF24') },
-        { label: '\u274c  Cancel - do not proceed',       color: chalk.hex('#F87171') },
-      ];
-
-      const totalInnerWidth = menuWidth + 2;
-      push('  ' + border('┌' + '─'.repeat(totalInnerWidth) + '┐'));
-      menuItems.forEach((item, idx) => {
-        const isSelected = idx === planMenuIndex;
-        const cursor  = isSelected
-          ? chalk.hex('#F5C400').bold(' \u25b6 ')
-          : ' '.repeat(getStringWidth(' \u25b6 '));
-        const cursorWidth = getStringWidth(cursor);
-        const paddedLabel = ansiPadEnd(item.label, totalInnerWidth - cursorWidth);
-        const label   = isSelected
-          ? chalk.bgHex('#1a1200')(item.color.bold(paddedLabel))
-          : chalk.hex('#6B7280')(paddedLabel);
-        push('  ' + border('│') + cursor + label + border('│'));
-      });
-      push('  ' + border('└' + '─'.repeat(totalInnerWidth) + '┘'));
-      push('');
-    }
-
-    push(this.DIM('-'.repeat(this.W)));
-
-    // Viewport slicing
-    if (this.totalContentLines > 0 && this.scrollOffset > 0) {
-      const deltaLines = lines.length - this.totalContentLines;
-      this.scrollOffset += deltaLines;
-    }
-    this.totalContentLines = lines.length;
-
-    const viewH     = Math.max(1, (process.stdout.rows || 24) - 1);
-    const maxOffset = Math.max(0, lines.length - viewH);
-    this.scrollOffset = Math.min(this.scrollOffset, maxOffset);
-
-    const viewStart = maxOffset - this.scrollOffset;
-    const visible   = lines.slice(viewStart, viewStart + viewH);
-
-    const linesAbove = viewStart;
-    const linesBelow = this.scrollOffset;
-
-    if (linesAbove > 0 && visible.length > 0) {
-      visible[0] = this.MUTED(
-        `  ↑ ${linesAbove} line${linesAbove !== 1 ? 's' : ''} above` +
-        chalk.hex('#4B5563')('  (↑/↓ scroll  PgUp/PgDn page  End to snap)')
-      );
-    }
-    if (linesBelow > 0 && visible.length > 1) {
-      visible[visible.length - 1] = this.MUTED(`  ↓ ${linesBelow} line${linesBelow !== 1 ? 's' : ''} below`);
-    }
-
-    let outStr = '';
-    for (const line of visible) {
-      outStr += line + '\x1B[K\n';
-    }
-
-    // Prompt line assembly
-    const promptPrefix = '  ' + this.BRAND('>') + ' ';
-    const scrollHint   = linesBelow > 0
-      ? this.MUTED('  [scrolled \u2014 End to return]')
-      : '';
-    let placeholder = '';
-    if (currentInput.length === 0) {
-      if (pendingApproval) {
-        placeholder = chalk.hex('#FB7185')('\u2191\u2193 choose  \u21b5 confirm');
-      } else if (pendingPlan) {
-        placeholder = chalk.hex('#F5C400')('\u2191\u2193 choose  \u21b5 confirm');
-      } else if (telemetry.isStreaming || isThinking) {
-        placeholder = chalk.hex('#FB7185')('Press [Ctrl+X] to terminate streaming');
-      } else {
-        placeholder = this.MUTED('Type your message... (esc to menu)');
-      }
-    } else if (/[@][^\s]*$/.test(currentInput)) {
-      try {
-        const match = currentInput.match(/@([^\s]*)$/);
-        const prefix = match ? match[1] : '';
-        
-        let dir = '.';
-        let filePrefix = prefix;
-        if (prefix.includes('/') || prefix.includes('\\')) {
-          const normalized = prefix.replace(/\\/g, '/');
-          const lastSlash = normalized.lastIndexOf('/');
-          dir = prefix.slice(0, lastSlash);
-          filePrefix = prefix.slice(lastSlash + 1);
-        }
-        
-        const fullDir = path.resolve(process.cwd(), dir);
-        if (fs.existsSync(fullDir) && fs.statSync(fullDir).isDirectory()) {
-          const entries = fs.readdirSync(fullDir, { withFileTypes: true })
-            .filter((e: any) => {
-              if (e.name.startsWith('.') && !filePrefix.startsWith('.')) return false;
-              if (e.name === 'node_modules') return false;
-              return e.name.toLowerCase().startsWith(filePrefix.toLowerCase());
-            })
-            .map((e: any) => e.isDirectory() ? e.name + '/' : e.name);
-            
-          if (entries.length > 0) {
-            placeholder = this.MUTED('  [Press Tab to cycle: ' + entries.slice(0, 5).join(', ') + (entries.length > 5 ? '...' : '') + ']');
-          }
-        }
-      } catch (e) {}
-    }
-
-    let cursor = '';
-    const isEditing = !isThinking && !pendingApproval && !pendingPlan && !delayMessage;
-    if (isEditing) {
-      cursor = chalk.hex('#F5C400')('█');
-    }
-
-    outStr += promptPrefix + chalk.white(currentInput) + cursor + placeholder + scrollHint;
-    return outStr;
+    return '';
   }
 }
 
@@ -748,13 +443,96 @@ function ChatUIInput({ chatUI }: { chatUI: ChatUI }) {
   return null;
 }
 
+// ── INK COMPONENTS ── //
+
+const ToolBlock = ({ tool }: { tool: any }) => {
+  const isRunning = tool.status === 'running';
+  const isError = tool.status === 'error';
+  const icon = isError ? '✗' : '⌕';
+  const statusColor = isRunning ? '#7a6a1a' : isError ? '#8a3a3a' : '#3d8a2a';
+  const statusBg = isRunning ? '#1a1500' : isError ? '#1a0a0a' : '#0a1a00';
+  const statusText = isRunning ? ' ● running ' : isError ? ' ✗ error ' : ' ✓ done ';
+
+  return (
+    <Box flexDirection="column" borderStyle="single" borderLeft={true} borderRight={false} borderTop={false} borderBottom={false} borderColor="#c9a800" paddingLeft={1} marginBottom={1}>
+      <Box justifyContent="space-between">
+        <Text>
+          <Text backgroundColor="#1a1500" color="#c9a800"> {icon} </Text>
+          <Text color="#c9a800" bold> {tool.name}</Text>
+        </Text>
+        <Text backgroundColor={statusBg} color={statusColor}>{statusText}</Text>
+      </Box>
+      {tool.args && Object.keys(tool.args).length > 0 && (
+        <Box marginTop={0} flexDirection="column">
+          {Object.entries(tool.args).map(([k, v]) => (
+            <Text key={k}>
+              <Text color="#6a6040">{k}: </Text>
+              <Text color="#c9a800">"{typeof v === 'object' ? JSON.stringify(v) : String(v)}"</Text>
+            </Text>
+          ))}
+        </Box>
+      )}
+      {!isRunning && tool.rawOutput && (
+        <Box flexDirection="column" marginTop={0}>
+          <Text color="#2a2000">{'─'.repeat(50)}</Text>
+          <Text color={isError ? '#8a3a3a' : '#3d3310'}>{isError ? 'ERROR' : 'OUTPUT'}</Text>
+          <Text color="#7a6a3a" dimColor>{tool.rawOutput.substring(0, 500)}{tool.rawOutput.length > 500 ? '...' : ''}</Text>
+        </Box>
+      )}
+    </Box>
+  );
+};
+
+const AgentMessage = ({ msg, isThinking, diffsExpanded, width }: { msg: string, isThinking: boolean, diffsExpanded: boolean, width: number }) => {
+  let rawContent = msg;
+  let thinkBlock = null;
+  const thinkMatch = rawContent.match(/<(?:think|thought)>([\s\S]*?)(?:<\/(?:think|thought)>|$)/);
+  if (thinkMatch) {
+    rawContent = rawContent.replace(/<(?:think|thought)>[\s\S]*?(?:<\/(?:think|thought)>|$)/, '').trim();
+    const thinkLines = thinkMatch[1].trim().split('\n');
+    thinkBlock = diffsExpanded ? (
+      <Box flexDirection="column" marginBottom={1}>
+        {thinkLines.map((l, i) => <Text key={i} color="#5a5040" backgroundColor="#161407">{l}</Text>)}
+      </Box>
+    ) : (
+      <Box marginBottom={1}><Text color="#5a5040" backgroundColor="#161407">[ Reasoning Process ({thinkLines.length} lines) - Press Ctrl+E to Expand ]</Text></Box>
+    );
+  }
+
+  return (
+    <Box flexDirection="column" marginBottom={1}>
+      <Text backgroundColor="#161407">
+        <Text color="#c9a800">◆ </Text><Text color="#7a6a1a">otto</Text>
+      </Text>
+      {thinkBlock}
+      {msg.includes('<think>') && !msg.includes('</think>') && (
+        <Text color="#5a5040" backgroundColor="#161407">Thinking...</Text>
+      )}
+      {rawContent && (
+        <Box paddingLeft={1} paddingRight={1}>
+           <Text>{renderMarkdownWithOttoStyles(rawContent.replace(/`([^`]+)`/g, (_m: any, p1: string) => chalk.hex('#c9a800')(p1)), Math.max(10, width - 4), diffsExpanded).trim()}</Text>
+        </Box>
+      )}
+    </Box>
+  );
+};
+
+const UserMessage = ({ msg }: { msg: string }) => {
+  return (
+    <Box flexDirection="column" alignItems="flex-end" marginBottom={1} width="100%">
+      <Text backgroundColor="#1c1c1c" color="#484848"> you </Text>
+      <Box paddingLeft={1} paddingRight={1}>
+        <Text color="#d4d4d4">{msg.trim()}</Text>
+      </Box>
+    </Box>
+  );
+};
+
 export function ChatUIApp({ chatUI }: { chatUI: ChatUI }) {
   const [, forceUpdate] = useState(0);
 
   useEffect(() => {
-    return chatUI.subscribe(() => {
-      forceUpdate(prev => prev + 1);
-    });
+    return chatUI.subscribe(() => forceUpdate(prev => prev + 1));
   }, [chatUI]);
 
   useEffect(() => {
@@ -767,11 +545,123 @@ export function ChatUIApp({ chatUI }: { chatUI: ChatUI }) {
     };
   }, [chatUI]);
 
+  if (!chatUI.currentData) return <Box><Text>Loading...</Text></Box>;
+
+  const {
+    messages,
+    currentInput,
+    telemetry,
+    model,
+    isThinking,
+    pendingPlan,
+    planMenuIndex,
+    diffsExpanded,
+    delayMessage,
+    pendingApproval,
+    approvalMenuIndex
+  } = chatUI.currentData;
+
   const isTTY = !!(process.stdin && process.stdin.isTTY);
 
+  const ratio = telemetry.ctxMax > 0 ? Math.min(telemetry.ctxUsed / telemetry.ctxMax, 1) : 0;
+  const fill = Math.round(ratio * 7);
+  const ctxBarFill = '■'.repeat(fill);
+  const ctxBarEmpty = '■'.repeat(7 - fill);
+  const winHeight = process.stdout.rows || 24;
+  const winWidth = process.stdout.columns || 80;
+
+  const startIndex = Math.max(0, messages.length - (winHeight > 20 ? 15 : 5));
+
   return (
-    <Box flexDirection="column">
-      <Text>{chatUI.drawToString()}</Text>
+    <Box flexDirection="column" height={winHeight - 1}>
+      <Box marginBottom={1} borderStyle="single" borderTop={false} borderLeft={false} borderRight={false} borderColor="#1a1a1a" paddingBottom={1}>
+        <Text color="#2d6a1a">● </Text>
+        <Text color="#333333">active session   model: {model}   tokens: {telemetry.ctxUsed}</Text>
+      </Box>
+
+      <Box flexDirection="column" flexGrow={1} overflowY="hidden">
+        <Box flexDirection="column" marginTop={0}>
+          {messages.slice(startIndex).map((msg: any, i: number) => (
+            <Box key={i} flexDirection="column">
+              {msg.role === 'system' && <Text color="#555555">{msg.content}</Text>}
+              {msg.role === 'tool' && msg.toolInfo && <ToolBlock tool={msg.toolInfo} />}
+              {msg.toolCalls && msg.toolCalls.length > 0 && msg.state === 'tools' && (
+                <Box flexDirection="column">
+                  {msg.toolCalls.map((tc: any, j: number) => <ToolBlock key={j} tool={{ name: tc.name, args: tc.args, status: 'running' }} />)}
+                </Box>
+              )}
+              {msg.role === 'user' && <UserMessage msg={msg.content} />}
+              {msg.role === 'ai' && <AgentMessage msg={msg.content} isThinking={isThinking} diffsExpanded={diffsExpanded} width={winWidth} />}
+            </Box>
+          ))}
+          {isThinking && <AgentMessage msg="<think>Thinking...</think>" isThinking={true} diffsExpanded={diffsExpanded} width={winWidth} />}
+          {delayMessage && <AgentMessage msg={delayMessage + "..."} isThinking={isThinking} diffsExpanded={diffsExpanded} width={winWidth} />}
+        </Box>
+      </Box>
+
+      {pendingApproval && (
+        <Box flexDirection="column" marginBottom={1} padding={1}>
+          <Text bold color="#444444">⚠ COMMAND APPROVAL</Text>
+          <Text color="#c9a800"> ⚡ run bash command <Text color="#4a4020"> requires approval</Text></Text>
+          <Box paddingLeft={1} marginY={1}>
+            <Text color="#3d3310">COMMAND: </Text><Text color="#e0c040">{pendingApproval.commandStr}</Text>
+          </Box>
+          <Box>
+            {[{ label: 'allow for now', key: 'y' }, { label: 'allow always', key: 'a' }, { label: 'reject', key: 'n' }].map((item, idx) => (
+               <Box key={item.key} marginRight={2}>
+                 <Text color={idx === approvalMenuIndex ? '#c9a800' : '#555555'}>
+                   {idx === approvalMenuIndex ? '> ' : '  '}[{item.key}] {item.label}
+                 </Text>
+               </Box>
+            ))}
+          </Box>
+        </Box>
+      )}
+
+      {pendingPlan && (
+        <Box flexDirection="column" marginBottom={1} padding={1}>
+          <Text bold color="#444444">📋 PLAN APPROVAL</Text>
+          <Text color="#c9a800"> ◈ proposed plan <Text color="#4a4020"> review before executing</Text></Text>
+          <Box marginTop={1}>
+            {[{ label: 'approve plan', key: '↵' }, { label: 'edit plan', key: 'e' }, { label: 'cancel', key: 'n' }].map((item, idx) => (
+               <Box key={item.key} marginRight={2}>
+                 <Text color={idx === planMenuIndex ? '#c9a800' : '#555555'}>
+                   {idx === planMenuIndex ? '> ' : '  '}[{item.key}] {item.label}
+                 </Text>
+               </Box>
+            ))}
+          </Box>
+        </Box>
+      )}
+
+      <Box flexDirection="column">
+        <Box>
+          <Text backgroundColor="#111000" color="#c9a800"> › </Text>
+          <Text backgroundColor="#111000" color="#d4d4d4">{currentInput}</Text>
+          {(!isThinking && !pendingApproval && !pendingPlan && !delayMessage) && (
+            <Text backgroundColor={(Math.floor(Date.now() / 1000) % 2 === 0) ? '#c9a800' : '#111000'}> </Text>
+          )}
+          {currentInput.length === 0 && (
+            <Text backgroundColor="#111000" color={isThinking || telemetry.isStreaming ? '#ef4444' : '#444444'}>
+              {isThinking || telemetry.isStreaming ? 'Press [Ctrl+X] to terminate' : 'Type your message...'}
+            </Text>
+          )}
+        </Box>
+
+        <Box justifyContent="space-between" marginTop={1}>
+          <Box>
+            <Text color="#f5c542">{model.split('-')[0] || 'provider'} </Text>
+            <Text color="#555555"> ctx </Text>
+            <Text color={ratio > 0.75 ? '#ff6b6b' : '#f5c542'}>{ctxBarFill}</Text>
+            <Text color="#333333">{ctxBarEmpty}</Text>
+            <Text color="#555555">  sec </Text>
+            <Text color="#f5c542">strict</Text>
+          </Box>
+          <Box>
+            <Text color="#2a2a2a">ctrl+x: stop | ctrl+e: diff | esc: menu | @: context | /: cmd</Text>
+          </Box>
+        </Box>
+      </Box>
       {isTTY && <ChatUIInput chatUI={chatUI} />}
     </Box>
   );
