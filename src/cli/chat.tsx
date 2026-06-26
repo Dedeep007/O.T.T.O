@@ -499,9 +499,12 @@ const AgentMessage = ({ msg, isThinking, diffsExpanded, width }: { msg: string, 
     );
   }
 
-  // Filter out leaked JSON tool payloads
-  rawContent = rawContent.replace(/```(?:json)?\s*\{\s*"name"\s*:[\s\S]*?"arguments"\s*:[\s\S]*?\}\s*```/g, '');
-  rawContent = rawContent.replace(/\{\s*"name"\s*:[\s\S]*?"arguments"\s*:[\s\S]*?\}/g, '');
+  // Filter out leaked JSON tool payloads (full, fenced, and partial streaming fragments)
+  rawContent = rawContent.replace(/```(?:json)?[\s\S]*?```/g, (m) => m.includes('"name"') && m.includes('arguments') ? '' : m);
+  rawContent = rawContent.replace(/\{[^{}]*"name"[\s\S]*?(?:"arguments"[\s\S]*?\}|$)/g, '');
+  // Remove dangling JSON artifacts (lone braces / whitespace-only lines)
+  rawContent = rawContent.replace(/^[\s}]+$/gm, '');
+  rawContent = rawContent.replace(/\n{3,}/g, '\n\n');
   rawContent = rawContent.trim();
 
   return (
