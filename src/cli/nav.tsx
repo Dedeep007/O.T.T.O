@@ -234,12 +234,17 @@ export class PhoneOS {
       const model = this.config.providers[prov]?.model || 'default';
       const threads = chatSession.getMessages().length > 0 ? chatSession.threadId : 'none';
 
+      const leftWidth = Math.max(40, Math.floor(W * 0.5));
+      const logoWidth = 36;
+      const logoPad = ' '.repeat(Math.max(0, Math.floor((leftWidth - logoWidth) / 2)));
+
       const leftRows = [
         MUTED('O.T.T.O'),
         MUTED(`welcome back, ${username}`),
         '',
-        ...logoLines.map(l => GOLD(l)),
+        ...logoLines.map(l => logoPad + GOLD(l)),
         '',
+        MUTED('version ') + TEXT(`v${CLI_VERSION}`),
         MUTED('model ') + TEXT(`${model} `) + GREEN('active'),
         MUTED('path ') + TEXT(process.cwd())
       ];
