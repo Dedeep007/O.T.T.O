@@ -1590,7 +1590,7 @@ async function main() {
           console.log('  ' + chalk.dim('No saved variants yet.'));
         } else {
           currentModels.forEach(model => {
-            const mark = model === activeModel ? chalk.green('*') : chalk.dim('-');
+            const mark = model === activeModel ? chalk.hex('#f5c542')('*') : chalk.dim('-');
             console.log(`  ${mark} ${chalk.white(model)}`);
           });
         }
@@ -1753,7 +1753,7 @@ async function main() {
           console.log('  ' + chalk.dim('No saved keys yet.'));
         } else {
           apiKeys.forEach(key => {
-            const mark = key === activeKey ? chalk.green('*') : chalk.dim('-');
+            const mark = key === activeKey ? chalk.hex('#f5c542')('*') : chalk.dim('-');
             console.log(`  ${mark} ${chalk.white(maskApiKey(key))}`);
           });
         }
@@ -2339,7 +2339,7 @@ async function main() {
         },
         ...threads.map(t => {
           const isRunning = chatSession.activeStreams.has(t.id);
-          const runningTag = isRunning ? chalk.green(' 🟢 [running]') : '';
+          const runningTag = isRunning ? chalk.hex('#f5c542')(' 🟡 [running]') : '';
           const activeTag = t.id === chatSession.threadId ? chalk.hex('#6B7280')(' (active)') : '';
           return {
             label: t.displayName + activeTag + runningTag,

@@ -461,9 +461,9 @@ function ChatUIInput({ chatUI }: { chatUI: ChatUI }) {
 const ToolBlock = React.memo(({ tool }: { tool: any }) => {
   const isRunning = tool.status === 'running';
   const isError = tool.status === 'error';
-  const icon = isError ? '✗' : '⌕';
-  const statusColor = isRunning ? '#7a6a1a' : isError ? '#8a3a3a' : '#3d8a2a';
-  const statusBg = isRunning ? '#1a1500' : isError ? '#1a0a0a' : '#0a1a00';
+  const icon = isError ? '✗' : isRunning ? '●' : '✓';
+  const statusColor = isRunning ? '#d4b43f' : isError ? '#8a3a3a' : '#7a6a1a'; // Yellow variations
+  const statusBg = isRunning ? '#1a1500' : isError ? '#1a0a0a' : '#161407';
   const statusText = isRunning ? ' ● running ' : isError ? ' ✗ error ' : ' ✓ done ';
 
   return (
@@ -613,11 +613,11 @@ export function ChatUIApp({ chatUI }: { chatUI: ChatUI }) {
   return (
     <Box flexDirection="column" height={winHeight - 1}>
       <Box marginBottom={1} borderStyle="single" borderTop={false} borderLeft={false} borderRight={false} borderColor="#1a1a1a" paddingBottom={1}>
-        <Text color="#2d6a1a">● </Text>
+        <Text color="#f5c542">● </Text>
         <Text color="#333333">active session   model: {model}   tokens: {telemetry.ctxUsed}</Text>
       </Box>
 
-      <Box flexDirection="column" flexGrow={1} overflowY="hidden">
+      <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
         <Box flexDirection="column" marginTop={0}>
           {messages.slice(startIndex, messages.length - chatUI.scrollOffset).map((msg: any, i: number) => (
             <Box key={msg.id || (startIndex + i)} flexDirection="column">
@@ -685,7 +685,7 @@ export function ChatUIApp({ chatUI }: { chatUI: ChatUI }) {
           </Box>
         )}
 
-        <Box borderStyle="single" borderTop={true} borderLeft={false} borderRight={false} borderBottom={false} borderColor="#2a2a2a" paddingTop={1} flexDirection="column">
+        <Box borderStyle="single" borderTop={true} borderLeft={false} borderRight={false} borderBottom={false} borderColor="#f5c542" paddingTop={1} flexDirection="column" flexShrink={0}>
           <Box>
             <Text color="#f5c542" bold> › </Text>
             <Text color="#ffffff">{currentInput}</Text>

@@ -20017,9 +20017,9 @@ function ChatUIInput({ chatUI }) {
 var ToolBlock = import_react2.default.memo(({ tool: tool5 }) => {
   const isRunning = tool5.status === "running";
   const isError = tool5.status === "error";
-  const icon = isError ? "\u2717" : "\u2315";
-  const statusColor = isRunning ? "#7a6a1a" : isError ? "#8a3a3a" : "#3d8a2a";
-  const statusBg = isRunning ? "#1a1500" : isError ? "#1a0a0a" : "#0a1a00";
+  const icon = isError ? "\u2717" : isRunning ? "\u25CF" : "\u2713";
+  const statusColor = isRunning ? "#d4b43f" : isError ? "#8a3a3a" : "#7a6a1a";
+  const statusBg = isRunning ? "#1a1500" : isError ? "#1a0a0a" : "#161407";
   const statusText = isRunning ? " \u25CF running " : isError ? " \u2717 error " : " \u2713 done ";
   return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { flexDirection: "column", borderStyle: "single", borderLeft: true, borderRight: false, borderTop: false, borderBottom: false, borderColor: statusColor, paddingLeft: 1, marginBottom: 1, marginLeft: 2, children: [
     /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { justifyContent: "space-between", children: [
@@ -20132,7 +20132,7 @@ function ChatUIApp({ chatUI }) {
   const startIndex = Math.max(0, messages.length - (winHeight > 20 ? 15 : 5) - chatUI.scrollOffset);
   return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { flexDirection: "column", height: winHeight - 1, children: [
     /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { marginBottom: 1, borderStyle: "single", borderTop: false, borderLeft: false, borderRight: false, borderColor: "#1a1a1a", paddingBottom: 1, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: "#2d6a1a", children: "\u25CF " }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: "#f5c542", children: "\u25CF " }),
       /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Text, { color: "#333333", children: [
         "active session   model: ",
         model,
@@ -20140,7 +20140,7 @@ function ChatUIApp({ chatUI }) {
         telemetry.ctxUsed
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Box, { flexDirection: "column", flexGrow: 1, overflowY: "hidden", children: /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { flexDirection: "column", marginTop: 0, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Box, { flexDirection: "column", flexGrow: 1, flexShrink: 1, overflow: "hidden", children: /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { flexDirection: "column", marginTop: 0, children: [
       messages.slice(startIndex, messages.length - chatUI.scrollOffset).map((msg, i) => /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { flexDirection: "column", children: [
         msg.role === "system" && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: "#555555", children: msg.content }),
         msg.role === "tool" && msg.toolInfo && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(ToolBlock, { tool: msg.toolInfo }),
@@ -20188,7 +20188,7 @@ function ChatUIApp({ chatUI }) {
         idx === autocompleteState.matchIdx ? "\u276F " : "  ",
         match
       ] }, match)) }),
-      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { borderStyle: "single", borderTop: true, borderLeft: false, borderRight: false, borderBottom: false, borderColor: "#2a2a2a", paddingTop: 1, flexDirection: "column", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { borderStyle: "single", borderTop: true, borderLeft: false, borderRight: false, borderBottom: false, borderColor: "#f5c542", paddingTop: 1, flexDirection: "column", flexShrink: 0, children: [
         /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { children: [
           /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: "#f5c542", bold: true, children: " \u203A " }),
           /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: "#ffffff", children: currentInput }),
@@ -22724,7 +22724,7 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
           console.log("  " + import_chalk10.default.dim("No saved variants yet."));
         } else {
           currentModels.forEach((model) => {
-            const mark = model === activeModel ? import_chalk10.default.green("*") : import_chalk10.default.dim("-");
+            const mark = model === activeModel ? import_chalk10.default.hex("#f5c542")("*") : import_chalk10.default.dim("-");
             console.log(`  ${mark} ${import_chalk10.default.white(model)}`);
           });
         }
@@ -22880,7 +22880,7 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
           console.log("  " + import_chalk10.default.dim("No saved keys yet."));
         } else {
           apiKeys.forEach((key) => {
-            const mark = key === activeKey ? import_chalk10.default.green("*") : import_chalk10.default.dim("-");
+            const mark = key === activeKey ? import_chalk10.default.hex("#f5c542")("*") : import_chalk10.default.dim("-");
             console.log(`  ${mark} ${import_chalk10.default.white(maskApiKey(key))}`);
           });
         }
@@ -23465,7 +23465,7 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
         },
         ...threads.map((t) => {
           const isRunning = chatSession.activeStreams.has(t.id);
-          const runningTag = isRunning ? import_chalk10.default.green(" \u{1F7E2} [running]") : "";
+          const runningTag = isRunning ? import_chalk10.default.hex("#f5c542")(" \u{1F7E1} [running]") : "";
           const activeTag = t.id === chatSession.threadId ? import_chalk10.default.hex("#6B7280")(" (active)") : "";
           return {
             label: t.displayName + activeTag + runningTag,
