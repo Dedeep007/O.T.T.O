@@ -18251,6 +18251,85 @@ var RouterAgent = class {
   }
 };
 
+// src/agent/token_limiter.ts
+var TokenLimiter = class _TokenLimiter {
+  static instance;
+  minuteLog = [];
+  dayLog = [];
+  constructor() {
+  }
+  static getInstance() {
+    if (!_TokenLimiter.instance) {
+      _TokenLimiter.instance = new _TokenLimiter();
+    }
+    return _TokenLimiter.instance;
+  }
+  addUsage(tokens) {
+    const now = Date.now();
+    this.minuteLog.push({ timestamp: now, tokens, requests: 1 });
+    this.dayLog.push({ timestamp: now, tokens, requests: 1 });
+    this.cleanup();
+  }
+  cleanup() {
+    const now = Date.now();
+    const oneMinuteAgo = now - 6e4;
+    const oneDayAgo = now - 864e5;
+    this.minuteLog = this.minuteLog.filter((log) => log.timestamp > oneMinuteAgo);
+    this.dayLog = this.dayLog.filter((log) => log.timestamp > oneDayAgo);
+  }
+  getMinuteUsage() {
+    this.cleanup();
+    return this.minuteLog.reduce((acc, log) => {
+      acc.tokens += log.tokens;
+      acc.requests += log.requests;
+      return acc;
+    }, { tokens: 0, requests: 0 });
+  }
+  getDayUsage() {
+    this.cleanup();
+    return this.dayLog.reduce((acc, log) => {
+      acc.tokens += log.tokens;
+      acc.requests += log.requests;
+      return acc;
+    }, { tokens: 0, requests: 0 });
+  }
+  async checkAndWait(provider, config2, ui2) {
+    if (provider.toLowerCase() === "ollama") {
+      return;
+    }
+    const activeModel = config2.providers[provider]?.activeModel || "default";
+    const limits = config2.modelLimits?.[activeModel] || {};
+    const maxTpm = limits.tpm || Infinity;
+    const maxTpd = limits.tpd || Infinity;
+    const maxRpm = limits.rpm || Infinity;
+    const maxRpd = limits.rpd || Infinity;
+    let warningShown = false;
+    let limitExceeded = true;
+    while (limitExceeded) {
+      const minUsage = this.getMinuteUsage();
+      const dayUsage = this.getDayUsage();
+      const hitsTpm = minUsage.tokens >= maxTpm;
+      const hitsTpd = dayUsage.tokens >= maxTpd;
+      const hitsRpm = minUsage.requests >= maxRpm;
+      const hitsRpd = dayUsage.requests >= maxRpd;
+      if (hitsTpm || hitsTpd || hitsRpm || hitsRpd) {
+        if (!warningShown) {
+          const reasons = [];
+          if (hitsTpm) reasons.push(`TPM (${maxTpm})`);
+          if (hitsTpd) reasons.push(`TPD (${maxTpd})`);
+          if (hitsRpm) reasons.push(`RPM (${maxRpm})`);
+          if (hitsRpd) reasons.push(`RPD (${maxRpd})`);
+          ui2.error(`Model limit exceeded: ${reasons.join(", ")}. Pausing API requests...`);
+          warningShown = true;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5e3));
+      } else {
+        limitExceeded = false;
+      }
+    }
+  }
+};
+
 // src/agent/workflow.ts
 var PLAN_BLOCK_RE = /<!--\s*PLAN_START\s*-->[\s\S]*?<!--\s*PLAN_END\s*-->/;
 var AgentWorkflow = class {
@@ -18279,10 +18358,21 @@ var AgentWorkflow = class {
         ctx.chatSession.agentStates.set(ctx.chatSession.threadId, "idle");
         if (ctx.chatSession.isChatActive) ctx.render(true);
         return;
+      } else {
+        ctx.agentMode = "plan";
+        ctx.messages.push(new import_messages6.SystemMessage(`[MULTI-AGENT ORCHESTRATION]
+You are the Architect Agent. Break down the user's request into:
+1. Plan (high-level approach)
+2. Tasks (step-by-step division of labor)
+3. Artifacts (files to create/modify)
+
+Output your plan wrapped in <!-- PLAN_START --> and <!-- PLAN_END -->. The Reviewer Agent will critique it before execution.`));
+        ctx.syncMessages();
       }
     }
     const mode = ctx.agentMode || "build";
     const activeProvider = ctx.config.defaults.primaryProvider;
+    await TokenLimiter.getInstance().checkAndWait(activeProvider, ctx.config, ctx.ui);
     const activeModel = ctx.config.providers[activeProvider]?.activeModel || "default";
     const finalMsgsToSend = await RequestPipeline.buildPayload(ctx.messages, ctx.config, activeModel, mode);
     const aiMessage = new import_messages6.AIMessage("");
@@ -18315,6 +18405,9 @@ var AgentWorkflow = class {
     if (ctx.chatSession.isChatActive) {
       ctx.render(true);
     }
+    const outTok = Math.ceil(String(finalMessage?.content || "").length / 4);
+    const inTok = Math.ceil(JSON.stringify(finalMsgsToSend).length / 4);
+    TokenLimiter.getInstance().addUsage(inTok + outTok);
     const stepClass = classifyAssistantStep(
       finalMessage,
       ctx.chatSession.cancelledThreads.has(ctx.chatSession.threadId),
@@ -18340,6 +18433,25 @@ var AgentWorkflow = class {
     const responseText = String(finalMessage?.content ?? "");
     const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
     if (hasPlanBlock && stepClass.type !== "tools") {
+      if (ctx.agentMode === "plan") {
+        ctx.chatSession.delayMessage = "Reviewer Agent is critiquing the plan";
+        ctx.render(true);
+        const planText = responseText.match(PLAN_BLOCK_RE)?.[0] || responseText;
+        const critiqueMsg = await ctx.provider.invoke([
+          new import_messages6.SystemMessage("You are a Senior Staff Code Reviewer. Critique the following technical implementation plan. Point out flaws, missing logic, or potential runtime bugs. Be extremely harsh but concise. If it's perfect, say 'LGTM'."),
+          new import_messages6.HumanMessage(planText)
+        ]);
+        ctx.chatSession.delayMessage = null;
+        ctx.messages.push(new import_messages6.AIMessage(`
+
+[REVIEWER CRITIQUE]:
+${critiqueMsg.content}`));
+        ctx.messages.push(new import_messages6.HumanMessage("SYSTEM: You are now the Builder Agent. Refine the plan based on the Reviewer's critique if necessary, divide the tasks, and immediately execute them using tools. Do not output PLAN tags again."));
+        ctx.agentMode = "build";
+        ctx.syncMessages();
+        await this.runAgentLoop(ctx, void 0, depth + 1);
+        return;
+      }
       if (ctx.config.security.mode === "full" || ctx.config.security.mode === "approve") {
         ctx.setPendingPlan(false);
         setTimeout(() => {
@@ -18417,8 +18529,20 @@ var AgentWorkflow = class {
               result = `Error: Tool ${toolName} not found.`;
             }
           }
+          if (toolName === "execute_terminal_command" && !args.background) {
+            if (result.includes("Error:") || result.toLowerCase().includes("failed") || result.toLowerCase().includes("command not found")) {
+              result += `
+
+[SYSTEM VALIDATION: The command appears to have failed. Please re-evaluate your approach, check the tool syntax, and retry.]`;
+            } else {
+              result += `
+
+[SYSTEM VALIDATION: Tool executed successfully.]`;
+            }
+          }
         } catch (e) {
-          result = `Error: ${e.message}`;
+          result = `Error: ${e.message}
+[SYSTEM VALIDATION: A fatal error occurred during tool execution. Fix the arguments and retry.]`;
         }
         const toolMsg = new import_messages6.ToolMessage({
           tool_call_id: toolCallId,
@@ -19693,12 +19817,329 @@ function PhoneOSApp({ phone }) {
 }
 
 // src/cli/chat.tsx
-var import_react2 = __toESM(require("react"), 1);
-var import_ink2 = require("ink");
-var import_chalk3 = __toESM(require("chalk"), 1);
+var import_react6 = require("react");
+var import_ink6 = require("ink");
+var import_chalk4 = __toESM(require("chalk"), 1);
 var import_marked2 = require("marked");
 var import_marked_terminal2 = require("marked-terminal");
+
+// src/cli/ui/contexts/ThemeContext.tsx
+var import_react2 = require("react");
 var import_jsx_runtime2 = require("react/jsx-runtime");
+var defaultTheme = {
+  primary: "#f5c542",
+  // O.T.T.O Yellow
+  primaryBg: "#161407",
+  secondary: "#d4b43f",
+  // Darker Yellow
+  secondaryBg: "#1a1500",
+  error: "#ff5555",
+  success: "#3d8a2a",
+  // Unused mostly, maybe keep for pure success
+  text: "#ffffff",
+  dimText: "#888888",
+  border: "#2a2a2a"
+};
+var ThemeContext = (0, import_react2.createContext)(defaultTheme);
+function ThemeProvider({ children, theme = defaultTheme }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(ThemeContext.Provider, { value: theme, children });
+}
+function useTheme() {
+  return (0, import_react2.useContext)(ThemeContext);
+}
+
+// src/cli/ui/contexts/SessionContext.tsx
+var import_react3 = require("react");
+var import_jsx_runtime3 = require("react/jsx-runtime");
+var SessionContext = (0, import_react3.createContext)(void 0);
+function SessionProvider({ children, externalState }) {
+  const [localState, setLocalState] = (0, import_react3.useState)(externalState);
+  (0, import_react3.useEffect)(() => {
+    setLocalState(externalState);
+  }, [externalState]);
+  const updateState = (updates) => {
+    setLocalState((prev) => ({ ...prev, ...updates }));
+  };
+  return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(SessionContext.Provider, { value: { state: localState, updateState }, children });
+}
+function useSession() {
+  const context = (0, import_react3.useContext)(SessionContext);
+  if (!context) {
+    throw new Error("useSession must be used within a SessionProvider");
+  }
+  return context;
+}
+
+// src/cli/ui/contexts/DialogContext.tsx
+var import_react4 = require("react");
+var import_ink2 = require("ink");
+var import_jsx_runtime4 = require("react/jsx-runtime");
+var DialogContext = (0, import_react4.createContext)(void 0);
+function DialogProvider({ children }) {
+  const [activeDialog, setActiveDialog] = (0, import_react4.useState)(null);
+  const openDialog = (props) => setActiveDialog(props);
+  const closeDialog = () => setActiveDialog(null);
+  return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(DialogContext.Provider, { value: { openDialog, closeDialog, activeDialog }, children });
+}
+function useDialog() {
+  const context = (0, import_react4.useContext)(DialogContext);
+  if (!context) {
+    throw new Error("useDialog must be used within a DialogProvider");
+  }
+  return context;
+}
+function DialogRenderer() {
+  const { activeDialog } = useDialog();
+  const theme = useTheme();
+  if (!activeDialog) return null;
+  return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)(
+    import_ink2.Box,
+    {
+      flexDirection: "column",
+      padding: 1,
+      borderStyle: "round",
+      borderColor: theme.primary,
+      children: [
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_ink2.Box, { marginBottom: 1, children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_ink2.Text, { bold: true, color: theme.primary, children: activeDialog.title }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_ink2.Box, { children: activeDialog.content })
+      ]
+    }
+  );
+}
+
+// src/cli/ui/routes/SessionView.tsx
+var import_ink5 = require("ink");
+
+// src/cli/ui/components.tsx
+var import_react5 = __toESM(require("react"), 1);
+var import_ink3 = require("ink");
+var import_chalk3 = __toESM(require("chalk"), 1);
+var import_jsx_runtime5 = require("react/jsx-runtime");
+var ToolBlock = import_react5.default.memo(({ tool: tool5 }) => {
+  const isRunning = tool5.status === "running";
+  const isError = tool5.status === "error";
+  const icon = isError ? "\u2717" : isRunning ? "\u25CF" : "\u2713";
+  const statusColor = isRunning ? "#d4b43f" : isError ? "#8a3a3a" : "#7a6a1a";
+  const statusBg = isRunning ? "#1a1500" : isError ? "#1a0a0a" : "#161407";
+  const statusText = isRunning ? " \u25CF running " : isError ? " \u2717 error " : " \u2713 done ";
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_ink3.Box, { flexDirection: "column", borderStyle: "single", borderLeft: true, borderRight: false, borderTop: false, borderBottom: false, borderColor: statusColor, paddingLeft: 1, marginBottom: 1, marginLeft: 2, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_ink3.Box, { justifyContent: "space-between", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Text, { children: /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_ink3.Text, { backgroundColor: statusBg, color: statusColor, bold: true, children: [
+        " ",
+        icon,
+        " ",
+        tool5.name,
+        " "
+      ] }) }),
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Text, { backgroundColor: statusBg, color: statusColor, dimColor: true, children: statusText })
+    ] }),
+    tool5.args && Object.keys(tool5.args).length > 0 && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Box, { marginTop: 0, flexDirection: "column", children: Object.entries(tool5.args).map(([k, v]) => {
+      const valStr = typeof v === "object" ? JSON.stringify(v) : String(v);
+      return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_ink3.Box, { marginLeft: 2, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_ink3.Text, { color: "#6a6040", children: [
+          k,
+          ": "
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_ink3.Text, { color: "#c9a800", children: [
+          '"',
+          valStr.replace(/\r/g, ""),
+          '"'
+        ] })
+      ] }, k);
+    }) }),
+    tool5.status !== "running" && tool5.rawOutput && /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_ink3.Box, { marginTop: 1, flexDirection: "column", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Text, { color: "#2a2000", children: "\u2500".repeat(50) }),
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_ink3.Text, { color: "#7a6a3a", dimColor: true, children: [
+        tool5.rawOutput.replace(/\r/g, "").substring(0, 500),
+        tool5.rawOutput.length > 500 ? "..." : ""
+      ] })
+    ] })
+  ] });
+}, (prev, next) => {
+  if (!prev.tool || !next.tool) return false;
+  return prev.tool.name === next.tool.name && prev.tool.status === next.tool.status && prev.tool.rawOutput === next.tool.rawOutput && JSON.stringify(prev.tool.args || {}) === JSON.stringify(next.tool.args || {});
+});
+var AgentMessage = import_react5.default.memo(({ msg, isThinking, isStreaming, diffsExpanded, width }) => {
+  let rawContent = msg;
+  let thinkBlock = null;
+  const thinkMatch = rawContent.match(/<(?:think|thought)>([\s\S]*?)(?:<\/(?:think|thought)>|$)/);
+  if (thinkMatch) {
+    rawContent = rawContent.replace(/<(?:think|thought)>[\s\S]*?(?:<\/(?:think|thought)>|$)/, "").trim();
+    const thinkLines = thinkMatch[1].trim().split("\n");
+    thinkBlock = diffsExpanded ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Box, { flexDirection: "column", marginBottom: 1, children: thinkLines.map((l, i) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Text, { color: "#f5c542", backgroundColor: "#161407", children: l }, i)) }) : /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Box, { marginBottom: 1, children: /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_ink3.Text, { color: "#f5c542", backgroundColor: "#161407", children: [
+      "[ Reasoning Process (",
+      thinkLines.length,
+      " lines) - Press Ctrl+E to Expand ]"
+    ] }) });
+  }
+  rawContent = rawContent.replace(/```(?:json)?[\s\S]*?```/g, (m) => m.includes('"name"') && m.includes("arguments") ? "" : m);
+  if (isStreaming) {
+    rawContent = rawContent.replace(/```(?:json)?\s*\{\s*"name"[\s\S]*$/, "");
+    rawContent = rawContent.replace(/\{\s*"name"\s*:\s*"[^"]*"[\s\S]*$/, "");
+  } else {
+    rawContent = rawContent.replace(/\{[^{}]*"name"[\s\S]*?(?:"arguments"[\s\S]*?\}|$)/g, "");
+  }
+  rawContent = rawContent.replace(/^[\s}]+$/gm, "");
+  rawContent = rawContent.replace(/\n{3,}/g, "\n\n");
+  rawContent = rawContent.trim();
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_ink3.Box, { flexDirection: "column", marginBottom: 1, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Box, { marginBottom: 0, children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Text, { backgroundColor: "#161407", color: "#d4b43f", bold: true, children: " O.T.T.O " }) }),
+    thinkBlock,
+    msg.includes("<think>") && !msg.includes("</think>") && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Box, { paddingLeft: 1, marginTop: 1, children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Text, { color: "#f5c542", backgroundColor: "#161407", children: " [ Thinking... ] " }) }),
+    rawContent && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Box, { marginTop: thinkBlock ? 1 : 0, paddingLeft: 0, children: isStreaming ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Text, { color: "#d4d4d4", children: rawContent }) : /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Text, { color: "#d4d4d4", children: renderMarkdownWithOttoStyles(rawContent.replace(/`([^`]+)`/g, (_m, p1) => import_chalk3.default.hex("#f5c542")(p1)), Math.max(10, width - 4), diffsExpanded).trim() }) })
+  ] });
+}, (prev, next) => {
+  return prev.msg === next.msg && prev.isThinking === next.isThinking && prev.isStreaming === next.isStreaming && prev.diffsExpanded === next.diffsExpanded && prev.width === next.width;
+});
+var UserMessage = import_react5.default.memo(({ msg }) => {
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_ink3.Box, { flexDirection: "column", marginBottom: 1, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Box, { marginBottom: 0, children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Text, { backgroundColor: "#1c1c1c", color: "#888888", children: " you " }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Box, { paddingLeft: 1, borderStyle: "single", borderLeft: true, borderRight: false, borderTop: false, borderBottom: false, borderColor: "#333", children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Text, { color: "#f0f0f0", children: msg.trim() }) })
+  ] });
+});
+
+// src/cli/ui/PromptInput.tsx
+var import_ink4 = require("ink");
+var import_jsx_runtime6 = require("react/jsx-runtime");
+function PromptInput() {
+  const { state } = useSession();
+  const theme = useTheme();
+  return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(import_ink4.Box, { borderStyle: "single", borderTop: true, borderLeft: false, borderRight: false, borderBottom: false, borderColor: theme.primary, paddingTop: 1, flexDirection: "column", flexShrink: 0, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(import_ink4.Box, { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_ink4.Text, { color: theme.primary, bold: true, children: " \u203A " }),
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_ink4.Text, { color: theme.text, children: state.currentInput }),
+      !state.isThinking && !state.pendingApproval && !state.pendingPlan && !state.delayMessage && /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_ink4.Text, { backgroundColor: Math.floor(Date.now() / 1e3) % 2 === 0 ? theme.primary : "transparent", children: " " }),
+      state.currentInput.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_ink4.Text, { color: state.isThinking || state.telemetry.isStreaming ? theme.error : theme.dimText, dimColor: true, children: state.isThinking || state.telemetry.isStreaming ? "Press [Ctrl+X] to terminate" : "Type your message..." })
+    ] }),
+    state.autocompleteState?.show && state.autocompleteState?.options?.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_ink4.Box, { flexDirection: "column", marginTop: 1, paddingLeft: 2, borderStyle: "single", borderLeft: true, borderRight: false, borderTop: false, borderBottom: false, borderColor: theme.border, children: state.autocompleteState.options.map((opt, i) => {
+      const isSelected = i === state.autocompleteState.selectedIndex;
+      return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(import_ink4.Box, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_ink4.Text, { color: isSelected ? theme.primary : theme.dimText, children: isSelected ? "\u25B6 " : "  " }),
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(import_ink4.Text, { color: isSelected ? theme.text : theme.dimText, children: [
+          opt.name,
+          " "
+        ] }),
+        opt.description && /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(import_ink4.Text, { color: theme.border, dimColor: true, children: [
+          " - ",
+          opt.description
+        ] })
+      ] }, i);
+    }) })
+  ] });
+}
+
+// src/cli/ui/routes/SessionView.tsx
+var import_jsx_runtime7 = require("react/jsx-runtime");
+function SessionView({ chatUI }) {
+  const { state } = useSession();
+  const theme = useTheme();
+  const winHeight = process.stdout.rows || 24;
+  const winWidth = process.stdout.columns || 80;
+  let estimatedLines = 0;
+  let maxLines = Math.max(10, winHeight - 8);
+  let renderMessages = [];
+  let skippedMessages = 0;
+  for (let i = state.messages.length - 1; i >= 0; i--) {
+    if (skippedMessages < chatUI.scrollOffset) {
+      skippedMessages++;
+      continue;
+    }
+    const msg = state.messages[i];
+    let lines = 2;
+    if (msg.content) {
+      lines += msg.content.split("\n").map((l) => Math.ceil((l.length || 1) / (winWidth - 4))).reduce((a, b) => a + b, 0);
+    }
+    if (msg.toolCalls) lines += msg.toolCalls.length * 3;
+    if (msg.toolInfo) lines += 3;
+    if (msg.content.includes("<think>")) lines += 2;
+    if (estimatedLines + lines > maxLines && renderMessages.length > 0) {
+      break;
+    }
+    estimatedLines += lines;
+    renderMessages.unshift(msg);
+  }
+  const ratio = state.telemetry.ctxMax > 0 ? Math.min(state.telemetry.ctxUsed / state.telemetry.ctxMax, 1) : 0;
+  const fill = Math.round(ratio * 7);
+  const ctxBarFill = "\u25A0".repeat(fill);
+  const ctxBarEmpty = "\u25A0".repeat(7 - fill);
+  return /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Box, { flexDirection: "column", height: winHeight - 1, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Box, { marginBottom: 1, borderStyle: "single", borderTop: false, borderLeft: false, borderRight: false, borderColor: theme.border, paddingBottom: 1, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: theme.primary, children: "\u25CF " }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Text, { color: theme.text, children: [
+        "active session   model: ",
+        state.model,
+        "   tokens: ",
+        state.telemetry.ctxUsed
+      ] })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Box, { flexDirection: "column", flexGrow: 1, flexShrink: 1, overflow: "hidden", children: /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Box, { flexDirection: "column", marginTop: 0, children: [
+      renderMessages.map((msg, i) => /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Box, { flexDirection: "column", children: [
+        msg.role === "system" && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: theme.dimText, children: msg.content }),
+        msg.role === "tool" && msg.toolInfo && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(ToolBlock, { tool: msg.toolInfo }),
+        msg.toolCalls && msg.toolCalls.length > 0 && msg.state === "tools" && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Box, { flexDirection: "column", children: msg.toolCalls.map((tc, j) => /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(ToolBlock, { tool: { name: tc.name, args: tc.args, status: "running" } }, j)) }),
+        msg.role === "user" && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(UserMessage, { msg: msg.content }),
+        msg.role === "ai" && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(AgentMessage, { msg: msg.content, isThinking: state.isThinking, isStreaming: state.telemetry.isStreaming || false, diffsExpanded: state.diffsExpanded, width: winWidth })
+      ] }, msg.id || i)),
+      state.isThinking && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(AgentMessage, { msg: "<think>Thinking...</think>", isThinking: true, isStreaming: true, diffsExpanded: state.diffsExpanded, width: winWidth }),
+      state.delayMessage && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(AgentMessage, { msg: state.delayMessage + "...", isThinking: state.isThinking, isStreaming: true, diffsExpanded: state.diffsExpanded, width: winWidth })
+    ] }) }),
+    state.pendingApproval && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Box, { flexDirection: "column", marginBottom: 1, padding: 1, borderStyle: "round", borderColor: "#b83030", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { bold: true, color: theme.error, children: "\u26A0 COMMAND APPROVAL" }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Text, { color: theme.secondary, children: [
+        " \u26A1 run bash command ",
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: "#776633", children: " requires approval" })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Box, { marginTop: 1, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: "#554422", children: "COMMAND: " }),
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: theme.primary, children: state.pendingApproval.commandStr })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Box, { marginTop: 1, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Text, { color: state.approvalMenuIndex === 0 ? theme.text : theme.dimText, children: [
+          state.approvalMenuIndex === 0 ? "\u25B6 " : "  ",
+          "Approve "
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Text, { color: state.approvalMenuIndex === 1 ? theme.text : theme.dimText, children: [
+          state.approvalMenuIndex === 1 ? "\u25B6 " : "  ",
+          "Reject "
+        ] })
+      ] })
+    ] }),
+    state.pendingPlan && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Box, { flexDirection: "column", marginBottom: 1, padding: 1, borderStyle: "round", borderColor: "#30b8b8", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { bold: true, color: "#55ffff", children: "\u{1F4CB} PLAN APPROVAL" }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Text, { color: theme.secondary, children: [
+        " \u25C8 proposed plan ",
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: "#776633", children: " review before executing" })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Box, { marginTop: 1, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Text, { color: state.planMenuIndex === 0 ? theme.text : theme.dimText, children: [
+          state.planMenuIndex === 0 ? "\u25B6 " : "  ",
+          "Proceed "
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Text, { color: state.planMenuIndex === 1 ? theme.text : theme.dimText, children: [
+          state.planMenuIndex === 1 ? "\u25B6 " : "  ",
+          "Reject "
+        ] })
+      ] })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(PromptInput, {}),
+    state.telemetry.showContextBar && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Box, { marginTop: 1, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: theme.dimText, children: "model: " }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Text, { color: theme.primary, children: [
+        state.model.split("-")[0] || "provider",
+        " "
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: theme.dimText, children: "  ctx: " }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: ratio > 0.75 ? theme.error : theme.primary, children: ctxBarFill }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: theme.border, children: ctxBarEmpty }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: theme.dimText, children: "  sec: " }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: theme.primary, children: state.securityMode }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Box, { flexGrow: 1, justifyContent: "flex-end", children: /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: theme.border, children: "ctrl+x: stop | esc: menu | @: context | /: cmd" }) })
+    ] })
+  ] });
+}
+
+// src/cli/chat.tsx
+var import_jsx_runtime8 = require("react/jsx-runtime");
 function stripAnsi(str) {
   return str.replace(/\x1B\[[0-9;]*m/g, "");
 }
@@ -19747,15 +20188,15 @@ function renderDiffBlock(codeStr, diffWidth, isExpanded) {
       oldLineNum = parseInt(hunkMatch[1], 10);
       newLineNum = parseInt(hunkMatch[2], 10);
       inHunk = true;
-      output += import_chalk3.default.bgHex("#0a0a0a").hex("#555555")(padVisible(line, diffWidth)) + "\n";
+      output += import_chalk4.default.bgHex("#0a0a0a").hex("#555555")(padVisible(line, diffWidth)) + "\n";
       continue;
     }
     if (line.startsWith("+++") || line.startsWith("---")) {
-      output += import_chalk3.default.bgHex("#0a0a0a").hex("#555555")(padVisible(line, diffWidth)) + "\n";
+      output += import_chalk4.default.bgHex("#0a0a0a").hex("#555555")(padVisible(line, diffWidth)) + "\n";
       continue;
     }
     if (line.startsWith("... (")) {
-      output += import_chalk3.default.bgHex("#1a1a1a").hex("#f5c542")(padVisible(line, diffWidth)) + "\n";
+      output += import_chalk4.default.bgHex("#1a1a1a").hex("#f5c542")(padVisible(line, diffWidth)) + "\n";
       continue;
     }
     let linePrefix = "";
@@ -19834,36 +20275,36 @@ function renderDiffBlock(codeStr, diffWidth, isExpanded) {
     let charOffset = 0;
     subLines.forEach((sl, idx) => {
       const isFirst = idx === 0;
-      const numPart = isFirst ? import_chalk3.default.hex(lineNumColor)(numStr + " ") : "    ";
-      const prefixPart = isFirst ? import_chalk3.default.hex(lineNumColor)(linePrefix) : "  ";
+      const numPart = isFirst ? import_chalk4.default.hex(lineNumColor)(numStr + " ") : "    ";
+      const prefixPart = isFirst ? import_chalk4.default.hex(lineNumColor)(linePrefix) : "  ";
       let styledSl = "";
       if (highlightRanges.length > 0) {
         for (let c2 = 0; c2 < sl.length; c2++) {
           const globalIdx = charOffset + c2;
           const hRange = highlightRanges.find((r) => globalIdx >= r.start && globalIdx < r.end);
           if (hRange) {
-            styledSl += import_chalk3.default.bgHex(hRange.bg).hex(hRange.fg)(sl[c2]);
+            styledSl += import_chalk4.default.bgHex(hRange.bg).hex(hRange.fg)(sl[c2]);
           } else {
-            styledSl += import_chalk3.default.hex(fgColor)(sl[c2]);
+            styledSl += import_chalk4.default.hex(fgColor)(sl[c2]);
           }
         }
       } else {
-        styledSl = import_chalk3.default.hex(fgColor)(sl);
+        styledSl = import_chalk4.default.hex(fgColor)(sl);
       }
       charOffset += sl.length;
       const visibleLen = 4 + 2 + sl.length;
       const padLen = Math.max(0, diffWidth - visibleLen);
       const styledLine = numPart + prefixPart + styledSl + " ".repeat(padLen);
-      output += import_chalk3.default.bgHex(bgColor)(styledLine) + "\n";
+      output += import_chalk4.default.bgHex(bgColor)(styledLine) + "\n";
     });
   }
   return output + "\n";
 }
 function renderMarkdownWithOttoStyles(content, width, diffsExpanded) {
   content = content.replace(/\r/g, "");
-  content = content.replace(/\*\*(.+?)\*\*/g, (_m, p1) => import_chalk3.default.white.bold(p1));
+  content = content.replace(/\*\*(.+?)\*\*/g, (_m, p1) => import_chalk4.default.white.bold(p1));
   content = content.replace(/^(#{1,6})\s+(.+)$/gm, (_m, hashes, text) => {
-    return import_chalk3.default.hex("#f5c542").bold(text);
+    return import_chalk4.default.hex("#f5c542").bold(text);
   });
   const diffWidth = Math.max(48, Math.min(width, 96));
   const placeholders = [];
@@ -19879,7 +20320,7 @@ function renderMarkdownWithOttoStyles(content, width, diffsExpanded) {
         let output = "\n";
         const lines = codeStr.replace(/\n$/, "").split("\n");
         lines.forEach((line) => {
-          output += import_chalk3.default.bgHex("#0F172A").hex("#CBD5E1")(padVisible(` ${line}`, diffWidth)) + "\n";
+          output += import_chalk4.default.bgHex("#0F172A").hex("#CBD5E1")(padVisible(` ${line}`, diffWidth)) + "\n";
         });
         const key = `\0DIFF${placeholders.length}\0`;
         placeholders.push(output + "\n");
@@ -19891,10 +20332,10 @@ function renderMarkdownWithOttoStyles(content, width, diffsExpanded) {
   myMarked.use((0, import_marked_terminal2.markedTerminal)({
     width,
     reflowText: true,
-    codespan: import_chalk3.default.hex("#F5C400"),
-    strong: import_chalk3.default.white.bold,
-    em: import_chalk3.default.italic,
-    heading: import_chalk3.default.white.bold
+    codespan: import_chalk4.default.hex("#F5C400"),
+    strong: import_chalk4.default.white.bold,
+    em: import_chalk4.default.italic,
+    heading: import_chalk4.default.white.bold
   }));
   const parsed = myMarked.parse(withPlaceholders);
   return parsed.replace(/\u0000DIFF(\d+)\u0000/g, (_m, idx) => placeholders[Number(idx)]);
@@ -19908,9 +20349,9 @@ var ChatUI = class {
   notification = "";
   notificationType = "success";
   notificationTimeout;
-  BRAND = import_chalk3.default.hex("#F5C400");
-  DIM = import_chalk3.default.hex("#374151");
-  MUTED = import_chalk3.default.hex("#6B7280");
+  BRAND = import_chalk4.default.hex("#F5C400");
+  DIM = import_chalk4.default.hex("#374151");
+  MUTED = import_chalk4.default.hex("#6B7280");
   AI_TAG = this.BRAND.bold;
   listeners = [];
   currentData = null;
@@ -20005,7 +20446,7 @@ function translateInkKey(input2, key) {
   };
 }
 function ChatUIInput({ chatUI }) {
-  (0, import_ink2.useInput)((input2, key) => {
+  (0, import_ink6.useInput)((input2, key) => {
     const handler = chatUI.getKeyHandler();
     if (handler) {
       const translatedKey = translateInkKey(input2, key);
@@ -20014,90 +20455,12 @@ function ChatUIInput({ chatUI }) {
   });
   return null;
 }
-var ToolBlock = import_react2.default.memo(({ tool: tool5 }) => {
-  const isRunning = tool5.status === "running";
-  const isError = tool5.status === "error";
-  const icon = isError ? "\u2717" : isRunning ? "\u25CF" : "\u2713";
-  const statusColor = isRunning ? "#d4b43f" : isError ? "#8a3a3a" : "#7a6a1a";
-  const statusBg = isRunning ? "#1a1500" : isError ? "#1a0a0a" : "#161407";
-  const statusText = isRunning ? " \u25CF running " : isError ? " \u2717 error " : " \u2713 done ";
-  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { flexDirection: "column", borderStyle: "single", borderLeft: true, borderRight: false, borderTop: false, borderBottom: false, borderColor: statusColor, paddingLeft: 1, marginBottom: 1, marginLeft: 2, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { justifyContent: "space-between", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { children: /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Text, { backgroundColor: statusBg, color: statusColor, bold: true, children: [
-        " ",
-        icon,
-        " ",
-        tool5.name,
-        " "
-      ] }) }),
-      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { backgroundColor: statusBg, color: statusColor, dimColor: true, children: statusText })
-    ] }),
-    tool5.args && Object.keys(tool5.args).length > 0 && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Box, { marginTop: 0, flexDirection: "column", children: Object.entries(tool5.args).map(([k, v]) => {
-      const valStr = typeof v === "object" ? JSON.stringify(v) : String(v);
-      return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Text, { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Text, { color: "#6a6040", children: [
-          k,
-          ": "
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Text, { color: "#c9a800", children: [
-          '"',
-          valStr.replace(/\r/g, ""),
-          '"'
-        ] })
-      ] }, k);
-    }) }),
-    !isRunning && tool5.rawOutput && /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { flexDirection: "column", marginTop: 0, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: "#2a2000", children: "\u2500".repeat(50) }),
-      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: isError ? "#8a3a3a" : "#3d3310", children: isError ? "ERROR" : "OUTPUT" }),
-      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Text, { color: "#7a6a3a", dimColor: true, children: [
-        tool5.rawOutput.replace(/\r/g, "").substring(0, 500),
-        tool5.rawOutput.length > 500 ? "..." : ""
-      ] })
-    ] })
-  ] });
-}, (prev, next) => {
-  if (!prev.tool || !next.tool) return false;
-  return prev.tool.name === next.tool.name && prev.tool.status === next.tool.status && prev.tool.rawOutput === next.tool.rawOutput && JSON.stringify(prev.tool.args || {}) === JSON.stringify(next.tool.args || {});
-});
-var AgentMessage = import_react2.default.memo(({ msg, isThinking, diffsExpanded, width }) => {
-  let rawContent = msg;
-  let thinkBlock = null;
-  const thinkMatch = rawContent.match(/<(?:think|thought)>([\s\S]*?)(?:<\/(?:think|thought)>|$)/);
-  if (thinkMatch) {
-    rawContent = rawContent.replace(/<(?:think|thought)>[\s\S]*?(?:<\/(?:think|thought)>|$)/, "").trim();
-    const thinkLines = thinkMatch[1].trim().split("\n");
-    thinkBlock = diffsExpanded ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Box, { flexDirection: "column", marginBottom: 1, children: thinkLines.map((l, i) => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: "#f5c542", backgroundColor: "#161407", children: l }, i)) }) : /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Box, { marginBottom: 1, children: /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Text, { color: "#f5c542", backgroundColor: "#161407", children: [
-      "[ Reasoning Process (",
-      thinkLines.length,
-      " lines) - Press Ctrl+E to Expand ]"
-    ] }) });
-  }
-  rawContent = rawContent.replace(/```(?:json)?[\s\S]*?```/g, (m) => m.includes('"name"') && m.includes("arguments") ? "" : m);
-  rawContent = rawContent.replace(/\{[^{}]*"name"[\s\S]*?(?:"arguments"[\s\S]*?\}|$)/g, "");
-  rawContent = rawContent.replace(/^[\s}]+$/gm, "");
-  rawContent = rawContent.replace(/\n{3,}/g, "\n\n");
-  rawContent = rawContent.trim();
-  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { flexDirection: "column", marginBottom: 1, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Box, { marginBottom: 0, children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { backgroundColor: "#161407", color: "#d4b43f", bold: true, children: " O.T.T.O " }) }),
-    thinkBlock,
-    msg.includes("<think>") && !msg.includes("</think>") && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Box, { paddingLeft: 1, marginTop: 1, children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: "#f5c542", backgroundColor: "#161407", children: " [ Thinking... ] " }) }),
-    rawContent && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Box, { paddingLeft: 1, paddingTop: 1, children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: "#d4d4d4", children: renderMarkdownWithOttoStyles(rawContent.replace(/`([^`]+)`/g, (_m, p1) => import_chalk3.default.hex("#f5c542")(p1)), Math.max(10, width - 4), diffsExpanded).trim() }) })
-  ] });
-}, (prev, next) => {
-  return prev.msg === next.msg && prev.isThinking === next.isThinking && prev.diffsExpanded === next.diffsExpanded && prev.width === next.width;
-});
-var UserMessage = import_react2.default.memo(({ msg }) => {
-  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { flexDirection: "column", alignItems: "flex-end", marginBottom: 1, width: "100%", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { backgroundColor: "#1c1c1c", color: "#888888", children: " you " }),
-    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Box, { paddingLeft: 1, paddingRight: 1, children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: "#f0f0f0", children: msg.trim() }) })
-  ] });
-}, (prev, next) => prev.msg === next.msg);
 function ChatUIApp({ chatUI }) {
-  const [, forceUpdate] = (0, import_react2.useState)(0);
-  (0, import_react2.useEffect)(() => {
+  const [, forceUpdate] = (0, import_react6.useState)(0);
+  (0, import_react6.useEffect)(() => {
     return chatUI.subscribe(() => forceUpdate((prev) => prev + 1));
   }, [chatUI]);
-  (0, import_react2.useEffect)(() => {
+  (0, import_react6.useEffect)(() => {
     const handleResize = () => {
       chatUI.notify();
     };
@@ -20106,118 +20469,16 @@ function ChatUIApp({ chatUI }) {
       process.stdout.off("resize", handleResize);
     };
   }, [chatUI]);
-  if (!chatUI.currentData) return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Box, { children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { children: "Loading..." }) });
-  const {
-    messages,
-    currentInput,
-    telemetry,
-    model,
-    isThinking,
-    pendingPlan,
-    planMenuIndex,
-    diffsExpanded,
-    delayMessage,
-    pendingApproval,
-    approvalMenuIndex,
-    securityMode,
-    autocompleteState
-  } = chatUI.currentData;
-  const isTTY = !!(process.stdin && process.stdin.isTTY);
-  const ratio = telemetry.ctxMax > 0 ? Math.min(telemetry.ctxUsed / telemetry.ctxMax, 1) : 0;
-  const fill = Math.round(ratio * 7);
-  const ctxBarFill = "\u25A0".repeat(fill);
-  const ctxBarEmpty = "\u25A0".repeat(7 - fill);
-  const winHeight = process.stdout.rows || 24;
-  const winWidth = process.stdout.columns || 80;
-  const startIndex = Math.max(0, messages.length - (winHeight > 20 ? 15 : 5) - chatUI.scrollOffset);
-  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { flexDirection: "column", height: winHeight - 1, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { marginBottom: 1, borderStyle: "single", borderTop: false, borderLeft: false, borderRight: false, borderColor: "#1a1a1a", paddingBottom: 1, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: "#f5c542", children: "\u25CF " }),
-      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Text, { color: "#333333", children: [
-        "active session   model: ",
-        model,
-        "   tokens: ",
-        telemetry.ctxUsed
-      ] })
-    ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Box, { flexDirection: "column", flexGrow: 1, flexShrink: 1, overflow: "hidden", children: /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { flexDirection: "column", marginTop: 0, children: [
-      messages.slice(startIndex, messages.length - chatUI.scrollOffset).map((msg, i) => /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { flexDirection: "column", children: [
-        msg.role === "system" && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: "#555555", children: msg.content }),
-        msg.role === "tool" && msg.toolInfo && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(ToolBlock, { tool: msg.toolInfo }),
-        msg.toolCalls && msg.toolCalls.length > 0 && msg.state === "tools" && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Box, { flexDirection: "column", children: msg.toolCalls.map((tc, j) => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(ToolBlock, { tool: { name: tc.name, args: tc.args, status: "running" } }, j)) }),
-        msg.role === "user" && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(UserMessage, { msg: msg.content }),
-        msg.role === "ai" && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(AgentMessage, { msg: msg.content, isThinking, diffsExpanded, width: winWidth })
-      ] }, msg.id || startIndex + i)),
-      isThinking && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(AgentMessage, { msg: "<think>Thinking...</think>", isThinking: true, diffsExpanded, width: winWidth }),
-      delayMessage && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(AgentMessage, { msg: delayMessage + "...", isThinking, diffsExpanded, width: winWidth })
-    ] }) }),
-    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { flexDirection: "column", children: [
-      pendingApproval && /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { flexDirection: "column", marginBottom: 1, padding: 1, borderStyle: "round", borderColor: "#b83030", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { bold: true, color: "#ff5555", children: "\u26A0 COMMAND APPROVAL" }),
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Text, { color: "#d4b43f", children: [
-          " \u26A1 run bash command ",
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: "#776633", children: " requires approval" })
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { paddingLeft: 1, marginY: 1, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: "#554422", children: "COMMAND: " }),
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: "#f5c542", children: pendingApproval.commandStr })
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Box, { children: [{ label: "allow for now", key: "y" }, { label: "allow always", key: "a" }, { label: "reject", key: "n" }].map((item, idx) => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Box, { marginRight: 2, children: /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Text, { color: idx === approvalMenuIndex ? "#f5c542" : "#555555", bold: idx === approvalMenuIndex, children: [
-          idx === approvalMenuIndex ? "\u276F " : "  ",
-          "[",
-          item.key,
-          "] ",
-          item.label
-        ] }) }, item.key)) })
-      ] }),
-      pendingPlan && /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { flexDirection: "column", marginBottom: 1, padding: 1, borderStyle: "round", borderColor: "#30b8b8", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { bold: true, color: "#55ffff", children: "\u{1F4CB} PLAN APPROVAL" }),
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Text, { color: "#d4b43f", children: [
-          " \u25C8 proposed plan ",
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: "#776633", children: " review before executing" })
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Box, { marginTop: 1, children: [{ label: "approve plan", key: "\u21B5" }, { label: "edit plan", key: "e" }, { label: "cancel", key: "n" }].map((item, idx) => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Box, { marginRight: 2, children: /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Text, { color: idx === planMenuIndex ? "#f5c542" : "#555555", bold: idx === planMenuIndex, children: [
-          idx === planMenuIndex ? "\u276F " : "  ",
-          "[",
-          item.key,
-          "] ",
-          item.label
-        ] }) }, item.key)) })
-      ] }),
-      autocompleteState && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Box, { flexDirection: "column", padding: 1, borderStyle: "single", borderTop: true, borderBottom: false, borderLeft: true, borderRight: false, borderColor: "#f5c542", width: "50%", children: autocompleteState.matches.map((match, idx) => /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Text, { color: idx === autocompleteState.matchIdx ? "#f5c542" : "#888888", bold: idx === autocompleteState.matchIdx, children: [
-        idx === autocompleteState.matchIdx ? "\u276F " : "  ",
-        match
-      ] }, match)) }),
-      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { borderStyle: "single", borderTop: true, borderLeft: false, borderRight: false, borderBottom: false, borderColor: "#f5c542", paddingTop: 1, flexDirection: "column", flexShrink: 0, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: "#f5c542", bold: true, children: " \u203A " }),
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: "#ffffff", children: currentInput }),
-          !isThinking && !pendingApproval && !pendingPlan && !delayMessage && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { backgroundColor: Math.floor(Date.now() / 1e3) % 2 === 0 ? "#f5c542" : "transparent", children: " " }),
-          currentInput.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: isThinking || telemetry.isStreaming ? "#ef4444" : "#444444", dimColor: true, children: isThinking || telemetry.isStreaming ? "Press [Ctrl+X] to terminate" : "Type your message..." })
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { justifyContent: "space-between", marginTop: 1, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Box, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: "#888888", children: "model: " }),
-            /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_ink2.Text, { color: "#f5c542", children: [
-              model.split("-")[0] || "provider",
-              " "
-            ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: "#888888", children: "  ctx: " }),
-            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: ratio > 0.75 ? "#ff6b6b" : "#f5c542", children: ctxBarFill }),
-            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: "#333333", children: ctxBarEmpty }),
-            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: "#888888", children: "  sec: " }),
-            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: "#f5c542", children: securityMode })
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Box, { children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_ink2.Text, { color: "#333333", children: "ctrl+x: stop | esc: menu | @: context | /: cmd" }) })
-        ] })
-      ] })
-    ] }),
-    isTTY && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(ChatUIInput, { chatUI })
-  ] });
+  if (!chatUI.currentData) return /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(import_ink6.Box, { children: /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(import_ink6.Text, { children: "Loading..." }) });
+  return /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(ThemeProvider, { children: /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(SessionProvider, { externalState: chatUI.currentData, children: /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(DialogProvider, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(SessionView, { chatUI }),
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(DialogRenderer, {}),
+    !!(process.stdin && process.stdin.isTTY) && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(ChatUIInput, { chatUI })
+  ] }) }) });
 }
 
 // src/cli/views/taskBoard.tsx
-var import_chalk5 = __toESM(require("chalk"), 1);
+var import_chalk6 = __toESM(require("chalk"), 1);
 var import_fs11 = __toESM(require("fs"), 1);
 var import_path11 = __toESM(require("path"), 1);
 var import_prompts3 = require("@inquirer/prompts");
@@ -20225,7 +20486,7 @@ init_ui();
 
 // src/cli/prompt.ts
 var readline = __toESM(require("readline"), 1);
-var import_chalk4 = __toESM(require("chalk"), 1);
+var import_chalk5 = __toESM(require("chalk"), 1);
 async function promptWithEscape(message, initialValue = "") {
   return new Promise((resolve) => {
     readline.emitKeypressEvents(process.stdin);
@@ -20235,8 +20496,8 @@ async function promptWithEscape(message, initialValue = "") {
     let value = initialValue;
     const render = () => {
       process.stdout.write("\x1B[0;0H\x1B[J");
-      process.stdout.write(import_chalk4.default.yellow(`${message} `) + import_chalk4.default.white(value) + import_chalk4.default.hex("#F5C400")("\u2588"));
-      process.stdout.write(import_chalk4.default.dim("\n\nEsc to cancel, Enter to confirm"));
+      process.stdout.write(import_chalk5.default.yellow(`${message} `) + import_chalk5.default.white(value) + import_chalk5.default.hex("#F5C400")("\u2588"));
+      process.stdout.write(import_chalk5.default.dim("\n\nEsc to cancel, Enter to confirm"));
     };
     const cleanup = (result) => {
       process.stdin.removeListener("keypress", onKeypress);
@@ -20305,21 +20566,21 @@ function createTaskBoardView(phone) {
 `);
         if (items.length === 0) {
           const paddedEmpty = "Empty".padEnd(W - 4, " ");
-          str += color(`\u2502 `) + import_chalk5.default.dim(paddedEmpty) + color(` \u2502
+          str += color(`\u2502 `) + import_chalk6.default.dim(paddedEmpty) + color(` \u2502
 `);
         }
         items.forEach((t) => {
           let truncTitle = t.title.length > W - 6 ? t.title.substring(0, W - 9) + "..." : t.title;
           const paddedText = ("\u25CF " + truncTitle).padEnd(W - 4, " ");
-          str += color(`\u2502 `) + import_chalk5.default.white(paddedText) + color(` \u2502
+          str += color(`\u2502 `) + import_chalk6.default.white(paddedText) + color(` \u2502
 `);
         });
         str += color(`\u2514${"\u2500".repeat(W - 2)}\u2518`);
         return str.split("\n");
       };
-      const c1 = formatCol("TODO", import_chalk5.default.hex("#94a3b8"), todo);
-      const c2 = formatCol("IN PROGRESS", import_chalk5.default.hex("#F5C400"), inprog);
-      const c3 = formatCol("DONE", import_chalk5.default.hex("#4ade80"), done);
+      const c1 = formatCol("TODO", import_chalk6.default.hex("#94a3b8"), todo);
+      const c2 = formatCol("IN PROGRESS", import_chalk6.default.hex("#F5C400"), inprog);
+      const c3 = formatCol("DONE", import_chalk6.default.hex("#4ade80"), done);
       const lines = Math.max(c1.length, c2.length, c3.length);
       for (let i = 0; i < lines; i++) {
         const l1 = c1[i] || " ".repeat(W + 1);
@@ -20400,7 +20661,7 @@ function createTaskBoardView(phone) {
 }
 
 // src/cli/views/fileTree.tsx
-var import_chalk6 = __toESM(require("chalk"), 1);
+var import_chalk7 = __toESM(require("chalk"), 1);
 var import_fs12 = __toESM(require("fs"), 1);
 var import_path12 = __toESM(require("path"), 1);
 init_ui();
@@ -20427,24 +20688,24 @@ function createFilePreviewView(phone, filePath) {
     renderBody: () => {
       try {
         if (!isLikelyTextFile3(filePath)) {
-          console.log("  " + import_chalk6.default.red("Cannot preview binary file."));
+          console.log("  " + import_chalk7.default.red("Cannot preview binary file."));
           return;
         }
         const allLines = import_fs12.default.readFileSync(filePath, "utf8").split(/\r?\n/);
         const previewLines = allLines.slice(0, 20);
         const lineNoWidth = String(Math.min(allLines.length, 20)).length;
-        console.log(import_chalk6.default.yellow(`  --- ${fileName} first 20 lines ---`));
+        console.log(import_chalk7.default.yellow(`  --- ${fileName} first 20 lines ---`));
         console.log("");
         previewLines.forEach((line, index) => {
           const lineNo = String(index + 1).padStart(lineNoWidth, " ");
-          console.log("  " + import_chalk6.default.dim(lineNo + " | ") + import_chalk6.default.white(line));
+          console.log("  " + import_chalk7.default.dim(lineNo + " | ") + import_chalk7.default.white(line));
         });
         if (allLines.length > 20) {
           console.log("");
-          console.log("  " + import_chalk6.default.dim(`... truncated, ${allLines.length - 20} more lines`));
+          console.log("  " + import_chalk7.default.dim(`... truncated, ${allLines.length - 20} more lines`));
         }
       } catch {
-        console.log("  " + import_chalk6.default.red("Cannot read file."));
+        console.log("  " + import_chalk7.default.red("Cannot read file."));
       }
       console.log("");
     },
@@ -20475,7 +20736,7 @@ function createFileTreeView(phone, dir) {
     title: "Project Explorer",
     subtitle: "Visual Project File Management",
     renderBody: () => {
-      console.log(import_chalk6.default.hex("#64748b")("  Directory: ") + import_chalk6.default.white.bold(currentDir));
+      console.log(import_chalk7.default.hex("#64748b")("  Directory: ") + import_chalk7.default.white.bold(currentDir));
       console.log("");
     },
     options: [
@@ -20487,7 +20748,7 @@ function createFileTreeView(phone, dir) {
         } catch (e) {
         }
         return {
-          label: isDir ? import_chalk6.default.blue.bold(`\u{1F4C1} ${item}/`) : import_chalk6.default.white(`\u{1F4C4} ${item}`),
+          label: isDir ? import_chalk7.default.blue.bold(`\u{1F4C1} ${item}/`) : import_chalk7.default.white(`\u{1F4C4} ${item}`),
           action: async () => {
             if (isDir) {
               phone.pushView(createFileTreeView(phone, p));
@@ -20502,7 +20763,7 @@ function createFileTreeView(phone, dir) {
                     action: () => phone.pushView(createFilePreviewView(phone, p))
                   },
                   {
-                    label: import_chalk6.default.red("Delete File"),
+                    label: import_chalk7.default.red("Delete File"),
                     action: async () => {
                       phone.active = false;
                       ui.clearScreen();
@@ -20526,7 +20787,7 @@ function createFileTreeView(phone, dir) {
         };
       }),
       {
-        label: import_chalk6.default.green("+ Create File"),
+        label: import_chalk7.default.green("+ Create File"),
         action: async () => {
           phone.active = false;
           ui.clearScreen();
@@ -20545,7 +20806,7 @@ function createFileTreeView(phone, dir) {
         }
       },
       {
-        label: import_chalk6.default.green("+ Create Folder"),
+        label: import_chalk7.default.green("+ Create Folder"),
         action: async () => {
           phone.active = false;
           ui.clearScreen();
@@ -20569,7 +20830,7 @@ function createFileTreeView(phone, dir) {
 }
 
 // src/cli/views/gitPanel.tsx
-var import_chalk7 = __toESM(require("chalk"), 1);
+var import_chalk8 = __toESM(require("chalk"), 1);
 var import_child_process2 = require("child_process");
 init_ui();
 function git(cmd) {
@@ -20633,26 +20894,26 @@ function colorizeGraph(raw) {
       const ch = graphRaw[i];
       switch (ch) {
         case "*": {
-          coloredGraph += import_chalk7.default.hex(nodeColor).bold("\u25CF");
+          coloredGraph += import_chalk8.default.hex(nodeColor).bold("\u25CF");
           break;
         }
         case "|": {
           const col = posToColor.get(i);
           const c2 = col !== void 0 ? BRANCH_COLORS[col] : "#4B5563";
-          coloredGraph += import_chalk7.default.hex(c2)("\u2502");
+          coloredGraph += import_chalk8.default.hex(c2)("\u2502");
           break;
         }
         case "/":
-          coloredGraph += import_chalk7.default.hex("#6B7280")("\u2571");
+          coloredGraph += import_chalk8.default.hex("#6B7280")("\u2571");
           break;
         case "\\":
-          coloredGraph += import_chalk7.default.hex("#6B7280")("\u2572");
+          coloredGraph += import_chalk8.default.hex("#6B7280")("\u2572");
           break;
         case "-":
-          coloredGraph += import_chalk7.default.hex("#374151")("\u2500");
+          coloredGraph += import_chalk8.default.hex("#374151")("\u2500");
           break;
         case "_":
-          coloredGraph += import_chalk7.default.hex("#374151")("\u254C");
+          coloredGraph += import_chalk8.default.hex("#374151")("\u254C");
           break;
         default:
           coloredGraph += ch;
@@ -20669,23 +20930,23 @@ function colorizeGraph(raw) {
           const parts = inner.split(", ").map((ref) => {
             if (ref.startsWith("HEAD ->")) {
               const b = ref.slice("HEAD -> ".length);
-              return import_chalk7.default.bold.white("HEAD") + import_chalk7.default.dim(" \u2192 ") + import_chalk7.default.hex("#22C55E").bold(b);
+              return import_chalk8.default.bold.white("HEAD") + import_chalk8.default.dim(" \u2192 ") + import_chalk8.default.hex("#22C55E").bold(b);
             }
-            if (ref === "HEAD") return import_chalk7.default.bold.white("HEAD");
-            if (ref.startsWith("tag:")) return import_chalk7.default.hex("#EC4899")(ref);
-            if (ref.includes("/")) return import_chalk7.default.hex("#F59E0B")(ref);
-            return import_chalk7.default.hex("#56CFE1")(ref);
+            if (ref === "HEAD") return import_chalk8.default.bold.white("HEAD");
+            if (ref.startsWith("tag:")) return import_chalk8.default.hex("#EC4899")(ref);
+            if (ref.includes("/")) return import_chalk8.default.hex("#F59E0B")(ref);
+            return import_chalk8.default.hex("#56CFE1")(ref);
           });
-          return import_chalk7.default.dim("(") + parts.join(import_chalk7.default.dim(", ")) + import_chalk7.default.dim(")");
+          return import_chalk8.default.dim("(") + parts.join(import_chalk8.default.dim(", ")) + import_chalk8.default.dim(")");
         });
         const hasRefs = payload.includes("(");
-        const msgPart = hasRefs ? coloredPayload.replace(/\(.*?\)\s*/g, (m2) => m2) : import_chalk7.default.hex("#D1D5DB")(coloredPayload);
-        coloredInfo = " " + import_chalk7.default.hex("#F5C400")(hash2) + " " + (hasRefs ? coloredPayload.replace(
+        const msgPart = hasRefs ? coloredPayload.replace(/\(.*?\)\s*/g, (m2) => m2) : import_chalk8.default.hex("#D1D5DB")(coloredPayload);
+        coloredInfo = " " + import_chalk8.default.hex("#F5C400")(hash2) + " " + (hasRefs ? coloredPayload.replace(
           /^(\(.*?\))\s*/,
-          (_, refs) => refs + " " + import_chalk7.default.hex("#D1D5DB")(payload.replace(/^\(.*?\)\s*/, ""))
-        ) : import_chalk7.default.hex("#D1D5DB")(payload));
+          (_, refs) => refs + " " + import_chalk8.default.hex("#D1D5DB")(payload.replace(/^\(.*?\)\s*/, ""))
+        ) : import_chalk8.default.hex("#D1D5DB")(payload));
       } else {
-        coloredInfo = " " + import_chalk7.default.hex("#4B5563")(infoRaw.trim());
+        coloredInfo = " " + import_chalk8.default.hex("#4B5563")(infoRaw.trim());
       }
     }
     return coloredGraph + coloredInfo;
@@ -20697,7 +20958,7 @@ function createGitGraphView(phone, page = 0) {
       id: "git_graph",
       title: "Commit Graph",
       renderBody: () => {
-        console.log("  " + import_chalk7.default.red("Not a git repository."));
+        console.log("  " + import_chalk8.default.red("Not a git repository."));
       },
       options: [{ label: "Go Back", action: () => phone.goBack() }]
     };
@@ -20711,7 +20972,7 @@ function createGitGraphView(phone, page = 0) {
       id: "git_graph",
       title: "Commit Graph",
       renderBody: () => {
-        console.log("  " + import_chalk7.default.red("Error: " + e.message));
+        console.log("  " + import_chalk8.default.red("Error: " + e.message));
       },
       options: [{ label: "Go Back", action: () => phone.goBack() }]
     };
@@ -20725,7 +20986,7 @@ function createGitGraphView(phone, page = 0) {
   const navOptions = [];
   if (clampedPage > 0) {
     navOptions.push({
-      label: import_chalk7.default.hex("#56CFE1")("\u2191 Older commits"),
+      label: import_chalk8.default.hex("#56CFE1")("\u2191 Older commits"),
       action: () => {
         phone.goBack();
         phone.pushView(createGitGraphView(phone, clampedPage - 1));
@@ -20734,7 +20995,7 @@ function createGitGraphView(phone, page = 0) {
   }
   if (clampedPage < totalPages - 1) {
     navOptions.push({
-      label: import_chalk7.default.hex("#56CFE1")("\u2193 Newer commits"),
+      label: import_chalk8.default.hex("#56CFE1")("\u2193 Newer commits"),
       action: () => {
         phone.goBack();
         phone.pushView(createGitGraphView(phone, clampedPage + 1));
@@ -20748,15 +21009,15 @@ function createGitGraphView(phone, page = 0) {
     subtitle: `Page ${clampedPage + 1}/${totalPages}   \u25CF = commit   \u2500\u2500\u2500 = branch   \u2571\u2572 = merge/split`,
     renderBody: () => {
       console.log(
-        "  " + import_chalk7.default.hex("#F5C400")("\u25A0") + import_chalk7.default.hex("#6B7280")(" hash  ") + import_chalk7.default.hex("#22C55E")("\u25A0") + import_chalk7.default.hex("#6B7280")(" local-branch  ") + import_chalk7.default.hex("#F59E0B")("\u25A0") + import_chalk7.default.hex("#6B7280")(" remote  ") + import_chalk7.default.hex("#EC4899")("\u25A0") + import_chalk7.default.hex("#6B7280")(" tag")
+        "  " + import_chalk8.default.hex("#F5C400")("\u25A0") + import_chalk8.default.hex("#6B7280")(" hash  ") + import_chalk8.default.hex("#22C55E")("\u25A0") + import_chalk8.default.hex("#6B7280")(" local-branch  ") + import_chalk8.default.hex("#F59E0B")("\u25A0") + import_chalk8.default.hex("#6B7280")(" remote  ") + import_chalk8.default.hex("#EC4899")("\u25A0") + import_chalk8.default.hex("#6B7280")(" tag")
       );
-      console.log("  " + import_chalk7.default.hex("#374151")("\u2500".repeat(Math.min((process.stdout.columns || 80) - 4, 90))));
+      console.log("  " + import_chalk8.default.hex("#374151")("\u2500".repeat(Math.min((process.stdout.columns || 80) - 4, 90))));
       console.log("");
       slice.forEach((line) => {
         console.log("  " + line);
       });
       if (rawLines.length === 0) {
-        console.log("  " + import_chalk7.default.dim("No commits found."));
+        console.log("  " + import_chalk8.default.dim("No commits found."));
       }
       console.log("");
     },
@@ -20777,7 +21038,7 @@ function createGitPanelView(phone) {
     subtitle: "Version Control & Branches",
     renderBody: () => {
       if (!isRepo()) {
-        console.log("  " + import_chalk7.default.red("Not a git repository or git is not installed."));
+        console.log("  " + import_chalk8.default.red("Not a git repository or git is not installed."));
         return;
       }
       try {
@@ -20798,38 +21059,38 @@ function createGitPanelView(phone) {
           }
         })();
         console.log(
-          import_chalk7.default.hex("#64748b")("  Branch: ") + import_chalk7.default.green.bold(branch) + (hash2 ? import_chalk7.default.hex("#64748b")(`  (${hash2})`) : "")
+          import_chalk8.default.hex("#64748b")("  Branch: ") + import_chalk8.default.green.bold(branch) + (hash2 ? import_chalk8.default.hex("#64748b")(`  (${hash2})`) : "")
         );
         console.log(
-          import_chalk7.default.hex("#64748b")("  Ahead: ") + import_chalk7.default.yellow(ahead) + import_chalk7.default.hex("#64748b")("   Behind: ") + import_chalk7.default.cyan(behind)
+          import_chalk8.default.hex("#64748b")("  Ahead: ") + import_chalk8.default.yellow(ahead) + import_chalk8.default.hex("#64748b")("   Behind: ") + import_chalk8.default.cyan(behind)
         );
         console.log("");
         const status = git("status -s");
         if (!status) {
-          console.log("  " + import_chalk7.default.dim("\u2714 Working tree clean."));
+          console.log("  " + import_chalk8.default.dim("\u2714 Working tree clean."));
         } else {
-          console.log("  " + import_chalk7.default.white.bold("Changed Files"));
+          console.log("  " + import_chalk8.default.white.bold("Changed Files"));
           status.split("\n").forEach((line) => {
             const xy = line.substring(0, 2);
             const file2 = line.substring(3);
             const index = xy[0];
             const work = xy[1];
-            const stageColor = index === "A" || index === "M" || index === "R" || index === "C" ? import_chalk7.default.green : index === "D" ? import_chalk7.default.red : import_chalk7.default.hex("#6B7280");
-            const workColor = work === "M" ? import_chalk7.default.yellow : work === "D" ? import_chalk7.default.red : work === "?" ? import_chalk7.default.hex("#F59E0B") : import_chalk7.default.hex("#6B7280");
+            const stageColor = index === "A" || index === "M" || index === "R" || index === "C" ? import_chalk8.default.green : index === "D" ? import_chalk8.default.red : import_chalk8.default.hex("#6B7280");
+            const workColor = work === "M" ? import_chalk8.default.yellow : work === "D" ? import_chalk8.default.red : work === "?" ? import_chalk8.default.hex("#F59E0B") : import_chalk8.default.hex("#6B7280");
             console.log(
-              "    " + stageColor(index) + workColor(work) + " " + import_chalk7.default.white(file2)
+              "    " + stageColor(index) + workColor(work) + " " + import_chalk8.default.white(file2)
             );
           });
         }
         console.log("");
       } catch (e) {
-        console.log("  " + import_chalk7.default.red("git error: " + e.message));
+        console.log("  " + import_chalk8.default.red("git error: " + e.message));
       }
     },
     options: [
       // ── Commit Graph ───────────────────────────────────────────────────────
       {
-        label: import_chalk7.default.hex("#9D4EDD")("\u25C8") + "  Commit Graph",
+        label: import_chalk8.default.hex("#9D4EDD")("\u25C8") + "  Commit Graph",
         description: "Visual branch/commit history with colour-coded nodes",
         action: () => phone.pushView(createGitGraphView(phone, 0))
       },
@@ -20861,7 +21122,7 @@ function createGitPanelView(phone) {
               ...files.map((f) => {
                 const index = f.xy[0];
                 const isStaged = index !== " " && index !== "?";
-                const tag = isStaged ? import_chalk7.default.green("[staged]  ") : import_chalk7.default.yellow("[unstaged]");
+                const tag = isStaged ? import_chalk8.default.green("[staged]  ") : import_chalk8.default.yellow("[unstaged]");
                 return {
                   label: `${tag} ${f.file}`,
                   action: async () => {
@@ -20927,8 +21188,8 @@ function createGitPanelView(phone) {
             phone.render();
             return;
           }
-          console.log(import_chalk7.default.hex("#56CFE1")("Staged files:"));
-          staged.split("\n").forEach((f) => console.log("  " + import_chalk7.default.green("+") + " " + f));
+          console.log(import_chalk8.default.hex("#56CFE1")("Staged files:"));
+          staged.split("\n").forEach((f) => console.log("  " + import_chalk8.default.green("+") + " " + f));
           console.log("");
           const msg = await promptWithEscape("Commit message:");
           if (msg && msg.trim()) {
@@ -20954,7 +21215,7 @@ function createGitPanelView(phone) {
           ui.clearScreen();
           try {
             const branch = git("branch --show-current");
-            console.log(import_chalk7.default.hex("#6B7280")(`Pushing ${branch} to origin\u2026`));
+            console.log(import_chalk8.default.hex("#6B7280")(`Pushing ${branch} to origin\u2026`));
             const out = (0, import_child_process2.execSync)(`git push origin "${branch}"`, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
             ui.success("Pushed successfully.\n" + out.trim());
           } catch (e) {
@@ -20974,7 +21235,7 @@ function createGitPanelView(phone) {
           phone.active = false;
           ui.clearScreen();
           try {
-            console.log(import_chalk7.default.hex("#6B7280")("Pulling\u2026"));
+            console.log(import_chalk8.default.hex("#6B7280")("Pulling\u2026"));
             const out = (0, import_child_process2.execSync)("git pull", { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
             ui.success("Pulled.\n" + out.trim());
           } catch (e) {
@@ -21009,7 +21270,7 @@ function createGitPanelView(phone) {
                 } catch {
                 }
                 return {
-                  label: (current ? import_chalk7.default.green("* ") : "  ") + b,
+                  label: (current ? import_chalk8.default.green("* ") : "  ") + b,
                   action: async () => {
                     if (current) return;
                     phone.active = false;
@@ -21115,7 +21376,7 @@ function createGitPanelView(phone) {
 }
 
 // src/cli/views/commandPalette.ts
-var import_chalk8 = __toESM(require("chalk"), 1);
+var import_chalk9 = __toESM(require("chalk"), 1);
 init_ui();
 function createCommandPaletteView(phone, actions) {
   return {
@@ -21124,7 +21385,7 @@ function createCommandPaletteView(phone, actions) {
     subtitle: "Search and execute actions globally",
     options: [
       {
-        label: import_chalk8.default.green("\u{1F50D} Search Commands..."),
+        label: import_chalk9.default.green("\u{1F50D} Search Commands..."),
         action: async () => {
           phone.active = false;
           ui.clearScreen();
@@ -21153,19 +21414,19 @@ function createCommandPaletteView(phone, actions) {
 }
 
 // src/cli/parser.ts
-var import_chalk9 = __toESM(require("chalk"), 1);
+var import_chalk10 = __toESM(require("chalk"), 1);
 var import_fs13 = __toESM(require("fs"), 1);
 var import_path13 = __toESM(require("path"), 1);
 var import_os10 = __toESM(require("os"), 1);
 var import_child_process3 = require("child_process");
 var c = {
-  info: (text) => import_chalk9.default.cyan(text),
-  ok: (text) => import_chalk9.default.green(text),
-  warn: (text) => import_chalk9.default.yellow(text),
-  error: (text) => import_chalk9.default.red(text),
-  tip: (text) => import_chalk9.default.blue(text),
-  bright: (text) => import_chalk9.default.bold.white(text),
-  dim: (text) => import_chalk9.default.dim(text)
+  info: (text) => import_chalk10.default.cyan(text),
+  ok: (text) => import_chalk10.default.green(text),
+  warn: (text) => import_chalk10.default.yellow(text),
+  error: (text) => import_chalk10.default.red(text),
+  tip: (text) => import_chalk10.default.blue(text),
+  bright: (text) => import_chalk10.default.bold.white(text),
+  dim: (text) => import_chalk10.default.dim(text)
 };
 function showHelp() {
   console.log(`
@@ -21301,11 +21562,11 @@ ${c.error("\u274C")} Unknown command: ${command}`);
 // src/index.tsx
 var import_fs14 = __toESM(require("fs"), 1);
 var import_path14 = __toESM(require("path"), 1);
-var import_react3 = require("react");
-var import_ink3 = require("ink");
+var import_react7 = require("react");
+var import_ink7 = require("ink");
 var import_messages7 = require("@langchain/core/messages");
-var import_chalk10 = __toESM(require("chalk"), 1);
-var import_jsx_runtime3 = require("react/jsx-runtime");
+var import_chalk11 = __toESM(require("chalk"), 1);
+var import_jsx_runtime9 = require("react/jsx-runtime");
 var import_meta2 = {};
 var CLI_VERSION2 = "1.0.0";
 try {
@@ -21733,8 +21994,8 @@ var RootController = class {
 };
 var rootController = new RootController();
 function AppShell({ phone, chatUI }) {
-  const [mode, setMode] = (0, import_react3.useState)(rootController.getMode());
-  (0, import_react3.useEffect)(() => {
+  const [mode, setMode] = (0, import_react7.useState)(rootController.getMode());
+  (0, import_react7.useEffect)(() => {
     ui.onTuiMessage = (type, text, timeoutMs) => {
       let cleanText = text.replace(/^\[[i✓!X]\]\s*/, "").replace(/^ERROR:\s*/, "");
       if (rootController.getMode() === "chat") {
@@ -21747,16 +22008,16 @@ function AppShell({ phone, chatUI }) {
       ui.onTuiMessage = null;
     };
   }, [phone, chatUI]);
-  (0, import_react3.useEffect)(() => {
+  (0, import_react7.useEffect)(() => {
     return rootController.subscribe(() => {
       ui.clearScreen();
       setMode(rootController.getMode());
     });
   }, []);
   if (mode === "chat") {
-    return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(ChatUIApp, { chatUI });
+    return /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(ChatUIApp, { chatUI });
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(PhoneOSApp, { phone });
+  return /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(PhoneOSApp, { phone });
 }
 async function main() {
   const args = process.argv.slice(2);
@@ -22379,10 +22640,10 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
       renderBody: () => {
         const name = Configurator.getUsername(config2) || "user";
         const isDefault = !config2.profile?.username;
-        console.log(import_chalk10.default.white.bold("  Current Username"));
-        console.log("  " + import_chalk10.default.hex("#56CFE1")(name) + (isDefault ? "  " + import_chalk10.default.hex("#6B7280")("(default \u2014 not set yet)") : ""));
+        console.log(import_chalk11.default.white.bold("  Current Username"));
+        console.log("  " + import_chalk11.default.hex("#56CFE1")(name) + (isDefault ? "  " + import_chalk11.default.hex("#6B7280")("(default \u2014 not set yet)") : ""));
         console.log("");
-        console.log(import_chalk10.default.hex("#6B7280")("  The agent will address you by this name in every conversation."));
+        console.log(import_chalk11.default.hex("#6B7280")("  The agent will address you by this name in every conversation."));
         console.log("");
       },
       options: [
@@ -22437,7 +22698,7 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
       title: `${model} Settings`,
       subtitle: `Configure limits for ${model}`,
       renderBody: () => {
-        console.log(import_chalk10.default.white.bold("  Current Limits (empty means unlimited)"));
+        console.log(import_chalk11.default.white.bold("  Current Limits (empty means unlimited)"));
         console.log(`    RPM (Requests / min):  \x1B[36m${limits.rpm ?? "unlimited"}\x1B[0m`);
         console.log(`    RPD (Requests / day):  \x1B[36m${limits.rpd ?? "unlimited"}\x1B[0m`);
         console.log(`    TPM (Tokens / min):    \x1B[36m${limits.tpm ?? "unlimited"}\x1B[0m`);
@@ -22518,11 +22779,11 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
       renderBody: () => {
         const cur = Configurator.getMaxThreads(config2);
         const cnt = dbManager.listThreads().length;
-        console.log(import_chalk10.default.white.bold("  Current Limit"));
-        console.log("  " + import_chalk10.default.hex("#56CFE1")(String(cur)) + import_chalk10.default.hex("#6B7280")(`  (${cnt} sessions stored)`));
+        console.log(import_chalk11.default.white.bold("  Current Limit"));
+        console.log("  " + import_chalk11.default.hex("#56CFE1")(String(cur)) + import_chalk11.default.hex("#6B7280")(`  (${cnt} sessions stored)`));
         console.log("");
-        console.log(import_chalk10.default.hex("#6B7280")(`  CPU-healthy default for this machine: ${cpuDefault}  (${cores} cores \xD7 2, capped at 20)`));
-        console.log(import_chalk10.default.hex("#6B7280")("  Older threads are kept but new ones cannot be created when at the limit."));
+        console.log(import_chalk11.default.hex("#6B7280")(`  CPU-healthy default for this machine: ${cpuDefault}  (${cores} cores \xD7 2, capped at 20)`));
+        console.log(import_chalk11.default.hex("#6B7280")("  Older threads are kept but new ones cannot be created when at the limit."));
         console.log("");
       },
       options: [
@@ -22588,11 +22849,11 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
       subtitle: "Configure maximum memory tokens",
       renderBody: () => {
         const currentCap = config2.defaults.maxCtx ?? 64e3;
-        console.log(import_chalk10.default.white.bold("  Current Context Limit"));
-        console.log("  " + import_chalk10.default.hex("#56CFE1")(String(currentCap)) + " tokens");
+        console.log(import_chalk11.default.white.bold("  Current Context Limit"));
+        console.log("  " + import_chalk11.default.hex("#56CFE1")(String(currentCap)) + " tokens");
         console.log("");
-        console.log(import_chalk10.default.hex("#6B7280")("  Default: 64,000 tokens."));
-        console.log(import_chalk10.default.hex("#6B7280")("  This controls the threshold where context pruning occurs."));
+        console.log(import_chalk11.default.hex("#6B7280")("  Default: 64,000 tokens."));
+        console.log(import_chalk11.default.hex("#6B7280")("  This controls the threshold where context pruning occurs."));
         console.log("");
       },
       options: [
@@ -22716,16 +22977,16 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
       title: `${providerLabel} Models`,
       subtitle: "Add, select, or remove model variants",
       renderBody: () => {
-        console.log(import_chalk10.default.white.bold("  Active Model"));
-        console.log("  " + import_chalk10.default.hex("#56CFE1")(activeModel));
+        console.log(import_chalk11.default.white.bold("  Active Model"));
+        console.log("  " + import_chalk11.default.hex("#56CFE1")(activeModel));
         console.log("");
-        console.log(import_chalk10.default.white.bold("  Saved Variants"));
+        console.log(import_chalk11.default.white.bold("  Saved Variants"));
         if (currentModels.length === 0) {
-          console.log("  " + import_chalk10.default.dim("No saved variants yet."));
+          console.log("  " + import_chalk11.default.dim("No saved variants yet."));
         } else {
           currentModels.forEach((model) => {
-            const mark = model === activeModel ? import_chalk10.default.hex("#f5c542")("*") : import_chalk10.default.dim("-");
-            console.log(`  ${mark} ${import_chalk10.default.white(model)}`);
+            const mark = model === activeModel ? import_chalk11.default.hex("#f5c542")("*") : import_chalk11.default.dim("-");
+            console.log(`  ${mark} ${import_chalk11.default.white(model)}`);
           });
         }
         console.log("");
@@ -22872,16 +23133,16 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
       title: `${providerLabel} API Keys`,
       subtitle: "Add, select, or remove keys used for automatic rotation",
       renderBody: () => {
-        console.log(import_chalk10.default.white.bold("  Active Key"));
-        console.log("  " + import_chalk10.default.hex("#56CFE1")(activeKey ? maskApiKey(activeKey) : "(none)"));
+        console.log(import_chalk11.default.white.bold("  Active Key"));
+        console.log("  " + import_chalk11.default.hex("#56CFE1")(activeKey ? maskApiKey(activeKey) : "(none)"));
         console.log("");
-        console.log(import_chalk10.default.white.bold("  Saved Keys"));
+        console.log(import_chalk11.default.white.bold("  Saved Keys"));
         if (apiKeys.length === 0) {
-          console.log("  " + import_chalk10.default.dim("No saved keys yet."));
+          console.log("  " + import_chalk11.default.dim("No saved keys yet."));
         } else {
           apiKeys.forEach((key) => {
-            const mark = key === activeKey ? import_chalk10.default.hex("#f5c542")("*") : import_chalk10.default.dim("-");
-            console.log(`  ${mark} ${import_chalk10.default.white(maskApiKey(key))}`);
+            const mark = key === activeKey ? import_chalk11.default.hex("#f5c542")("*") : import_chalk11.default.dim("-");
+            console.log(`  ${mark} ${import_chalk11.default.white(maskApiKey(key))}`);
           });
         }
         console.log("");
@@ -22965,11 +23226,11 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
       title: "AWS Bedrock Config",
       subtitle: "Manage AWS region and credential settings",
       renderBody: () => {
-        console.log(import_chalk10.default.white.bold("  Current Configuration"));
-        console.log(`  Region:           ${import_chalk10.default.hex("#56CFE1")(entry.region || "us-east-1")}`);
-        console.log(`  Access Key ID:    ${import_chalk10.default.hex("#56CFE1")(entry.accessKeyId ? maskApiKey(entry.accessKeyId) : "(using AWS env/IAM)")}`);
-        console.log(`  Secret Key:       ${import_chalk10.default.hex("#56CFE1")(entry.secretAccessKey ? "********" : "(using AWS env/IAM)")}`);
-        console.log(`  Session Token:    ${import_chalk10.default.hex("#56CFE1")(entry.sessionToken ? "********" : "(none)")}`);
+        console.log(import_chalk11.default.white.bold("  Current Configuration"));
+        console.log(`  Region:           ${import_chalk11.default.hex("#56CFE1")(entry.region || "us-east-1")}`);
+        console.log(`  Access Key ID:    ${import_chalk11.default.hex("#56CFE1")(entry.accessKeyId ? maskApiKey(entry.accessKeyId) : "(using AWS env/IAM)")}`);
+        console.log(`  Secret Key:       ${import_chalk11.default.hex("#56CFE1")(entry.secretAccessKey ? "********" : "(using AWS env/IAM)")}`);
+        console.log(`  Session Token:    ${import_chalk11.default.hex("#56CFE1")(entry.sessionToken ? "********" : "(none)")}`);
         console.log("");
       },
       options: [
@@ -23132,12 +23393,12 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
     title: "Security Mode",
     subtitle: "Set the execution guardrail policy",
     renderBody: () => {
-      console.log(import_chalk10.default.white.bold("  Whitelisted Commands"));
+      console.log(import_chalk11.default.white.bold("  Whitelisted Commands"));
       if (config2.security.allowedCommands.length === 0) {
-        console.log("  " + import_chalk10.default.dim("No commands whitelisted."));
+        console.log("  " + import_chalk11.default.dim("No commands whitelisted."));
       } else {
         config2.security.allowedCommands.forEach((cmd) => {
-          console.log("  " + import_chalk10.default.hex("#56CFE1")("\u2022") + " " + import_chalk10.default.white(cmd));
+          console.log("  " + import_chalk11.default.hex("#56CFE1")("\u2022") + " " + import_chalk11.default.white(cmd));
         });
       }
       console.log("");
@@ -23381,10 +23642,10 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
           title: "Thread Limit Reached",
           subtitle: `You have ${threads.length}/${maxT} sessions stored`,
           renderBody: () => {
-            console.log(import_chalk10.default.hex("#F59E0B").bold("  \u26A0  Max thread limit reached"));
+            console.log(import_chalk11.default.hex("#F59E0B").bold("  \u26A0  Max thread limit reached"));
             console.log("");
-            console.log(import_chalk10.default.hex("#6B7280")(`  You have ${threads.length} saved sessions and the limit is ${maxT}.`));
-            console.log(import_chalk10.default.hex("#6B7280")("  Delete a session to make room, or raise the limit in Settings."));
+            console.log(import_chalk11.default.hex("#6B7280")(`  You have ${threads.length} saved sessions and the limit is ${maxT}.`));
+            console.log(import_chalk11.default.hex("#6B7280")("  Delete a session to make room, or raise the limit in Settings."));
             console.log("");
           },
           options: [
@@ -23428,12 +23689,12 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
       subtitle: `${threads.length}/${maxT} sessions${atLimit ? "  \u26A0 limit reached" : ""}`,
       options: [
         {
-          label: atLimit ? import_chalk10.default.hex("#F59E0B")("Create New Thread  [limit reached]") : "Create New Thread",
+          label: atLimit ? import_chalk11.default.hex("#F59E0B")("Create New Thread  [limit reached]") : "Create New Thread",
           description: atLimit ? `At the ${maxT}-thread limit \u2014 delete one first or raise the limit` : "Start a fresh session and make it active",
           action: tryCreateThread
         },
         {
-          label: import_chalk10.default.red("Delete All Threads"),
+          label: import_chalk11.default.red("Delete All Threads"),
           description: "Remove every saved thread and start fresh",
           action: () => {
             phone.pushView({
@@ -23446,7 +23707,7 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
                   action: () => phone.goBack()
                 },
                 {
-                  label: import_chalk10.default.red("Yes, Delete All Threads"),
+                  label: import_chalk11.default.red("Yes, Delete All Threads"),
                   action: async () => {
                     dbManager.deleteAllThreads();
                     snapshotManager.clearAllSnapshots();
@@ -23465,8 +23726,8 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
         },
         ...threads.map((t) => {
           const isRunning = chatSession.activeStreams.has(t.id);
-          const runningTag = isRunning ? import_chalk10.default.hex("#f5c542")(" \u{1F7E1} [running]") : "";
-          const activeTag = t.id === chatSession.threadId ? import_chalk10.default.hex("#6B7280")(" (active)") : "";
+          const runningTag = isRunning ? import_chalk11.default.hex("#f5c542")(" \u{1F7E1} [running]") : "";
+          const activeTag = t.id === chatSession.threadId ? import_chalk11.default.hex("#6B7280")(" (active)") : "";
           return {
             label: t.displayName + activeTag + runningTag,
             description: t.id,
@@ -23491,7 +23752,7 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
                     }
                   },
                   {
-                    label: import_chalk10.default.red("Delete Thread"),
+                    label: import_chalk11.default.red("Delete Thread"),
                     action: async () => {
                       phone.active = false;
                       ui.clearScreen();
@@ -23543,7 +23804,7 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
                   action: () => phone.goBack()
                 },
                 {
-                  label: import_chalk10.default.red("Yes, Kill Process"),
+                  label: import_chalk11.default.red("Yes, Kill Process"),
                   action: async () => {
                     try {
                       await backgroundManager.killProcess(p.pid);
@@ -23711,7 +23972,7 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
     phone.pushView(createCommandPaletteView(phone, actions));
   });
   phone.pushView(createHomeView());
-  (0, import_ink3.render)(/* @__PURE__ */ (0, import_jsx_runtime3.jsx)(AppShell, { phone, chatUI }));
+  (0, import_ink7.render)(/* @__PURE__ */ (0, import_jsx_runtime9.jsx)(AppShell, { phone, chatUI }));
   phone.startListening();
 }
 process.on("uncaughtException", (error51) => {

@@ -1,4 +1,4 @@
-import { BaseMessage, HumanMessage, AIMessage, ToolMessage } from '@langchain/core/messages';
+import { BaseMessage, HumanMessage, AIMessage, ToolMessage, SystemMessage } from '@langchain/core/messages';
 import { RequestPipeline } from './request_pipeline.js';
 import { NodeRunner } from './node_runner.js';
 import { executor } from '../security/executor.js';
@@ -8,6 +8,7 @@ import { OttoConfig } from '../cli/configurator.js';
 import { AgentMode, AgentRegistry } from './agents.js';
 import { classifyAssistantStep } from './classify.js';
 import { RouterAgent } from './router.js';
+import { TokenLimiter } from './token_limiter.js';
 
 export interface WorkflowContext {
   chatSession: any;
@@ -66,12 +67,26 @@ export class AgentWorkflow {
         ctx.chatSession.agentStates.set(ctx.chatSession.threadId, 'idle');
         if (ctx.chatSession.isChatActive) ctx.render(true);
         return;
+      } else {
+        // Multi-Agent Workflow: Complex tasks start with the Architect
+        ctx.agentMode = 'plan';
+        ctx.messages.push(new SystemMessage(`[MULTI-AGENT ORCHESTRATION]
+You are the Architect Agent. Break down the user's request into:
+1. Plan (high-level approach)
+2. Tasks (step-by-step division of labor)
+3. Artifacts (files to create/modify)
+
+Output your plan wrapped in <!-- PLAN_START --> and <!-- PLAN_END -->. The Reviewer Agent will critique it before execution.`));
+        ctx.syncMessages();
       }
     }
 
     const mode = ctx.agentMode || 'build';
 
     const activeProvider = ctx.config.defaults.primaryProvider as string;
+    
+    // Check global token limit before invoking LLM
+    await TokenLimiter.getInstance().checkAndWait(activeProvider, ctx.config, ctx.ui);
     const activeModel = ctx.config.providers[activeProvider as keyof typeof ctx.config.providers]?.activeModel || 'default';
     
     const finalMsgsToSend = await RequestPipeline.buildPayload(ctx.messages, ctx.config, activeModel, mode);
@@ -113,6 +128,11 @@ export class AgentWorkflow {
       ctx.render(true);
     }
 
+    // Track token and request usage approximations globally
+    const outTok = Math.ceil(String(finalMessage?.content || '').length / 4);
+    const inTok = Math.ceil(JSON.stringify(finalMsgsToSend).length / 4);
+    TokenLimiter.getInstance().addUsage(inTok + outTok);
+
     const stepClass = classifyAssistantStep(
       finalMessage,
       ctx.chatSession.cancelledThreads.has(ctx.chatSession.threadId),
@@ -143,6 +163,28 @@ export class AgentWorkflow {
     const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
 
     if (hasPlanBlock && stepClass.type !== 'tools') {
+      if (ctx.agentMode === 'plan') {
+        // Multi-Agent Debate Phase: Reviewer Critiques the Architect's Plan
+        ctx.chatSession.delayMessage = "Reviewer Agent is critiquing the plan";
+        ctx.render(true);
+        
+        const planText = responseText.match(PLAN_BLOCK_RE)?.[0] || responseText;
+        const critiqueMsg = await ctx.provider.invoke([
+          new SystemMessage("You are a Senior Staff Code Reviewer. Critique the following technical implementation plan. Point out flaws, missing logic, or potential runtime bugs. Be extremely harsh but concise. If it's perfect, say 'LGTM'."),
+          new HumanMessage(planText)
+        ]);
+
+        ctx.chatSession.delayMessage = null;
+        
+        ctx.messages.push(new AIMessage(`\n\n[REVIEWER CRITIQUE]:\n${critiqueMsg.content}`));
+        ctx.messages.push(new HumanMessage("SYSTEM: You are now the Builder Agent. Refine the plan based on the Reviewer's critique if necessary, divide the tasks, and immediately execute them using tools. Do not output PLAN tags again."));
+        ctx.agentMode = 'build';
+        ctx.syncMessages();
+        
+        await this.runAgentLoop(ctx, undefined, depth + 1);
+        return;
+      }
+
       if (ctx.config.security.mode === 'full' || ctx.config.security.mode === 'approve') {
         ctx.setPendingPlan(false);
         setTimeout(() => {
@@ -230,8 +272,17 @@ export class AgentWorkflow {
               result = `Error: Tool ${toolName} not found.`;
             }
           }
+          
+          // Explicit Tool Validation
+          if (toolName === 'execute_terminal_command' && !args.background) {
+             if (result.includes('Error:') || result.toLowerCase().includes('failed') || result.toLowerCase().includes('command not found')) {
+                result += `\n\n[SYSTEM VALIDATION: The command appears to have failed. Please re-evaluate your approach, check the tool syntax, and retry.]`;
+             } else {
+                result += `\n\n[SYSTEM VALIDATION: Tool executed successfully.]`;
+             }
+          }
         } catch (e: any) {
-          result = `Error: ${e.message}`;
+          result = `Error: ${e.message}\n[SYSTEM VALIDATION: A fatal error occurred during tool execution. Fix the arguments and retry.]`;
         }
 
         const toolMsg = new ToolMessage({
