@@ -262,6 +262,14 @@ function renderDiffBlock(codeStr: string, diffWidth: number, isExpanded: boolean
 
 function renderMarkdownWithOttoStyles(content: string, width: number, diffsExpanded: boolean): string {
   content = content.replace(/\r/g, '');
+  // Fix for **bold** text in markdown not rendering properly with marked-terminal
+  content = content.replace(/\*\*(.+?)\*\*/g, (_m, p1) => chalk.white.bold(p1));
+  
+  // Strip markdown heading hashes and format them directly since marked-terminal keeps them
+  content = content.replace(/^(#{1,6})\s+(.+)$/gm, (_m, hashes, text) => {
+    return chalk.hex('#f5c542').bold(text);
+  });
+
   const diffWidth = Math.max(48, Math.min(width, 96));
 
   const placeholders: string[] = [];
@@ -294,6 +302,7 @@ function renderMarkdownWithOttoStyles(content: string, width: number, diffsExpan
     codespan: chalk.hex('#F5C400'),
     strong: chalk.white.bold,
     em: chalk.italic,
+    heading: chalk.white.bold
   }) as any);
 
   const parsed = myMarked.parse(withPlaceholders) as string;
@@ -387,7 +396,9 @@ export class ChatUI {
     diffsExpanded: boolean = false,
     delayMessage?: string,
     pendingApproval?: { type: 'command' | 'app', cmd: string, commandStr: string },
-    approvalMenuIndex: number = 0
+    approvalMenuIndex: number = 0,
+    securityMode: string = 'ask',
+    autocompleteState: any = null
   ) {
     this.currentData = {
       messages,
@@ -400,7 +411,9 @@ export class ChatUI {
       diffsExpanded,
       delayMessage,
       pendingApproval,
-      approvalMenuIndex
+      approvalMenuIndex,
+      securityMode,
+      autocompleteState
     };
     this.notify();
   }
@@ -445,7 +458,7 @@ function ChatUIInput({ chatUI }: { chatUI: ChatUI }) {
 
 // ── INK COMPONENTS ── //
 
-const ToolBlock = ({ tool }: { tool: any }) => {
+const ToolBlock = React.memo(({ tool }: { tool: any }) => {
   const isRunning = tool.status === 'running';
   const isError = tool.status === 'error';
   const icon = isError ? '✗' : '⌕';
@@ -454,36 +467,44 @@ const ToolBlock = ({ tool }: { tool: any }) => {
   const statusText = isRunning ? ' ● running ' : isError ? ' ✗ error ' : ' ✓ done ';
 
   return (
-    <Box flexDirection="column" borderStyle="single" borderLeft={true} borderRight={false} borderTop={false} borderBottom={false} borderColor="#c9a800" paddingLeft={1} marginBottom={1}>
+    <Box flexDirection="column" borderStyle="single" borderLeft={true} borderRight={false} borderTop={false} borderBottom={false} borderColor={statusColor} paddingLeft={1} marginBottom={1} marginLeft={2}>
       <Box justifyContent="space-between">
         <Text>
-          <Text backgroundColor="#1a1500" color="#c9a800"> {icon} </Text>
-          <Text color="#c9a800" bold> {tool.name}</Text>
+          <Text backgroundColor={statusBg} color={statusColor} bold> {icon} {tool.name} </Text>
         </Text>
-        <Text backgroundColor={statusBg} color={statusColor}>{statusText}</Text>
+        <Text backgroundColor={statusBg} color={statusColor} dimColor>{statusText}</Text>
       </Box>
       {tool.args && Object.keys(tool.args).length > 0 && (
         <Box marginTop={0} flexDirection="column">
-          {Object.entries(tool.args).map(([k, v]) => (
-            <Text key={k}>
-              <Text color="#6a6040">{k}: </Text>
-              <Text color="#c9a800">"{typeof v === 'object' ? JSON.stringify(v) : String(v)}"</Text>
-            </Text>
-          ))}
+          {Object.entries(tool.args).map(([k, v]) => {
+            const valStr = typeof v === 'object' ? JSON.stringify(v) : String(v);
+            return (
+              <Text key={k}>
+                <Text color="#6a6040">{k}: </Text>
+                <Text color="#c9a800">"{valStr.replace(/\r/g, '')}"</Text>
+              </Text>
+            );
+          })}
         </Box>
       )}
       {!isRunning && tool.rawOutput && (
         <Box flexDirection="column" marginTop={0}>
           <Text color="#2a2000">{'─'.repeat(50)}</Text>
           <Text color={isError ? '#8a3a3a' : '#3d3310'}>{isError ? 'ERROR' : 'OUTPUT'}</Text>
-          <Text color="#7a6a3a" dimColor>{tool.rawOutput.substring(0, 500)}{tool.rawOutput.length > 500 ? '...' : ''}</Text>
+          <Text color="#7a6a3a" dimColor>{tool.rawOutput.replace(/\r/g, '').substring(0, 500)}{tool.rawOutput.length > 500 ? '...' : ''}</Text>
         </Box>
       )}
     </Box>
   );
-};
+}, (prev, next) => {
+  if (!prev.tool || !next.tool) return false;
+  return prev.tool.name === next.tool.name &&
+         prev.tool.status === next.tool.status &&
+         prev.tool.rawOutput === next.tool.rawOutput &&
+         JSON.stringify(prev.tool.args || {}) === JSON.stringify(next.tool.args || {});
+});
 
-const AgentMessage = ({ msg, isThinking, diffsExpanded, width }: { msg: string, isThinking: boolean, diffsExpanded: boolean, width: number }) => {
+const AgentMessage = React.memo(({ msg, isThinking, diffsExpanded, width }: { msg: string, isThinking: boolean, diffsExpanded: boolean, width: number }) => {
   let rawContent = msg;
   let thinkBlock = null;
   const thinkMatch = rawContent.match(/<(?:think|thought)>([\s\S]*?)(?:<\/(?:think|thought)>|$)/);
@@ -492,10 +513,10 @@ const AgentMessage = ({ msg, isThinking, diffsExpanded, width }: { msg: string, 
     const thinkLines = thinkMatch[1].trim().split('\n');
     thinkBlock = diffsExpanded ? (
       <Box flexDirection="column" marginBottom={1}>
-        {thinkLines.map((l, i) => <Text key={i} color="#777777" backgroundColor="#161407">{l}</Text>)}
+        {thinkLines.map((l, i) => <Text key={i} color="#f5c542" backgroundColor="#161407">{l}</Text>)}
       </Box>
     ) : (
-      <Box marginBottom={1}><Text color="#777777" backgroundColor="#161407">[ Reasoning Process ({thinkLines.length} lines) - Press Ctrl+E to Expand ]</Text></Box>
+      <Box marginBottom={1}><Text color="#f5c542" backgroundColor="#161407">[ Reasoning Process ({thinkLines.length} lines) - Press Ctrl+E to Expand ]</Text></Box>
     );
   }
 
@@ -509,23 +530,30 @@ const AgentMessage = ({ msg, isThinking, diffsExpanded, width }: { msg: string, 
 
   return (
     <Box flexDirection="column" marginBottom={1}>
-      <Text backgroundColor="#161407">
-        <Text color="#c9a800">◆ </Text><Text color="#d4b43f">otto</Text>
-      </Text>
+      <Box marginBottom={0}>
+        <Text backgroundColor="#161407" color="#d4b43f" bold> O.T.T.O </Text>
+      </Box>
       {thinkBlock}
       {msg.includes('<think>') && !msg.includes('</think>') && (
-        <Text color="#777777" backgroundColor="#161407">Thinking...</Text>
+        <Box paddingLeft={1} marginTop={1}>
+          <Text color="#f5c542" backgroundColor="#161407"> [ Thinking... ] </Text>
+        </Box>
       )}
       {rawContent && (
-        <Box paddingLeft={1} paddingRight={1}>
+        <Box paddingLeft={1} paddingTop={1}>
            <Text color="#d4d4d4">{renderMarkdownWithOttoStyles(rawContent.replace(/`([^`]+)`/g, (_m: any, p1: string) => chalk.hex('#f5c542')(p1)), Math.max(10, width - 4), diffsExpanded).trim()}</Text>
         </Box>
       )}
     </Box>
   );
-};
+}, (prev, next) => {
+  return prev.msg === next.msg &&
+         prev.isThinking === next.isThinking &&
+         prev.diffsExpanded === next.diffsExpanded &&
+         prev.width === next.width;
+});
 
-const UserMessage = ({ msg }: { msg: string }) => {
+const UserMessage = React.memo(({ msg }: { msg: string }) => {
   return (
     <Box flexDirection="column" alignItems="flex-end" marginBottom={1} width="100%">
       <Text backgroundColor="#1c1c1c" color="#888888"> you </Text>
@@ -534,7 +562,7 @@ const UserMessage = ({ msg }: { msg: string }) => {
       </Box>
     </Box>
   );
-};
+}, (prev, next) => prev.msg === next.msg);
 
 export function ChatUIApp({ chatUI }: { chatUI: ChatUI }) {
   const [, forceUpdate] = useState(0);
@@ -566,7 +594,9 @@ export function ChatUIApp({ chatUI }: { chatUI: ChatUI }) {
     diffsExpanded,
     delayMessage,
     pendingApproval,
-    approvalMenuIndex
+    approvalMenuIndex,
+    securityMode,
+    autocompleteState
   } = chatUI.currentData;
 
   const isTTY = !!(process.stdin && process.stdin.isTTY);
@@ -578,7 +608,7 @@ export function ChatUIApp({ chatUI }: { chatUI: ChatUI }) {
   const winHeight = process.stdout.rows || 24;
   const winWidth = process.stdout.columns || 80;
 
-  const startIndex = Math.max(0, messages.length - (winHeight > 20 ? 15 : 5));
+  const startIndex = Math.max(0, messages.length - (winHeight > 20 ? 15 : 5) - chatUI.scrollOffset);
 
   return (
     <Box flexDirection="column" height={winHeight - 1}>
@@ -589,8 +619,8 @@ export function ChatUIApp({ chatUI }: { chatUI: ChatUI }) {
 
       <Box flexDirection="column" flexGrow={1} overflowY="hidden">
         <Box flexDirection="column" marginTop={0}>
-          {messages.slice(startIndex).map((msg: any, i: number) => (
-            <Box key={i} flexDirection="column">
+          {messages.slice(startIndex, messages.length - chatUI.scrollOffset).map((msg: any, i: number) => (
+            <Box key={msg.id || (startIndex + i)} flexDirection="column">
               {msg.role === 'system' && <Text color="#555555">{msg.content}</Text>}
               {msg.role === 'tool' && msg.toolInfo && <ToolBlock tool={msg.toolInfo} />}
               {msg.toolCalls && msg.toolCalls.length > 0 && msg.state === 'tools' && (
@@ -607,66 +637,80 @@ export function ChatUIApp({ chatUI }: { chatUI: ChatUI }) {
         </Box>
       </Box>
 
-      {pendingApproval && (
-        <Box flexDirection="column" marginBottom={1} padding={1}>
-          <Text bold color="#444444">⚠ COMMAND APPROVAL</Text>
-          <Text color="#c9a800"> ⚡ run bash command <Text color="#4a4020"> requires approval</Text></Text>
-          <Box paddingLeft={1} marginY={1}>
-            <Text color="#3d3310">COMMAND: </Text><Text color="#e0c040">{pendingApproval.commandStr}</Text>
-          </Box>
-          <Box>
-            {[{ label: 'allow for now', key: 'y' }, { label: 'allow always', key: 'a' }, { label: 'reject', key: 'n' }].map((item, idx) => (
-               <Box key={item.key} marginRight={2}>
-                 <Text color={idx === approvalMenuIndex ? '#c9a800' : '#555555'}>
-                   {idx === approvalMenuIndex ? '> ' : '  '}[{item.key}] {item.label}
-                 </Text>
-               </Box>
-            ))}
-          </Box>
-        </Box>
-      )}
 
-      {pendingPlan && (
-        <Box flexDirection="column" marginBottom={1} padding={1}>
-          <Text bold color="#444444">📋 PLAN APPROVAL</Text>
-          <Text color="#c9a800"> ◈ proposed plan <Text color="#4a4020"> review before executing</Text></Text>
-          <Box marginTop={1}>
-            {[{ label: 'approve plan', key: '↵' }, { label: 'edit plan', key: 'e' }, { label: 'cancel', key: 'n' }].map((item, idx) => (
-               <Box key={item.key} marginRight={2}>
-                 <Text color={idx === planMenuIndex ? '#c9a800' : '#555555'}>
-                   {idx === planMenuIndex ? '> ' : '  '}[{item.key}] {item.label}
-                 </Text>
-               </Box>
-            ))}
-          </Box>
-        </Box>
-      )}
 
       <Box flexDirection="column">
-        <Box>
-          <Text backgroundColor="#111000" color="#c9a800"> › </Text>
-          <Text backgroundColor="#111000" color="#d4d4d4">{currentInput}</Text>
-          {(!isThinking && !pendingApproval && !pendingPlan && !delayMessage) && (
-            <Text backgroundColor={(Math.floor(Date.now() / 1000) % 2 === 0) ? '#c9a800' : '#111000'}> </Text>
-          )}
-          {currentInput.length === 0 && (
-            <Text backgroundColor="#111000" color={isThinking || telemetry.isStreaming ? '#ef4444' : '#444444'}>
-              {isThinking || telemetry.isStreaming ? 'Press [Ctrl+X] to terminate' : 'Type your message...'}
-            </Text>
-          )}
-        </Box>
-
-        <Box justifyContent="space-between" marginTop={1}>
-          <Box>
-            <Text color="#f5c542">{model.split('-')[0] || 'provider'} </Text>
-            <Text color="#555555"> ctx </Text>
-            <Text color={ratio > 0.75 ? '#ff6b6b' : '#f5c542'}>{ctxBarFill}</Text>
-            <Text color="#333333">{ctxBarEmpty}</Text>
-            <Text color="#555555">  sec </Text>
-            <Text color="#f5c542">strict</Text>
+        {pendingApproval && (
+          <Box flexDirection="column" marginBottom={1} padding={1} borderStyle="round" borderColor="#b83030">
+            <Text bold color="#ff5555">⚠ COMMAND APPROVAL</Text>
+            <Text color="#d4b43f"> ⚡ run bash command <Text color="#776633"> requires approval</Text></Text>
+            <Box paddingLeft={1} marginY={1}>
+              <Text color="#554422">COMMAND: </Text><Text color="#f5c542">{pendingApproval.commandStr}</Text>
+            </Box>
+            <Box>
+              {[{ label: 'allow for now', key: 'y' }, { label: 'allow always', key: 'a' }, { label: 'reject', key: 'n' }].map((item, idx) => (
+                 <Box key={item.key} marginRight={2}>
+                   <Text color={idx === approvalMenuIndex ? '#f5c542' : '#555555'} bold={idx === approvalMenuIndex}>
+                     {idx === approvalMenuIndex ? '❯ ' : '  '}[{item.key}] {item.label}
+                   </Text>
+                 </Box>
+              ))}
+            </Box>
           </Box>
+        )}
+
+        {pendingPlan && (
+          <Box flexDirection="column" marginBottom={1} padding={1} borderStyle="round" borderColor="#30b8b8">
+            <Text bold color="#55ffff">📋 PLAN APPROVAL</Text>
+            <Text color="#d4b43f"> ◈ proposed plan <Text color="#776633"> review before executing</Text></Text>
+            <Box marginTop={1}>
+              {[{ label: 'approve plan', key: '↵' }, { label: 'edit plan', key: 'e' }, { label: 'cancel', key: 'n' }].map((item, idx) => (
+                 <Box key={item.key} marginRight={2}>
+                   <Text color={idx === planMenuIndex ? '#f5c542' : '#555555'} bold={idx === planMenuIndex}>
+                     {idx === planMenuIndex ? '❯ ' : '  '}[{item.key}] {item.label}
+                   </Text>
+                 </Box>
+              ))}
+            </Box>
+          </Box>
+        )}
+
+        {autocompleteState && (
+          <Box flexDirection="column" padding={1} borderStyle="single" borderTop={true} borderBottom={false} borderLeft={true} borderRight={false} borderColor="#f5c542" width="50%">
+             {autocompleteState.matches.map((match: string, idx: number) => (
+               <Text key={match} color={idx === autocompleteState.matchIdx ? '#f5c542' : '#888888'} bold={idx === autocompleteState.matchIdx}>
+                 {idx === autocompleteState.matchIdx ? '❯ ' : '  '}{match}
+               </Text>
+             ))}
+          </Box>
+        )}
+
+        <Box borderStyle="single" borderTop={true} borderLeft={false} borderRight={false} borderBottom={false} borderColor="#2a2a2a" paddingTop={1} flexDirection="column">
           <Box>
-            <Text color="#2a2a2a">ctrl+x: stop | ctrl+e: diff | esc: menu | @: context | /: cmd</Text>
+            <Text color="#f5c542" bold> › </Text>
+            <Text color="#ffffff">{currentInput}</Text>
+            {(!isThinking && !pendingApproval && !pendingPlan && !delayMessage) && (
+              <Text backgroundColor={(Math.floor(Date.now() / 1000) % 2 === 0) ? '#f5c542' : 'transparent'}> </Text>
+            )}
+            {currentInput.length === 0 && (
+              <Text color={isThinking || telemetry.isStreaming ? '#ef4444' : '#444444'} dimColor>
+                {isThinking || telemetry.isStreaming ? 'Press [Ctrl+X] to terminate' : 'Type your message...'}
+              </Text>
+            )}
+          </Box>
+
+          <Box justifyContent="space-between" marginTop={1}>
+            <Box>
+              <Text color="#888888">model: </Text><Text color="#f5c542">{model.split('-')[0] || 'provider'} </Text>
+              <Text color="#888888">  ctx: </Text>
+              <Text color={ratio > 0.75 ? '#ff6b6b' : '#f5c542'}>{ctxBarFill}</Text>
+              <Text color="#333333">{ctxBarEmpty}</Text>
+              <Text color="#888888">  sec: </Text>
+              <Text color="#f5c542">{securityMode}</Text>
+            </Box>
+            <Box>
+              <Text color="#333333">ctrl+x: stop | esc: menu | @: context | /: cmd</Text>
+            </Box>
           </Box>
         </Box>
       </Box>

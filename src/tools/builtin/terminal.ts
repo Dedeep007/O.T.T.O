@@ -13,7 +13,7 @@ export const executeTerminalCommand = tool(
       const diffSummary = beforeSnapshot && afterSnapshot ? formatWorkspaceChanges(beforeSnapshot, afterSnapshot) : '';
       return diffSummary ? `${res}\n\n${diffSummary}` : res;
     } catch (e: any) {
-      return `Error executing command: ${e.message}`;
+      return `Error executing command: ${e.message}\n\n[SYSTEM AUTO-REFLECTION REQUIRED]: The command failed. You MUST wrap your next response in a <thought> block to deeply analyze this failure. Analyze the stderr/stdout, form a concrete hypothesis about why it failed, and explain exactly how you will fix it before making your next tool call.`;
     }
   },
   {

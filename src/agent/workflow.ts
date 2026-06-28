@@ -5,6 +5,9 @@ import { executor } from '../security/executor.js';
 import { snapshotManager } from '../cli/snapshots.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { OttoConfig } from '../cli/configurator.js';
+import { AgentMode, AgentRegistry } from './agents.js';
+import { classifyAssistantStep } from './classify.js';
+import { RouterAgent } from './router.js';
 
 export interface WorkflowContext {
   chatSession: any;
@@ -20,6 +23,7 @@ export interface WorkflowContext {
   setPlanMenuIndex: (val: number) => void;
   render: (force?: boolean) => void;
   syncMessages: () => void;
+  agentMode?: AgentMode;
 }
 
 const PLAN_BLOCK_RE = /<!--\s*PLAN_START\s*-->[\s\S]*?<!--\s*PLAN_END\s*-->/;
@@ -50,10 +54,27 @@ export class AgentWorkflow {
       ctx.syncMessages();
     }
 
+    // Pre-LLM Fast Path via Router Agent
+    const lastMsg = ctx.messages[ctx.messages.length - 1];
+    if (lastMsg instanceof HumanMessage && !injectPrompt && depth === 0) {
+      // Use the router to classify the request complexity
+      const routingDecision = await RouterAgent.classify(ctx.messages, ctx.config, ctx.provider);
+      
+      if (routingDecision.classification === 'SIMPLE' && routingDecision.response) {
+        ctx.messages.push(new AIMessage(routingDecision.response));
+        ctx.syncMessages();
+        ctx.chatSession.agentStates.set(ctx.chatSession.threadId, 'idle');
+        if (ctx.chatSession.isChatActive) ctx.render(true);
+        return;
+      }
+    }
+
+    const mode = ctx.agentMode || 'build';
+
     const activeProvider = ctx.config.defaults.primaryProvider as string;
     const activeModel = ctx.config.providers[activeProvider as keyof typeof ctx.config.providers]?.activeModel || 'default';
     
-    const finalMsgsToSend = await RequestPipeline.buildPayload(ctx.messages, ctx.config, activeModel);
+    const finalMsgsToSend = await RequestPipeline.buildPayload(ctx.messages, ctx.config, activeModel, mode);
 
     const aiMessage = new AIMessage('');
     ctx.messages.push(aiMessage);
@@ -92,10 +113,36 @@ export class AgentWorkflow {
       ctx.render(true);
     }
 
+    const stepClass = classifyAssistantStep(
+      finalMessage,
+      ctx.chatSession.cancelledThreads.has(ctx.chatSession.threadId),
+      ctx.stripToolBleed
+    );
+
+    if (stepClass.type === 'cancelled') {
+      return;
+    }
+
+    if (stepClass.type === 'native-generation-error') {
+      ctx.messages.push(new HumanMessage('SYSTEM: Your previous tool call failed due to a native API generation error. Please output your tool call as a raw markdown JSON block instead of using the native function calling format.'));
+      ctx.syncMessages();
+      if (ctx.chatSession.isChatActive) ctx.render(true);
+      await this.runAgentLoop(ctx, undefined, depth + 1);
+      return;
+    }
+
+    if (stepClass.type === 'think-only' || stepClass.type === 'empty') {
+      ctx.messages.push(new HumanMessage('SYSTEM: You stopped generating without executing a tool or saying anything to the user. Proceed with your tool calls or respond to the user.'));
+      ctx.syncMessages();
+      if (ctx.chatSession.isChatActive) ctx.render(true);
+      await this.runAgentLoop(ctx, undefined, depth + 1);
+      return;
+    }
+
     const responseText = String(finalMessage?.content ?? '');
     const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
 
-    if (hasPlanBlock && !hasToolCalls) {
+    if (hasPlanBlock && stepClass.type !== 'tools') {
       if (ctx.config.security.mode === 'full' || ctx.config.security.mode === 'approve') {
         ctx.setPendingPlan(false);
         setTimeout(() => {
@@ -111,9 +158,11 @@ export class AgentWorkflow {
       }
     }
 
-    if (hasToolCalls && finalMessage.tool_calls) {
+    if (stepClass.type === 'tools' && finalMessage.tool_calls) {
       ctx.chatSession.agentStates.set(ctx.chatSession.threadId, 'tools');
       ctx.render(true);
+
+      const agentRole = AgentRegistry.getAgent(mode);
 
       for (const call of finalMessage.tool_calls) {
         if (ctx.chatSession.cancelledThreads.has(ctx.chatSession.threadId)) {
@@ -123,6 +172,17 @@ export class AgentWorkflow {
         const toolCallId = call.id;
         const toolName = call.name;
         const args = call.args;
+
+        if (!agentRole.allowedTools.includes('*') && !agentRole.allowedTools.includes(toolName)) {
+           const toolMsg = new ToolMessage({
+            tool_call_id: toolCallId,
+            content: `Error: Tool '${toolName}' is not allowed in ${mode} mode.`,
+            name: toolName
+          });
+          ctx.messages.push(toolMsg);
+          ctx.syncMessages();
+          continue;
+        }
 
         if (ctx.config.security.mode === 'ask') {
           // Security prompt
@@ -162,8 +222,6 @@ export class AgentWorkflow {
           if (toolName === 'execute_terminal_command') {
             result = await executor.executeCommand(args.command, args.background);
           } else {
-            // we need to dynamically invoke the tool from our registry
-            // for now, we just mock the interface assuming tool.invoke exists
             const { tools } = await import('../tools/registry.js');
             const tool = tools.find(t => t.name === toolName);
             if (tool) {
@@ -192,26 +250,7 @@ export class AgentWorkflow {
         snapshotManager.saveCheckpoint(ctx.chatSession.threadId, ctx.messages.length - 1);
         await this.runAgentLoop(ctx, undefined, depth + 1);
       }
-    } else {
-      const strippedContent = ctx.stripToolBleed(finalMessage?.content?.toString() || '');
-      
-      if (strippedContent.includes('failed_generation') && strippedContent.includes('Failed to call a function')) {
-        ctx.messages.push(new HumanMessage('SYSTEM: Your previous tool call failed due to a native API generation error. This usually happens when writing large files with the native tool format. Please output your tool call as a raw markdown JSON block instead of using the native function calling format. Our system will parse the JSON block automatically.'));
-        ctx.syncMessages();
-        if (ctx.chatSession.isChatActive) ctx.render(true);
-        await this.runAgentLoop(ctx, undefined, depth + 1);
-        return;
-      }
-
-      if (!strippedContent.trim() && finalMessage?.content?.toString().includes('<think>')) {
-        // The AI generated a think block but stopped without outputting text or tools
-        ctx.messages.push(new HumanMessage('SYSTEM: You stopped generating without executing a tool or saying anything to the user. Proceed with your tool calls or respond to the user.'));
-        ctx.syncMessages();
-        if (ctx.chatSession.isChatActive) ctx.render(true);
-        await this.runAgentLoop(ctx, undefined, depth + 1);
-        return;
-      }
-      
+    } else if (stepClass.type === 'final') {
       ctx.chatSession.agentStates.set(ctx.chatSession.threadId, 'idle');
       if (ctx.chatSession.isChatActive) ctx.render(true);
     }

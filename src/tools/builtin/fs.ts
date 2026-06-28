@@ -77,7 +77,7 @@ export const writeFile = tool(
       const diff = diffForSingleFile(relative, before, content);
       return diff || `File written successfully. Content was already up to date (no changes needed) for ${relative.replace(/\\/g, '/')}.`;
     } catch (e: any) {
-      return `Error writing file: ${e.message}`;
+      return `Error writing file: ${e.message}\n\n[SYSTEM AUTO-REFLECTION REQUIRED]: The tool call failed. You MUST wrap your next response in a <thought> block to deeply analyze this failure and explain exactly how you will fix it before making your next tool call.`;
     }
   },
   {

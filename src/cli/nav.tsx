@@ -8,9 +8,45 @@ import { OttoConfig } from './configurator.js';
 import { chatSession } from './session.js';
 import { createRequire } from 'module';
 
-const require = createRequire(import.meta.url);
-const pkg = require('../../package.json');
-const CLI_VERSION = pkg.version;
+import fs from 'fs';
+import path from 'path';
+
+let CLI_VERSION = '1.0.0';
+try {
+  let dir = process.cwd();
+  try {
+    // @ts-ignore
+    dir = typeof __dirname !== 'undefined' ? __dirname : path.dirname(new URL(import.meta.url).pathname);
+    dir = decodeURIComponent(dir);
+    if (process.platform === 'win32' && dir.startsWith('/')) {
+      dir = dir.slice(1);
+    }
+  } catch (e) {}
+  
+  let currentDir = dir;
+  let pkgPath = '';
+  // Climb up up to 5 directories looking for package.json with name @dpv007/otto-cli
+  for (let i = 0; i < 5; i++) {
+    const p = path.join(currentDir, 'package.json');
+    if (fs.existsSync(p)) {
+      const content = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (content.name === '@dpv007/otto-cli' || content.name === '@dpv007/o.t.t.o') {
+        pkgPath = p;
+        break;
+      }
+    }
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) break;
+    currentDir = parentDir;
+  }
+  
+  if (pkgPath) {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    CLI_VERSION = pkg.version;
+  }
+} catch (e) {
+  // ignore
+}
 
 export interface PhoneMenuOption {
   label: string;
