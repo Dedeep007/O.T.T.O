@@ -9,8 +9,7 @@
     "skipLibCheck": true,
     "rootDir": "src",
     "outDir": "dist",
-    "jsx": "react-jsx",
-    "jsxImportSource": "@opentui/react"
+    "jsx": "react-jsx"
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]

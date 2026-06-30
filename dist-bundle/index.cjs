@@ -19425,7 +19425,7 @@ var import_react = require("react");
 
 // src/cli/ink-compat.tsx
 var import_ink = require("ink");
-var import_jsx_runtime = require("@opentui/react/jsx-runtime");
+var import_jsx_runtime = require("react/jsx-runtime");
 function Box(props) {
   return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_ink.Box, { ...props });
 }
@@ -19449,7 +19449,7 @@ var import_chalk2 = __toESM(require("chalk"), 1);
 init_session();
 var import_fs10 = __toESM(require("fs"), 1);
 var import_path10 = __toESM(require("path"), 1);
-var import_jsx_runtime2 = require("@opentui/react/jsx-runtime");
+var import_jsx_runtime2 = require("react/jsx-runtime");
 var import_meta = {};
 var CLI_VERSION = "1.0.0";
 try {
@@ -19846,7 +19846,7 @@ var import_marked_terminal2 = require("marked-terminal");
 
 // src/cli/ui/contexts/ThemeContext.tsx
 var import_react2 = require("react");
-var import_jsx_runtime3 = require("@opentui/react/jsx-runtime");
+var import_jsx_runtime3 = require("react/jsx-runtime");
 var defaultTheme = {
   primary: "#f5c542",
   // O.T.T.O Yellow
@@ -19871,7 +19871,7 @@ function useTheme() {
 
 // src/cli/ui/contexts/SessionContext.tsx
 var import_react3 = require("react");
-var import_jsx_runtime4 = require("@opentui/react/jsx-runtime");
+var import_jsx_runtime4 = require("react/jsx-runtime");
 var SessionContext = (0, import_react3.createContext)(void 0);
 function SessionProvider({ children, externalState }) {
   const [localState, setLocalState] = (0, import_react3.useState)(externalState);
@@ -19893,7 +19893,7 @@ function useSession() {
 
 // src/cli/ui/contexts/DialogContext.tsx
 var import_react4 = require("react");
-var import_jsx_runtime5 = require("@opentui/react/jsx-runtime");
+var import_jsx_runtime5 = require("react/jsx-runtime");
 var DialogContext = (0, import_react4.createContext)(void 0);
 function DialogProvider({ children }) {
   const [activeDialog, setActiveDialog] = (0, import_react4.useState)(null);
@@ -19930,7 +19930,7 @@ function DialogRenderer() {
 // src/cli/ui/components.tsx
 var import_react5 = __toESM(require("react"), 1);
 var import_chalk3 = __toESM(require("chalk"), 1);
-var import_jsx_runtime6 = require("@opentui/react/jsx-runtime");
+var import_jsx_runtime6 = require("react/jsx-runtime");
 var ToolBlock = import_react5.default.memo(({ tool: tool6 }) => {
   const isRunning = tool6.status === "running";
   const isError = tool6.status === "error";
@@ -20015,7 +20015,7 @@ var UserMessage = import_react5.default.memo(({ msg }) => {
 });
 
 // src/cli/ui/PromptInput.tsx
-var import_jsx_runtime7 = require("@opentui/react/jsx-runtime");
+var import_jsx_runtime7 = require("react/jsx-runtime");
 function PromptInput() {
   const { state } = useSession();
   const theme = useTheme();
@@ -20044,7 +20044,7 @@ function PromptInput() {
 }
 
 // src/cli/ui/routes/SessionView.tsx
-var import_jsx_runtime8 = require("@opentui/react/jsx-runtime");
+var import_jsx_runtime8 = require("react/jsx-runtime");
 function SessionView({ chatUI }) {
   const { state } = useSession();
   const theme = useTheme();
@@ -20154,7 +20154,7 @@ function SessionView({ chatUI }) {
 }
 
 // src/cli/chat.tsx
-var import_jsx_runtime9 = require("@opentui/react/jsx-runtime");
+var import_jsx_runtime9 = require("react/jsx-runtime");
 function stripAnsi(str) {
   return str.replace(/\x1B\[[0-9;]*m/g, "");
 }
@@ -21581,7 +21581,7 @@ var import_react7 = require("react");
 var import_ink2 = require("ink");
 var import_messages8 = require("@langchain/core/messages");
 var import_chalk11 = __toESM(require("chalk"), 1);
-var import_jsx_runtime10 = require("@opentui/react/jsx-runtime");
+var import_jsx_runtime10 = require("react/jsx-runtime");
 var import_meta2 = {};
 var CLI_VERSION2 = "1.0.0";
 try {
