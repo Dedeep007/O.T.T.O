@@ -3,23 +3,24 @@ import { ProviderRegistry } from '../providers/registry.js';
 import { OttoConfig } from '../cli/configurator.js';
 
 export interface RouterResult {
-  classification: 'SIMPLE' | 'COMPLEX';
+  classification: 'CHAT' | 'SIMPLE_CODE' | 'COMPLEX_CODE';
   response?: string;
 }
 
 const ROUTER_SYSTEM_PROMPT = `You are a high-speed routing agent for O.T.T.O, an AI coding assistant.
-Your job is to read the user's latest message (and the recent conversation context) and determine if it requires a complex execution (using tools, writing code, reading files) or if it's a simple query/greeting that you can answer instantly.
+Your job is to read the user's latest message (and the recent conversation context) and determine how it should be handled.
 
 CLASSIFICATION RULES:
-1. SIMPLE: The user is saying "hi", "thank you", or asking a trivial conversational question (e.g. "what is the capital of France?"). You can answer this immediately without ANY tools or deep reasoning.
-2. COMPLEX: The user is asking to build something, edit a file, run a command, search the codebase, explain architecture, or perform ANY task that requires checking the project state or writing code.
+1. CHAT: The user is saying "hi", "thank you", or asking a trivial conversational question (e.g. "what is the capital of France?"). You can answer this immediately without ANY tools or deep reasoning.
+2. SIMPLE_CODE: The user is asking to make a minor edit to a single file, fix a typo, run a specific command, or debug a small issue. This does NOT require extensive architectural planning.
+3. COMPLEX_CODE: The user is asking to build a new feature, create multiple files, refactor architecture, or solve a complex problem that requires a detailed step-by-step plan.
 
 OUTPUT FORMAT:
 You MUST output ONLY a raw JSON object and nothing else. No markdown formatting, no backticks, no extra text.
 Format:
 {
-  "classification": "SIMPLE" | "COMPLEX",
-  "response": "Hello! How can I help you?" // ONLY provide a response if classification is SIMPLE.
+  "classification": "CHAT" | "SIMPLE_CODE" | "COMPLEX_CODE",
+  "response": "Hello! How can I help you?" // ONLY provide a response if classification is CHAT.
 }
 `;
 
@@ -29,10 +30,10 @@ export class RouterAgent {
     config: OttoConfig,
     provider: ProviderRegistry
   ): Promise<RouterResult> {
-    // If the last message is a slash command (e.g. /analyze-code, /plan, /goal), it's ALWAYS complex.
+    // If the last message is a slash command (e.g. /analyze-code, /plan, /goal), it's ALWAYS complex code routing.
     const lastMsg = messages[messages.length - 1];
     if (lastMsg && lastMsg.content.toString().trim().startsWith('/')) {
-      return { classification: 'COMPLEX' };
+      return { classification: 'COMPLEX_CODE' };
     }
 
     try {
@@ -63,14 +64,14 @@ export class RouterAgent {
       
       const result = JSON.parse(cleanedText) as RouterResult;
       
-      if (result.classification === 'SIMPLE' && result.response) {
+      if (result.classification === 'CHAT' && result.response) {
         return result;
       }
-      return { classification: 'COMPLEX' };
+      return result;
       
     } catch (e) {
-      // If parsing fails or any error occurs, default to COMPLEX to safely pass it to the main agent loop.
-      return { classification: 'COMPLEX' };
+      // If parsing fails or any error occurs, default to COMPLEX_CODE to safely pass it to the main agent loop.
+      return { classification: 'COMPLEX_CODE' };
     }
   }
 }

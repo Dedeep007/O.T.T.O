@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text, useInput } from './ink-compat.js';
 import chalk from 'chalk';
 import { marked, Marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';

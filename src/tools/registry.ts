@@ -2,6 +2,7 @@ import { executeTerminalCommand, listBackgroundProcesses } from './builtin/termi
 import { launchOsApp } from './builtin/os.js';
 import { readBrowserAccessibility } from './builtin/browser.js';
 import { searchCode, readFileLines, readFile, listDirectory, replaceFileLines, writeFile } from './builtin/fs.js';
+import { readSkillTool } from './skill_tool.js';
 
 export const tools = [
   searchCode,
@@ -13,5 +14,6 @@ export const tools = [
   executeTerminalCommand,
   launchOsApp,
   readBrowserAccessibility,
-  listBackgroundProcesses
+  listBackgroundProcesses,
+  readSkillTool
 ];

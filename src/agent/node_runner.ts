@@ -17,6 +17,7 @@ export class NodeRunner extends EventEmitter {
   ) {
     let finalMessage: any = null;
     let isDone = false;
+    let lastRenderTime = 0;
 
     for await (const chunk of stream) {
       if (chatSession.cancelledThreads.has(currentThreadId)) {
@@ -55,9 +56,16 @@ export class NodeRunner extends EventEmitter {
           this.emit('stream_update');
         }
         
-        this.emit('stream_chunk');
+        const now = Date.now();
+        if (now - lastRenderTime > 50) {
+          this.emit('stream_chunk');
+          lastRenderTime = now;
+        }
       }
     }
+    
+    // Ensure the final chunk renders
+    this.emit('stream_chunk');
 
     if (isDone) return { finalMessage, isDone: true };
 

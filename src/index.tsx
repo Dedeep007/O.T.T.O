@@ -28,8 +28,7 @@ import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
 import React, { useState, useEffect } from 'react';
-import { render as inkRender } from 'ink';
-
+import { render } from 'ink';
 let CLI_VERSION = '1.0.0';
 try {
   let dir = process.cwd();
@@ -2592,7 +2591,7 @@ async function main() {
 
   // Launch OS via Ink React renderer
   phone.pushView(createHomeView());
-  inkRender(<AppShell phone={phone} chatUI={chatUI} />);
+  render(<AppShell phone={phone} chatUI={chatUI} />);
   phone.startListening();
 }
 
@@ -2617,6 +2616,7 @@ process.on('SIGINT', cleanupAndExit);
 process.on('SIGTERM', cleanupAndExit);
 
 main().catch(err => {
-  ui.error(err.message);
+  console.error(err);
+  fs.writeFileSync('crash.txt', err.stack || err.message);
   process.exit(1);
 });

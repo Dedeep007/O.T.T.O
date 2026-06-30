@@ -1,5 +1,5 @@
 import React from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text } from '../ink-compat.js';
 import chalk from 'chalk';
 import { renderMarkdownWithOttoStyles } from '../chat.js';
 

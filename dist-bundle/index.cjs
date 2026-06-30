@@ -619,6 +619,177 @@ var init_configurator = __esm({
   }
 });
 
+// src/cli/workspaceDiff.ts
+function shouldSkipDir(dirName) {
+  return EXCLUDED_DIRS.has(dirName);
+}
+function isLikelyTextFile(filePath) {
+  try {
+    const fd = import_fs2.default.openSync(filePath, "r");
+    const buffer = Buffer.alloc(512);
+    const bytesRead = import_fs2.default.readSync(fd, buffer, 0, buffer.length, 0);
+    import_fs2.default.closeSync(fd);
+    for (let i = 0; i < bytesRead; i++) {
+      if (buffer[i] === 0) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+function walk(dir, root, snapshot) {
+  const entries = import_fs2.default.readdirSync(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      if (shouldSkipDir(entry.name)) continue;
+      walk(import_path2.default.join(dir, entry.name), root, snapshot);
+      continue;
+    }
+    if (entry.name === "package-lock.json" || entry.name === "yarn.lock" || entry.name === "pnpm-lock.yaml") {
+      continue;
+    }
+    const fullPath = import_path2.default.join(dir, entry.name);
+    let stat;
+    try {
+      stat = import_fs2.default.statSync(fullPath);
+    } catch {
+      continue;
+    }
+    if (stat.size > MAX_FILE_SIZE || !isLikelyTextFile(fullPath)) continue;
+    try {
+      const relPath = import_path2.default.relative(root, fullPath).replace(/\\/g, "/");
+      snapshot.set(relPath, import_fs2.default.readFileSync(fullPath, "utf8"));
+    } catch {
+      continue;
+    }
+  }
+}
+function captureWorkspaceSnapshot(root = process.cwd()) {
+  const snapshot = /* @__PURE__ */ new Map();
+  walk(root, root, snapshot);
+  return snapshot;
+}
+function createModifiedDiff(relPath, beforeContent, afterContent) {
+  const beforeLines = beforeContent.split("\n");
+  const afterLines = afterContent.split("\n");
+  let firstDiff = 0;
+  while (firstDiff < beforeLines.length && firstDiff < afterLines.length && beforeLines[firstDiff] === afterLines[firstDiff]) {
+    firstDiff++;
+  }
+  let beforeEnd = beforeLines.length - 1;
+  let afterEnd = afterLines.length - 1;
+  while (beforeEnd >= firstDiff && afterEnd >= firstDiff && beforeLines[beforeEnd] === afterLines[afterEnd]) {
+    beforeEnd--;
+    afterEnd--;
+  }
+  const start = Math.max(0, firstDiff - CONTEXT_LINES);
+  const beforeStop = Math.min(beforeLines.length, beforeEnd + CONTEXT_LINES + 1);
+  const afterStop = Math.min(afterLines.length, afterEnd + CONTEXT_LINES + 1);
+  const diffLines = [
+    `--- ${relPath}`,
+    `+++ ${relPath}`,
+    "@@"
+  ];
+  for (let i = start; i < firstDiff; i++) diffLines.push(` ${beforeLines[i]}`);
+  for (let i = firstDiff; i < beforeEnd + 1; i++) diffLines.push(`-${beforeLines[i]}`);
+  for (let i = firstDiff; i < afterEnd + 1; i++) diffLines.push(`+${afterLines[i]}`);
+  const suffixStart = Math.max(firstDiff, Math.max(beforeEnd + 1, afterEnd + 1));
+  const suffixEnd = Math.max(beforeStop, afterStop);
+  for (let i = suffixStart; i < suffixEnd; i++) {
+    const line = afterLines[i] ?? beforeLines[i];
+    if (line !== void 0) diffLines.push(` ${line}`);
+  }
+  return diffLines.join("\n");
+}
+function createNewFileDiff(relPath, content) {
+  const lines = content.split("\n").slice(0, 500);
+  return [
+    `--- /dev/null`,
+    `+++ ${relPath}`,
+    "@@",
+    ...lines.map((line) => `+${line}`)
+  ].join("\n");
+}
+function createDeletedFileDiff(relPath, content) {
+  const lines = content.split("\n").slice(0, 500);
+  return [
+    `--- ${relPath}`,
+    `+++ /dev/null`,
+    "@@",
+    ...lines.map((line) => `-${line}`)
+  ].join("\n");
+}
+function formatWorkspaceChanges(before, after) {
+  const changes = [];
+  const seen = /* @__PURE__ */ new Set([...before.keys(), ...after.keys()]);
+  for (const relPath of Array.from(seen).sort()) {
+    const prev = before.get(relPath);
+    const next = after.get(relPath);
+    if (prev === next) continue;
+    if (changes.length >= MAX_PREVIEW_FILES) break;
+    if (prev !== void 0 && next !== void 0) {
+      changes.push(`Edited file: ${relPath}
+\`\`\`diff
+${createModifiedDiff(relPath, prev, next)}
+\`\`\``);
+    } else if (next !== void 0) {
+      changes.push(`Created file: ${relPath}
+\`\`\`diff
+${createNewFileDiff(relPath, next)}
+\`\`\``);
+    } else if (prev !== void 0) {
+      changes.push(`Deleted file: ${relPath}
+\`\`\`diff
+${createDeletedFileDiff(relPath, prev)}
+\`\`\``);
+    }
+  }
+  return changes.join("\n\n");
+}
+function restoreWorkspaceSnapshot(backup, root = process.cwd()) {
+  const current = captureWorkspaceSnapshot(root);
+  for (const [relPath, content] of backup.entries()) {
+    const fullPath = import_path2.default.join(root, relPath);
+    const dir = import_path2.default.dirname(fullPath);
+    if (!import_fs2.default.existsSync(dir)) {
+      import_fs2.default.mkdirSync(dir, { recursive: true });
+    }
+    const currentContent = current.get(relPath);
+    if (currentContent !== content) {
+      import_fs2.default.writeFileSync(fullPath, content, "utf8");
+    }
+  }
+  for (const relPath of current.keys()) {
+    if (!backup.has(relPath)) {
+      const fullPath = import_path2.default.join(root, relPath);
+      try {
+        import_fs2.default.unlinkSync(fullPath);
+      } catch {
+      }
+    }
+  }
+}
+var import_fs2, import_path2, EXCLUDED_DIRS, MAX_FILE_SIZE, MAX_PREVIEW_FILES, CONTEXT_LINES;
+var init_workspaceDiff = __esm({
+  "src/cli/workspaceDiff.ts"() {
+    "use strict";
+    import_fs2 = __toESM(require("fs"), 1);
+    import_path2 = __toESM(require("path"), 1);
+    EXCLUDED_DIRS = /* @__PURE__ */ new Set([
+      "node_modules",
+      "dist",
+      "dist-bundle",
+      "build",
+      ".git",
+      ".agents",
+      ".codex"
+    ]);
+    MAX_FILE_SIZE = 2e5;
+    MAX_PREVIEW_FILES = 4;
+    CONTEXT_LINES = 2;
+  }
+});
+
 // src/skills/loader.ts
 function parseFrontmatter(content) {
   const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
@@ -675,17 +846,17 @@ function parseFrontmatter(content) {
 function discoverScripts(skillDir) {
   const scriptExts = [".mjs", ".js", ".ts", ".py", ".sh", ".ps1"];
   try {
-    return import_fs3.default.readdirSync(skillDir).filter((f) => scriptExts.some((ext) => f.endsWith(ext))).map((f) => import_path3.default.join(skillDir, f));
+    return import_fs5.default.readdirSync(skillDir).filter((f) => scriptExts.some((ext) => f.endsWith(ext))).map((f) => import_path5.default.join(skillDir, f));
   } catch {
     return [];
   }
 }
 function loadSkill(skillMdPath) {
   try {
-    const content = import_fs3.default.readFileSync(skillMdPath, "utf-8");
+    const content = import_fs5.default.readFileSync(skillMdPath, "utf-8");
     const { frontmatter, body } = parseFrontmatter(content);
     if (!frontmatter.name) return null;
-    const skillDir = import_path3.default.dirname(skillMdPath);
+    const skillDir = import_path5.default.dirname(skillMdPath);
     return {
       name: frontmatter.name,
       description: frontmatter.description || "",
@@ -703,7 +874,7 @@ function loadSkill(skillMdPath) {
 }
 function loadAgent(agentPath) {
   try {
-    const content = import_fs3.default.readFileSync(agentPath, "utf-8");
+    const content = import_fs5.default.readFileSync(agentPath, "utf-8");
     const { frontmatter, body } = parseFrontmatter(content);
     if (!frontmatter.name) return null;
     return {
@@ -717,21 +888,21 @@ function loadAgent(agentPath) {
   }
 }
 function scanRoot(rootDir, registry2) {
-  const skillsDir = import_path3.default.join(rootDir, "skills");
-  if (import_fs3.default.existsSync(skillsDir)) {
+  const skillsDir = import_path5.default.join(rootDir, "skills");
+  if (import_fs5.default.existsSync(skillsDir)) {
     try {
-      const entries = import_fs3.default.readdirSync(skillsDir, { withFileTypes: true });
+      const entries = import_fs5.default.readdirSync(skillsDir, { withFileTypes: true });
       for (const entry of entries) {
         if (entry.isDirectory()) {
-          const skillMd = import_path3.default.join(skillsDir, entry.name, "SKILL.md");
-          if (import_fs3.default.existsSync(skillMd)) {
+          const skillMd = import_path5.default.join(skillsDir, entry.name, "SKILL.md");
+          if (import_fs5.default.existsSync(skillMd)) {
             const skill = loadSkill(skillMd);
             if (skill && !registry2.skills.has(skill.name)) {
               registry2.skills.set(skill.name, skill);
             }
           }
         } else if (entry.isFile() && entry.name.endsWith(".md")) {
-          const skill = loadSkill(import_path3.default.join(skillsDir, entry.name));
+          const skill = loadSkill(import_path5.default.join(skillsDir, entry.name));
           if (skill && !registry2.skills.has(skill.name)) {
             registry2.skills.set(skill.name, skill);
           }
@@ -740,12 +911,12 @@ function scanRoot(rootDir, registry2) {
     } catch {
     }
   }
-  const agentsDir = import_path3.default.join(rootDir, "agents");
-  if (import_fs3.default.existsSync(agentsDir)) {
+  const agentsDir = import_path5.default.join(rootDir, "agents");
+  if (import_fs5.default.existsSync(agentsDir)) {
     try {
-      const entries = import_fs3.default.readdirSync(agentsDir).filter((f) => f.endsWith(".md"));
+      const entries = import_fs5.default.readdirSync(agentsDir).filter((f) => f.endsWith(".md"));
       for (const f of entries) {
-        const agent = loadAgent(import_path3.default.join(agentsDir, f));
+        const agent = loadAgent(import_path5.default.join(agentsDir, f));
         if (agent && !registry2.agents.has(agent.name)) {
           registry2.agents.set(agent.name, agent);
         }
@@ -761,15 +932,15 @@ function discoverSkills() {
     lastScanned: Date.now()
   };
   const cwd = process.cwd();
-  const home = import_os3.default.homedir();
+  const home = import_os4.default.homedir();
   const roots = [
-    import_path3.default.join(cwd, ".otto"),
-    import_path3.default.join(cwd, ".agents"),
-    import_path3.default.join(home, ".otto"),
-    import_path3.default.join(home, ".agents")
+    import_path5.default.join(cwd, ".otto"),
+    import_path5.default.join(cwd, ".agents"),
+    import_path5.default.join(home, ".otto"),
+    import_path5.default.join(home, ".agents")
   ];
   for (const root of roots) {
-    if (import_fs3.default.existsSync(root)) {
+    if (import_fs5.default.existsSync(root)) {
       scanRoot(root, registry2);
     }
   }
@@ -800,6 +971,18 @@ function formatSkillsForPrompt(registry2) {
   lines.push("\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n");
   return lines.join("\n");
 }
+function formatSkillsForKnowledgeGraph(registry2) {
+  if (registry2.skills.size === 0) return "";
+  const lines = [];
+  lines.push("\n\n\u2501\u2501\u2501\u2501\u2501 SKILLS KNOWLEDGE GRAPH \u2501\u2501\u2501\u2501\u2501");
+  lines.push("You have access to a knowledge graph of coding skills. Use the `read_skill` tool to dynamically load the exact instructions for any of the following skills if you need to implement them:\n");
+  for (const [name, skill] of registry2.skills) {
+    lines.push(`- **${name}** \u2014 ${skill.description}`);
+  }
+  lines.push("\nIf your task involves any of these domains, you MUST call `read_skill(skillName)` first before writing code.");
+  lines.push("\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n");
+  return lines.join("\n");
+}
 function getSkillInstructions(registry2, skillName) {
   const skill = registry2.skills.get(skillName);
   if (!skill) return null;
@@ -814,7 +997,7 @@ function getSkillInstructions(registry2, skillName) {
     instructions += `Skill directory: ${skill.skillDir}
 `;
     for (const s of skill.scripts) {
-      instructions += `- ${import_path3.default.basename(s)}
+      instructions += `- ${import_path5.default.basename(s)}
 `;
     }
   }
@@ -835,13 +1018,13 @@ function getSkillRegistry(forceRefresh = false) {
   cacheExpiry = now + CACHE_TTL_MS;
   return cachedRegistry;
 }
-var import_fs3, import_path3, import_os3, cachedRegistry, cacheExpiry, CACHE_TTL_MS;
+var import_fs5, import_path5, import_os4, cachedRegistry, cacheExpiry, CACHE_TTL_MS;
 var init_loader = __esm({
   "src/skills/loader.ts"() {
     "use strict";
-    import_fs3 = __toESM(require("fs"), 1);
-    import_path3 = __toESM(require("path"), 1);
-    import_os3 = __toESM(require("os"), 1);
+    import_fs5 = __toESM(require("fs"), 1);
+    import_path5 = __toESM(require("path"), 1);
+    import_os4 = __toESM(require("os"), 1);
     cachedRegistry = null;
     cacheExpiry = 0;
     CACHE_TTL_MS = 3e4;
@@ -935,781 +1118,6 @@ ${agentBody}
         return suggestions;
       }
     };
-  }
-});
-
-// src/security/background.ts
-var import_tree_kill, BackgroundManager, backgroundManager;
-var init_background = __esm({
-  "src/security/background.ts"() {
-    "use strict";
-    import_tree_kill = __toESM(require("tree-kill"), 1);
-    BackgroundManager = class {
-      processes = /* @__PURE__ */ new Map();
-      addProcess(command, child, threadId) {
-        if (child.pid) {
-          this.processes.set(child.pid, {
-            pid: child.pid,
-            command,
-            startTime: Date.now(),
-            process: child,
-            threadId
-          });
-          child.on("exit", () => {
-            this.removeProcess(child.pid);
-          });
-          child.on("error", () => {
-            this.removeProcess(child.pid);
-          });
-        }
-      }
-      removeProcess(pid) {
-        this.processes.delete(pid);
-      }
-      getProcesses() {
-        return Array.from(this.processes.values()).sort((a, b) => b.startTime - a.startTime);
-      }
-      killProcess(pid) {
-        return new Promise((resolve, reject) => {
-          const procInfo = this.processes.get(pid);
-          if (!procInfo) {
-            resolve();
-            return;
-          }
-          (0, import_tree_kill.default)(pid, "SIGKILL", (err) => {
-            if (err) {
-              reject(err);
-            } else {
-              this.removeProcess(pid);
-              resolve();
-            }
-          });
-        });
-      }
-      async killAllForThread(threadId) {
-        const threadProcs = Array.from(this.processes.values()).filter((p) => p.threadId === threadId);
-        for (const p of threadProcs) {
-          try {
-            await this.killProcess(p.pid);
-          } catch (e) {
-          }
-        }
-      }
-    };
-    backgroundManager = new BackgroundManager();
-  }
-});
-
-// src/db/checkpoint.ts
-var import_path5, import_os4, import_better_sqlite3, import_langgraph_checkpoint_sqlite, DBManager, dbManager;
-var init_checkpoint = __esm({
-  "src/db/checkpoint.ts"() {
-    "use strict";
-    import_path5 = __toESM(require("path"), 1);
-    import_os4 = __toESM(require("os"), 1);
-    import_better_sqlite3 = __toESM(require("better-sqlite3"), 1);
-    import_langgraph_checkpoint_sqlite = require("@langchain/langgraph-checkpoint-sqlite");
-    DBManager = class {
-      db;
-      saver;
-      constructor() {
-        const dbPath = import_path5.default.join(import_os4.default.homedir(), ".otto_checkpoint.db");
-        this.db = new import_better_sqlite3.default(dbPath);
-        this.db.pragma("journal_mode = WAL");
-        this.db.exec(`
-      CREATE TABLE IF NOT EXISTS otto_threads (
-        id TEXT PRIMARY KEY,
-        display_name TEXT DEFAULT 'New Chat',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-        this.db.exec(`
-      CREATE TABLE IF NOT EXISTS otto_thread_state (
-        thread_id TEXT PRIMARY KEY,
-        messages_json TEXT NOT NULL DEFAULT '[]',
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-        this.db.exec(`
-      CREATE TABLE IF NOT EXISTS otto_meta (
-        key TEXT PRIMARY KEY,
-        value TEXT
-      )
-    `);
-        this.ensureThreadColumns();
-        this.saver = new import_langgraph_checkpoint_sqlite.SqliteSaver(this.db);
-      }
-      ensureThreadColumns() {
-        const columns = this.db.prepare(`PRAGMA table_info(otto_threads)`).all();
-        const hasDisplayName = columns.some((col) => col.name === "display_name");
-        if (!hasDisplayName) {
-          this.db.exec(`ALTER TABLE otto_threads ADD COLUMN display_name TEXT DEFAULT 'New Chat'`);
-          this.db.exec(`UPDATE otto_threads SET display_name = 'New Chat' WHERE display_name IS NULL OR TRIM(display_name) = ''`);
-        }
-      }
-      tableExists(tableName) {
-        const row = this.db.prepare(
-          `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`
-        ).get(tableName);
-        return !!row?.name;
-      }
-      async setup() {
-        await this.saver.setup();
-      }
-      setLastActiveThread(id) {
-        this.db.prepare(`
-      INSERT INTO otto_meta (key, value) VALUES ('last_active_thread', ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value
-    `).run(id);
-      }
-      getLastActiveThread() {
-        const row = this.db.prepare(`SELECT value FROM otto_meta WHERE key = 'last_active_thread'`).get();
-        return row?.value || null;
-      }
-      registerThread(id, displayName) {
-        const stmt = this.db.prepare(`
-      INSERT INTO otto_threads (id, display_name) VALUES (?, COALESCE(?, 'New Chat'))
-      ON CONFLICT(id) DO UPDATE SET 
-        display_name = COALESCE(?, otto_threads.display_name),
-        updated_at = CURRENT_TIMESTAMP
-    `);
-        stmt.run(id, displayName ?? null, displayName ?? null);
-      }
-      listThreads() {
-        const stmt = this.db.prepare(`
-      SELECT 
-        id, 
-        COALESCE(NULLIF(TRIM(display_name), ''), 'New Chat') AS display_name, 
-        created_at, 
-        updated_at 
-      FROM otto_threads 
-      ORDER BY updated_at DESC
-    `);
-        return stmt.all().map((row) => ({
-          id: row.id,
-          displayName: row.display_name,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at
-        }));
-      }
-      getThread(id) {
-        const stmt = this.db.prepare(`
-      SELECT 
-        id, 
-        COALESCE(NULLIF(TRIM(display_name), ''), 'New Chat') AS display_name, 
-        created_at, 
-        updated_at 
-      FROM otto_threads 
-      WHERE id = ?
-    `);
-        const row = stmt.get(id);
-        if (!row) return null;
-        return {
-          id: row.id,
-          displayName: row.display_name,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at
-        };
-      }
-      updateThreadName(id, displayName) {
-        this.db.prepare(`
-      UPDATE otto_threads 
-      SET display_name = ?, updated_at = CURRENT_TIMESTAMP 
-      WHERE id = ?
-    `).run(displayName, id);
-      }
-      saveThreadMessages(id, messages) {
-        this.db.prepare(`
-      INSERT INTO otto_thread_state (thread_id, messages_json)
-      VALUES (?, ?)
-      ON CONFLICT(thread_id) DO UPDATE SET
-        messages_json = excluded.messages_json,
-        updated_at = CURRENT_TIMESTAMP
-    `).run(id, JSON.stringify(messages ?? []));
-      }
-      loadThreadMessages(id) {
-        const row = this.db.prepare(`
-      SELECT messages_json 
-      FROM otto_thread_state 
-      WHERE thread_id = ?
-    `).get(id);
-        if (!row?.messages_json) return [];
-        try {
-          const parsed = JSON.parse(row.messages_json);
-          return Array.isArray(parsed) ? parsed : [];
-        } catch {
-          return [];
-        }
-      }
-      deleteThread(id) {
-        this.db.prepare("DELETE FROM otto_threads WHERE id = ?").run(id);
-        this.db.prepare("DELETE FROM otto_thread_state WHERE thread_id = ?").run(id);
-        if (this.tableExists("checkpoints")) {
-          this.db.prepare("DELETE FROM checkpoints WHERE thread_id = ?").run(id);
-        }
-        if (this.tableExists("checkpoint_blobs")) {
-          this.db.prepare("DELETE FROM checkpoint_blobs WHERE thread_id = ?").run(id);
-        }
-        if (this.tableExists("checkpoint_writes")) {
-          this.db.prepare("DELETE FROM checkpoint_writes WHERE thread_id = ?").run(id);
-        }
-      }
-      deleteAllThreads() {
-        this.db.prepare("DELETE FROM otto_threads").run();
-        this.db.prepare("DELETE FROM otto_thread_state").run();
-        if (this.tableExists("checkpoints")) {
-          this.db.prepare("DELETE FROM checkpoints").run();
-        }
-        if (this.tableExists("checkpoint_blobs")) {
-          this.db.prepare("DELETE FROM checkpoint_blobs").run();
-        }
-        if (this.tableExists("checkpoint_writes")) {
-          this.db.prepare("DELETE FROM checkpoint_writes").run();
-        }
-      }
-    };
-    dbManager = new DBManager();
-  }
-});
-
-// src/cli/session.ts
-var import_os5, import_messages4, import_events2, sessionEvents, ChatSession, chatSession;
-var init_session = __esm({
-  "src/cli/session.ts"() {
-    "use strict";
-    import_os5 = __toESM(require("os"), 1);
-    import_messages4 = require("@langchain/core/messages");
-    init_checkpoint();
-    init_ui();
-    import_events2 = require("events");
-    sessionEvents = new import_events2.EventEmitter();
-    ChatSession = class _ChatSession {
-      threadId;
-      threadName;
-      username;
-      hostname;
-      threadMessages = /* @__PURE__ */ new Map();
-      activeStreams = /* @__PURE__ */ new Set();
-      cancelledThreads = /* @__PURE__ */ new Set();
-      isChatActive = false;
-      pendingApprovals = [];
-      pendingPlans = /* @__PURE__ */ new Set();
-      agentStates = /* @__PURE__ */ new Map();
-      delayMessages = /* @__PURE__ */ new Map();
-      planMenuIndices = /* @__PURE__ */ new Map();
-      approvalMenuIndices = /* @__PURE__ */ new Map();
-      static DEFAULT_THREAD_NAME = "New Chat";
-      constructor() {
-        this.username = import_os5.default.userInfo().username;
-        this.hostname = import_os5.default.hostname();
-        const lastId = dbManager.getLastActiveThread();
-        if (lastId) {
-          this.threadId = lastId;
-          const thread = dbManager.getThread(lastId);
-          this.threadName = thread?.displayName ?? _ChatSession.DEFAULT_THREAD_NAME;
-          this.threadMessages.set(this.threadId, this.deserializeMessages(dbManager.loadThreadMessages(this.threadId)));
-        } else {
-          this.threadId = `session-${Math.random().toString(36).substring(2, 8)}`;
-          this.threadName = _ChatSession.DEFAULT_THREAD_NAME;
-          dbManager.registerThread(this.threadId, this.threadName);
-          this.threadMessages.set(this.threadId, []);
-          dbManager.saveThreadMessages(this.threadId, []);
-          dbManager.setLastActiveThread(this.threadId);
-        }
-      }
-      switchThread(id) {
-        this.persistThread(this.threadId);
-        this.threadId = id;
-        const thread = dbManager.getThread(this.threadId);
-        this.threadName = thread?.displayName ?? _ChatSession.DEFAULT_THREAD_NAME;
-        dbManager.registerThread(this.threadId, this.threadName);
-        dbManager.setLastActiveThread(this.threadId);
-        this.threadMessages.set(this.threadId, this.deserializeMessages(dbManager.loadThreadMessages(this.threadId)));
-        ui.success(`Switched to thread: ${this.threadName}`);
-      }
-      createFreshThread(displayName = _ChatSession.DEFAULT_THREAD_NAME) {
-        this.persistThread(this.threadId);
-        this.threadId = `session-${Math.random().toString(36).substring(2, 8)}`;
-        this.threadName = displayName;
-        dbManager.registerThread(this.threadId, this.threadName);
-        dbManager.setLastActiveThread(this.threadId);
-        this.threadMessages.set(this.threadId, []);
-        dbManager.saveThreadMessages(this.threadId, []);
-      }
-      ensureNamedFromPrompt(prompt) {
-        if (this.threadName !== _ChatSession.DEFAULT_THREAD_NAME) return;
-        const nextName = this.summarizeThreadName(prompt);
-        this.threadName = nextName;
-        dbManager.updateThreadName(this.threadId, nextName);
-      }
-      listThreads() {
-        const threads = dbManager.listThreads();
-        ui.header("Available Threads");
-        threads.forEach((t) => ui.info(`${t.displayName} [${t.id}]${t.id === this.threadId ? " (active)" : ""}`));
-      }
-      getPromptInfo() {
-        const cwd = process.cwd();
-        const shortCwd = cwd.replace(import_os5.default.homedir(), "~");
-        return `[${this.threadName}] ${this.username}@${this.hostname}:${shortCwd}`;
-      }
-      getMessages() {
-        if (!this.threadMessages.has(this.threadId)) {
-          this.threadMessages.set(this.threadId, this.deserializeMessages(dbManager.loadThreadMessages(this.threadId)));
-        }
-        return this.threadMessages.get(this.threadId);
-      }
-      setMessages(messages) {
-        const next = Array.from(messages ?? []);
-        this.threadMessages.set(this.threadId, next);
-        dbManager.saveThreadMessages(this.threadId, next.map((message) => this.serializeMessage(message)).filter(Boolean));
-      }
-      clearThreadMessages(id) {
-        this.threadMessages.delete(id);
-        dbManager.saveThreadMessages(id, []);
-      }
-      clearAllThreadMessages() {
-        this.threadMessages.clear();
-        this.threadMessages.set(this.threadId, []);
-        dbManager.saveThreadMessages(this.threadId, []);
-      }
-      persistThread(id) {
-        const messages = this.threadMessages.get(id);
-        if (messages) {
-          dbManager.saveThreadMessages(id, messages.map((message) => this.serializeMessage(message)).filter(Boolean));
-        }
-      }
-      serializeMessage(message) {
-        if (!message?._getType) return null;
-        const role = message._getType();
-        const content = message.content?.toString?.() ?? "";
-        const base = {
-          content,
-          name: message.name,
-          id: message.id,
-          additional_kwargs: message.additional_kwargs ?? {},
-          response_metadata: message.response_metadata ?? {}
-        };
-        if (role === "human") {
-          return { role, ...base };
-        }
-        if (role === "ai") {
-          return {
-            role,
-            ...base,
-            tool_calls: message.tool_calls ?? [],
-            invalid_tool_calls: message.invalid_tool_calls ?? []
-          };
-        }
-        if (role === "tool") {
-          return {
-            role,
-            ...base,
-            tool_call_id: message.tool_call_id
-          };
-        }
-        return { role: "system", ...base };
-      }
-      deserializeMessages(messages) {
-        if (!Array.isArray(messages)) return [];
-        return messages.map((message) => {
-          if (!message || typeof message !== "object") return null;
-          const content = message.content ?? "";
-          if (message.role === "human") {
-            return new import_messages4.HumanMessage({
-              content,
-              name: message.name,
-              id: message.id,
-              additional_kwargs: message.additional_kwargs ?? {}
-            });
-          }
-          if (message.role === "ai") {
-            return new import_messages4.AIMessage({
-              content,
-              name: message.name,
-              id: message.id,
-              tool_calls: message.tool_calls ?? [],
-              invalid_tool_calls: message.invalid_tool_calls ?? [],
-              additional_kwargs: message.additional_kwargs ?? {},
-              response_metadata: message.response_metadata ?? {}
-            });
-          }
-          if (message.role === "tool") {
-            return new import_messages4.ToolMessage({
-              content,
-              tool_call_id: message.tool_call_id ?? "",
-              name: message.name,
-              id: message.id,
-              additional_kwargs: message.additional_kwargs ?? {}
-            });
-          }
-          return new import_messages4.SystemMessage({
-            content,
-            name: message.name,
-            id: message.id,
-            additional_kwargs: message.additional_kwargs ?? {}
-          });
-        }).filter(Boolean);
-      }
-      summarizeThreadName(prompt) {
-        const cleaned = prompt.replace(/[`"'()[\]{}<>]/g, " ").replace(/\b(can|could|would|please|help|with|that|this|need|want|make|build|create|write|generate|show|tell|about|for|the|a|an|to|of|in|on|and|or|my|me)\b/gi, " ").replace(/\s+/g, " ").trim();
-        const tokens = cleaned.split(" ").map((token) => token.trim()).filter(Boolean);
-        if (tokens.length === 0) return _ChatSession.DEFAULT_THREAD_NAME;
-        const normalized = tokens.slice(0, 4).map((token) => {
-          const lower = token.toLowerCase();
-          if (lower === "cpp" || lower === "c++") return "CPP";
-          if (lower === "js") return "JS";
-          if (lower === "ts") return "TS";
-          return lower.charAt(0).toUpperCase() + lower.slice(1);
-        }).join(" ");
-        return normalized.length > 40 ? normalized.slice(0, 40).trim() : normalized;
-      }
-    };
-    chatSession = new ChatSession();
-  }
-});
-
-// src/cli/threadContext.ts
-function getExecutingThreadId() {
-  return threadLocalStorage.getStore();
-}
-var import_async_hooks, threadLocalStorage;
-var init_threadContext = __esm({
-  "src/cli/threadContext.ts"() {
-    "use strict";
-    import_async_hooks = require("async_hooks");
-    threadLocalStorage = new import_async_hooks.AsyncLocalStorage();
-  }
-});
-
-// src/security/executor.ts
-var import_child_process, import_shell_quote, os6, fs5, path6, Executor, executor;
-var init_executor2 = __esm({
-  "src/security/executor.ts"() {
-    "use strict";
-    import_child_process = require("child_process");
-    import_shell_quote = require("shell-quote");
-    init_configurator();
-    init_ui();
-    init_background();
-    os6 = __toESM(require("os"), 1);
-    fs5 = __toESM(require("fs"), 1);
-    path6 = __toESM(require("path"), 1);
-    init_session();
-    init_threadContext();
-    Executor = class {
-      lastCommands = /* @__PURE__ */ new Map();
-      async executeCommand(commandStr, background = false) {
-        let cleanCmd = commandStr.trim();
-        const isBgPattern = /&$/i.test(cleanCmd) || /^(npm\s+(run\s+)?(dev|start|watch)|node\s+server|python\s+-m\s+http\.server)/i.test(cleanCmd) || /\b(--background|-background|--bg)\b/i.test(cleanCmd);
-        if (isBgPattern && !background) {
-          background = true;
-          ui.info(`Auto-backgrounding command: "${commandStr}"`);
-        }
-        cleanCmd = cleanCmd.replace(/(?:\s+#|\s+\/\/).*$/, "").trim();
-        cleanCmd = cleanCmd.replace(/\b(--background|-background|--bg)\b/gi, "").trim();
-        if (process.platform === "win32") {
-          cleanCmd = cleanCmd.replace(/&+\s*$/, "").trim();
-        }
-        commandStr = cleanCmd;
-        const executingThreadId = getExecutingThreadId() || chatSession.threadId || "default";
-        const cmdRecord = this.lastCommands.get(executingThreadId);
-        if (cmdRecord && cmdRecord.cmdStr === commandStr && cmdRecord.attempts >= 3) {
-          throw new Error(`Command "${commandStr}" has failed consecutively 3 times. O.T.T.O has blocked further retries to prevent an infinite loop. Please analyze the previous errors/logs and try a different command, arguments, or correct the code issues manually first.`);
-        }
-        const config2 = await Configurator.init();
-        const parsed = (0, import_shell_quote.parse)(commandStr);
-        const cmd = String(parsed[0]);
-        const args = parsed.slice(1).map(String);
-        const isWhitelisted = config2.security.allowedCommands.includes(cmd);
-        if (config2.security.mode === "ask" || config2.security.mode === "approve" && !isWhitelisted) {
-          const choice = await this.promptAction(cmd, commandStr, executingThreadId);
-          if (choice === "deny") throw new Error("Execution denied by user.");
-          if (choice === "always") {
-            if (!isWhitelisted) {
-              config2.security.allowedCommands.push(cmd);
-            }
-            if (config2.security.mode === "ask") {
-              config2.security.mode = "approve";
-              ui.info("Security mode updated to 'Approve' (whitelisted commands run silently).");
-            }
-            Configurator.saveConfig(config2);
-          }
-        } else if (config2.security.mode === "full") {
-          ui.warning(`[Full Access Mode] Executing ${cmd} autonomously.`);
-        }
-        const runCore = async () => {
-          if (background) {
-            const logDir = path6.join(os6.tmpdir(), "otto-cli-logs");
-            if (!fs5.existsSync(logDir)) fs5.mkdirSync(logDir, { recursive: true });
-            const logPath = path6.join(logDir, `bg-${Date.now()}.log`);
-            const out = fs5.openSync(logPath, "a");
-            const err = fs5.openSync(logPath, "a");
-            const child = (0, import_child_process.spawn)(commandStr, {
-              cwd: process.cwd(),
-              shell: true,
-              stdio: ["ignore", out, err],
-              detached: process.platform !== "win32"
-            });
-            fs5.closeSync(out);
-            fs5.closeSync(err);
-            backgroundManager.addProcess(commandStr, child, executingThreadId);
-            let spawnError = null;
-            const onError = (err2) => {
-              spawnError = err2;
-            };
-            child.on("error", onError);
-            await new Promise((resolve) => setTimeout(resolve, 1500));
-            child.off("error", onError);
-            if (spawnError) {
-              throw spawnError;
-            }
-            if (child.exitCode !== null && child.exitCode !== void 0) {
-              let logs = "";
-              if (fs5.existsSync(logPath)) {
-                logs = fs5.readFileSync(logPath, "utf8").trim();
-              }
-              throw new Error(`Background process terminated immediately with exit code ${child.exitCode}.
-Logs:
-${logs.slice(-2e3)}`);
-            }
-            child.unref();
-            let initialLogs = "";
-            if (fs5.existsSync(logPath)) {
-              initialLogs = fs5.readFileSync(logPath, "utf8").trim();
-            }
-            const logMsg = initialLogs ? `
-Initial Output Logs:
-\`\`\`text
-${initialLogs.slice(0, 1e3)}
-\`\`\`` : "\nNo initial output logs yet.";
-            return `Background process started successfully with PID: ${child.pid}.
-Output is being logged to: ${logPath}${logMsg}
-Use the read_file tool to check this log file if you need more details.`;
-          }
-          return new Promise((resolve, reject) => {
-            (0, import_child_process.exec)(commandStr, { cwd: process.cwd(), timeout: 45e3 }, (error51, stdout, stderr) => {
-              if (error51) {
-                const out = stdout.toString().trim();
-                const err = stderr.toString().trim();
-                let msg = "";
-                if (error51.killed) {
-                  msg = `Command timed out and was killed after 45 seconds of inactivity. If this is a long-running process, run it with background: true.`;
-                } else {
-                  msg = `Command failed with exit code ${error51.code || "unknown"}:`;
-                }
-                if (err) msg += `
-STDERR:
-${err}`;
-                if (out) msg += `
-STDOUT:
-${out}`;
-                if (!err && !out && !error51.killed) msg += ` ${error51.message}`;
-                reject(new Error(msg));
-              } else {
-                resolve(stdout.toString() || stderr.toString() || "Command executed successfully.");
-              }
-            });
-          });
-        };
-        try {
-          const result = await runCore();
-          this.lastCommands.set(executingThreadId, { cmdStr: commandStr, attempts: 0 });
-          return result;
-        } catch (err) {
-          const currentAttempts = cmdRecord && cmdRecord.cmdStr === commandStr ? cmdRecord.attempts + 1 : 1;
-          this.lastCommands.set(executingThreadId, { cmdStr: commandStr, attempts: currentAttempts });
-          throw err;
-        }
-      }
-      async promptAction(cmd, fullCommand, executingThreadId) {
-        return new Promise((resolve) => {
-          chatSession.pendingApprovals.push({
-            threadId: executingThreadId,
-            type: "command",
-            cmd,
-            commandStr: fullCommand,
-            resolve
-          });
-          sessionEvents.emit("pending_approval");
-        });
-      }
-      clearAttempts() {
-        this.lastCommands.clear();
-      }
-    };
-    executor = new Executor();
-  }
-});
-
-// src/cli/workspaceDiff.ts
-function shouldSkipDir(dirName) {
-  return EXCLUDED_DIRS.has(dirName);
-}
-function isLikelyTextFile(filePath) {
-  try {
-    const fd = import_fs5.default.openSync(filePath, "r");
-    const buffer = Buffer.alloc(512);
-    const bytesRead = import_fs5.default.readSync(fd, buffer, 0, buffer.length, 0);
-    import_fs5.default.closeSync(fd);
-    for (let i = 0; i < bytesRead; i++) {
-      if (buffer[i] === 0) return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-function walk(dir, root, snapshot) {
-  const entries = import_fs5.default.readdirSync(dir, { withFileTypes: true });
-  for (const entry of entries) {
-    if (entry.isDirectory()) {
-      if (shouldSkipDir(entry.name)) continue;
-      walk(import_path6.default.join(dir, entry.name), root, snapshot);
-      continue;
-    }
-    if (entry.name === "package-lock.json" || entry.name === "yarn.lock" || entry.name === "pnpm-lock.yaml") {
-      continue;
-    }
-    const fullPath = import_path6.default.join(dir, entry.name);
-    let stat;
-    try {
-      stat = import_fs5.default.statSync(fullPath);
-    } catch {
-      continue;
-    }
-    if (stat.size > MAX_FILE_SIZE || !isLikelyTextFile(fullPath)) continue;
-    try {
-      const relPath = import_path6.default.relative(root, fullPath).replace(/\\/g, "/");
-      snapshot.set(relPath, import_fs5.default.readFileSync(fullPath, "utf8"));
-    } catch {
-      continue;
-    }
-  }
-}
-function captureWorkspaceSnapshot(root = process.cwd()) {
-  const snapshot = /* @__PURE__ */ new Map();
-  walk(root, root, snapshot);
-  return snapshot;
-}
-function createModifiedDiff(relPath, beforeContent, afterContent) {
-  const beforeLines = beforeContent.split("\n");
-  const afterLines = afterContent.split("\n");
-  let firstDiff = 0;
-  while (firstDiff < beforeLines.length && firstDiff < afterLines.length && beforeLines[firstDiff] === afterLines[firstDiff]) {
-    firstDiff++;
-  }
-  let beforeEnd = beforeLines.length - 1;
-  let afterEnd = afterLines.length - 1;
-  while (beforeEnd >= firstDiff && afterEnd >= firstDiff && beforeLines[beforeEnd] === afterLines[afterEnd]) {
-    beforeEnd--;
-    afterEnd--;
-  }
-  const start = Math.max(0, firstDiff - CONTEXT_LINES);
-  const beforeStop = Math.min(beforeLines.length, beforeEnd + CONTEXT_LINES + 1);
-  const afterStop = Math.min(afterLines.length, afterEnd + CONTEXT_LINES + 1);
-  const diffLines = [
-    `--- ${relPath}`,
-    `+++ ${relPath}`,
-    "@@"
-  ];
-  for (let i = start; i < firstDiff; i++) diffLines.push(` ${beforeLines[i]}`);
-  for (let i = firstDiff; i < beforeEnd + 1; i++) diffLines.push(`-${beforeLines[i]}`);
-  for (let i = firstDiff; i < afterEnd + 1; i++) diffLines.push(`+${afterLines[i]}`);
-  const suffixStart = Math.max(firstDiff, Math.max(beforeEnd + 1, afterEnd + 1));
-  const suffixEnd = Math.max(beforeStop, afterStop);
-  for (let i = suffixStart; i < suffixEnd; i++) {
-    const line = afterLines[i] ?? beforeLines[i];
-    if (line !== void 0) diffLines.push(` ${line}`);
-  }
-  return diffLines.join("\n");
-}
-function createNewFileDiff(relPath, content) {
-  const lines = content.split("\n").slice(0, 500);
-  return [
-    `--- /dev/null`,
-    `+++ ${relPath}`,
-    "@@",
-    ...lines.map((line) => `+${line}`)
-  ].join("\n");
-}
-function createDeletedFileDiff(relPath, content) {
-  const lines = content.split("\n").slice(0, 500);
-  return [
-    `--- ${relPath}`,
-    `+++ /dev/null`,
-    "@@",
-    ...lines.map((line) => `-${line}`)
-  ].join("\n");
-}
-function formatWorkspaceChanges(before, after) {
-  const changes = [];
-  const seen = /* @__PURE__ */ new Set([...before.keys(), ...after.keys()]);
-  for (const relPath of Array.from(seen).sort()) {
-    const prev = before.get(relPath);
-    const next = after.get(relPath);
-    if (prev === next) continue;
-    if (changes.length >= MAX_PREVIEW_FILES) break;
-    if (prev !== void 0 && next !== void 0) {
-      changes.push(`Edited file: ${relPath}
-\`\`\`diff
-${createModifiedDiff(relPath, prev, next)}
-\`\`\``);
-    } else if (next !== void 0) {
-      changes.push(`Created file: ${relPath}
-\`\`\`diff
-${createNewFileDiff(relPath, next)}
-\`\`\``);
-    } else if (prev !== void 0) {
-      changes.push(`Deleted file: ${relPath}
-\`\`\`diff
-${createDeletedFileDiff(relPath, prev)}
-\`\`\``);
-    }
-  }
-  return changes.join("\n\n");
-}
-function restoreWorkspaceSnapshot(backup, root = process.cwd()) {
-  const current = captureWorkspaceSnapshot(root);
-  for (const [relPath, content] of backup.entries()) {
-    const fullPath = import_path6.default.join(root, relPath);
-    const dir = import_path6.default.dirname(fullPath);
-    if (!import_fs5.default.existsSync(dir)) {
-      import_fs5.default.mkdirSync(dir, { recursive: true });
-    }
-    const currentContent = current.get(relPath);
-    if (currentContent !== content) {
-      import_fs5.default.writeFileSync(fullPath, content, "utf8");
-    }
-  }
-  for (const relPath of current.keys()) {
-    if (!backup.has(relPath)) {
-      const fullPath = import_path6.default.join(root, relPath);
-      try {
-        import_fs5.default.unlinkSync(fullPath);
-      } catch {
-      }
-    }
-  }
-}
-var import_fs5, import_path6, EXCLUDED_DIRS, MAX_FILE_SIZE, MAX_PREVIEW_FILES, CONTEXT_LINES;
-var init_workspaceDiff = __esm({
-  "src/cli/workspaceDiff.ts"() {
-    "use strict";
-    import_fs5 = __toESM(require("fs"), 1);
-    import_path6 = __toESM(require("path"), 1);
-    EXCLUDED_DIRS = /* @__PURE__ */ new Set([
-      "node_modules",
-      "dist",
-      "dist-bundle",
-      "build",
-      ".git",
-      ".agents",
-      ".codex"
-    ]);
-    MAX_FILE_SIZE = 2e5;
-    MAX_PREVIEW_FILES = 4;
-    CONTEXT_LINES = 2;
   }
 });
 
@@ -2646,7 +2054,7 @@ var init_errors = __esm({
 });
 
 // node_modules/zod/v4/core/parse.js
-var _parse, parse2, _parseAsync, parseAsync, _safeParse, safeParse, _safeParseAsync, safeParseAsync, _encode, encode, _decode, decode, _encodeAsync, encodeAsync, _decodeAsync, decodeAsync, _safeEncode, safeEncode, _safeDecode, safeDecode, _safeEncodeAsync, safeEncodeAsync, _safeDecodeAsync, safeDecodeAsync;
+var _parse, parse, _parseAsync, parseAsync, _safeParse, safeParse, _safeParseAsync, safeParseAsync, _encode, encode, _decode, decode, _encodeAsync, encodeAsync, _decodeAsync, decodeAsync, _safeEncode, safeEncode, _safeDecode, safeDecode, _safeEncodeAsync, safeEncodeAsync, _safeDecodeAsync, safeDecodeAsync;
 var init_parse = __esm({
   "node_modules/zod/v4/core/parse.js"() {
     "use strict";
@@ -2666,7 +2074,7 @@ var init_parse = __esm({
       }
       return result.value;
     };
-    parse2 = /* @__PURE__ */ _parse($ZodRealError);
+    parse = /* @__PURE__ */ _parse($ZodRealError);
     _parseAsync = (_Err) => async (schema, value, _ctx, params) => {
       const ctx = _ctx ? { ..._ctx, async: true } : { async: true };
       let result = schema._zod.run({ value, issues: [] }, ctx);
@@ -5517,10 +4925,10 @@ var init_schemas = __esm({
           throw new Error("implement() must be called with a function");
         }
         return function(...args) {
-          const parsedArgs = inst._def.input ? parse2(inst._def.input, args) : args;
+          const parsedArgs = inst._def.input ? parse(inst._def.input, args) : args;
           const result = Reflect.apply(func, this, parsedArgs);
           if (inst._def.output) {
-            return parse2(inst._def.output, result);
+            return parse(inst._def.output, result);
           }
           return result;
         };
@@ -14374,7 +13782,7 @@ __export(core_exports2, {
   isValidJWT: () => isValidJWT,
   locales: () => locales_exports,
   meta: () => meta,
-  parse: () => parse2,
+  parse: () => parse,
   parseAsync: () => parseAsync,
   prettifyError: () => prettifyError,
   process: () => process2,
@@ -14553,13 +13961,13 @@ var init_errors2 = __esm({
 });
 
 // node_modules/zod/v4/classic/parse.js
-var parse3, parseAsync2, safeParse2, safeParseAsync2, encode2, decode2, encodeAsync2, decodeAsync2, safeEncode2, safeDecode2, safeEncodeAsync2, safeDecodeAsync2;
+var parse2, parseAsync2, safeParse2, safeParseAsync2, encode2, decode2, encodeAsync2, decodeAsync2, safeEncode2, safeDecode2, safeEncodeAsync2, safeDecodeAsync2;
 var init_parse2 = __esm({
   "node_modules/zod/v4/classic/parse.js"() {
     "use strict";
     init_core2();
     init_errors2();
-    parse3 = /* @__PURE__ */ _parse(ZodRealError);
+    parse2 = /* @__PURE__ */ _parse(ZodRealError);
     parseAsync2 = /* @__PURE__ */ _parseAsync(ZodRealError);
     safeParse2 = /* @__PURE__ */ _safeParse(ZodRealError);
     safeParseAsync2 = /* @__PURE__ */ _safeParseAsync(ZodRealError);
@@ -15280,7 +14688,7 @@ var init_schemas2 = __esm({
       inst.def = def;
       inst.type = def.type;
       Object.defineProperty(inst, "_def", { value: def });
-      inst.parse = (data, params) => parse3(inst, data, params, { callee: inst.parse });
+      inst.parse = (data, params) => parse2(inst, data, params, { callee: inst.parse });
       inst.safeParse = (data, params) => safeParse2(inst, data, params);
       inst.parseAsync = async (data, params) => parseAsync2(inst, data, params, { callee: inst.parseAsync });
       inst.safeParseAsync = async (data, params) => safeParseAsync2(inst, data, params);
@@ -16783,7 +16191,7 @@ __export(external_exports, {
   object: () => object,
   optional: () => optional,
   overwrite: () => _overwrite,
-  parse: () => parse3,
+  parse: () => parse2,
   parseAsync: () => parseAsync2,
   partialRecord: () => partialRecord,
   pipe: () => pipe,
@@ -16870,6 +16278,610 @@ var init_zod = __esm({
     "use strict";
     init_external();
     init_external();
+  }
+});
+
+// src/security/background.ts
+var import_tree_kill, BackgroundManager, backgroundManager;
+var init_background = __esm({
+  "src/security/background.ts"() {
+    "use strict";
+    import_tree_kill = __toESM(require("tree-kill"), 1);
+    BackgroundManager = class {
+      processes = /* @__PURE__ */ new Map();
+      addProcess(command, child, threadId) {
+        if (child.pid) {
+          this.processes.set(child.pid, {
+            pid: child.pid,
+            command,
+            startTime: Date.now(),
+            process: child,
+            threadId
+          });
+          child.on("exit", () => {
+            this.removeProcess(child.pid);
+          });
+          child.on("error", () => {
+            this.removeProcess(child.pid);
+          });
+        }
+      }
+      removeProcess(pid) {
+        this.processes.delete(pid);
+      }
+      getProcesses() {
+        return Array.from(this.processes.values()).sort((a, b) => b.startTime - a.startTime);
+      }
+      killProcess(pid) {
+        return new Promise((resolve, reject) => {
+          const procInfo = this.processes.get(pid);
+          if (!procInfo) {
+            resolve();
+            return;
+          }
+          (0, import_tree_kill.default)(pid, "SIGKILL", (err) => {
+            if (err) {
+              reject(err);
+            } else {
+              this.removeProcess(pid);
+              resolve();
+            }
+          });
+        });
+      }
+      async killAllForThread(threadId) {
+        const threadProcs = Array.from(this.processes.values()).filter((p) => p.threadId === threadId);
+        for (const p of threadProcs) {
+          try {
+            await this.killProcess(p.pid);
+          } catch (e) {
+          }
+        }
+      }
+    };
+    backgroundManager = new BackgroundManager();
+  }
+});
+
+// src/db/checkpoint.ts
+var import_path7, import_os5, import_better_sqlite3, import_langgraph_checkpoint_sqlite, DBManager, dbManager;
+var init_checkpoint = __esm({
+  "src/db/checkpoint.ts"() {
+    "use strict";
+    import_path7 = __toESM(require("path"), 1);
+    import_os5 = __toESM(require("os"), 1);
+    import_better_sqlite3 = __toESM(require("better-sqlite3"), 1);
+    import_langgraph_checkpoint_sqlite = require("@langchain/langgraph-checkpoint-sqlite");
+    DBManager = class {
+      db;
+      saver;
+      constructor() {
+        const dbPath = import_path7.default.join(import_os5.default.homedir(), ".otto_checkpoint.db");
+        this.db = new import_better_sqlite3.default(dbPath);
+        this.db.pragma("journal_mode = WAL");
+        this.db.exec(`
+      CREATE TABLE IF NOT EXISTS otto_threads (
+        id TEXT PRIMARY KEY,
+        display_name TEXT DEFAULT 'New Chat',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+        this.db.exec(`
+      CREATE TABLE IF NOT EXISTS otto_thread_state (
+        thread_id TEXT PRIMARY KEY,
+        messages_json TEXT NOT NULL DEFAULT '[]',
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+        this.db.exec(`
+      CREATE TABLE IF NOT EXISTS otto_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT
+      )
+    `);
+        this.ensureThreadColumns();
+        this.saver = new import_langgraph_checkpoint_sqlite.SqliteSaver(this.db);
+      }
+      ensureThreadColumns() {
+        const columns = this.db.prepare(`PRAGMA table_info(otto_threads)`).all();
+        const hasDisplayName = columns.some((col) => col.name === "display_name");
+        if (!hasDisplayName) {
+          this.db.exec(`ALTER TABLE otto_threads ADD COLUMN display_name TEXT DEFAULT 'New Chat'`);
+          this.db.exec(`UPDATE otto_threads SET display_name = 'New Chat' WHERE display_name IS NULL OR TRIM(display_name) = ''`);
+        }
+      }
+      tableExists(tableName) {
+        const row = this.db.prepare(
+          `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`
+        ).get(tableName);
+        return !!row?.name;
+      }
+      async setup() {
+        await this.saver.setup();
+      }
+      setLastActiveThread(id) {
+        this.db.prepare(`
+      INSERT INTO otto_meta (key, value) VALUES ('last_active_thread', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(id);
+      }
+      getLastActiveThread() {
+        const row = this.db.prepare(`SELECT value FROM otto_meta WHERE key = 'last_active_thread'`).get();
+        return row?.value || null;
+      }
+      registerThread(id, displayName) {
+        const stmt = this.db.prepare(`
+      INSERT INTO otto_threads (id, display_name) VALUES (?, COALESCE(?, 'New Chat'))
+      ON CONFLICT(id) DO UPDATE SET 
+        display_name = COALESCE(?, otto_threads.display_name),
+        updated_at = CURRENT_TIMESTAMP
+    `);
+        stmt.run(id, displayName ?? null, displayName ?? null);
+      }
+      listThreads() {
+        const stmt = this.db.prepare(`
+      SELECT 
+        id, 
+        COALESCE(NULLIF(TRIM(display_name), ''), 'New Chat') AS display_name, 
+        created_at, 
+        updated_at 
+      FROM otto_threads 
+      ORDER BY updated_at DESC
+    `);
+        return stmt.all().map((row) => ({
+          id: row.id,
+          displayName: row.display_name,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at
+        }));
+      }
+      getThread(id) {
+        const stmt = this.db.prepare(`
+      SELECT 
+        id, 
+        COALESCE(NULLIF(TRIM(display_name), ''), 'New Chat') AS display_name, 
+        created_at, 
+        updated_at 
+      FROM otto_threads 
+      WHERE id = ?
+    `);
+        const row = stmt.get(id);
+        if (!row) return null;
+        return {
+          id: row.id,
+          displayName: row.display_name,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at
+        };
+      }
+      updateThreadName(id, displayName) {
+        this.db.prepare(`
+      UPDATE otto_threads 
+      SET display_name = ?, updated_at = CURRENT_TIMESTAMP 
+      WHERE id = ?
+    `).run(displayName, id);
+      }
+      saveThreadMessages(id, messages) {
+        this.db.prepare(`
+      INSERT INTO otto_thread_state (thread_id, messages_json)
+      VALUES (?, ?)
+      ON CONFLICT(thread_id) DO UPDATE SET
+        messages_json = excluded.messages_json,
+        updated_at = CURRENT_TIMESTAMP
+    `).run(id, JSON.stringify(messages ?? []));
+      }
+      loadThreadMessages(id) {
+        const row = this.db.prepare(`
+      SELECT messages_json 
+      FROM otto_thread_state 
+      WHERE thread_id = ?
+    `).get(id);
+        if (!row?.messages_json) return [];
+        try {
+          const parsed = JSON.parse(row.messages_json);
+          return Array.isArray(parsed) ? parsed : [];
+        } catch {
+          return [];
+        }
+      }
+      deleteThread(id) {
+        this.db.prepare("DELETE FROM otto_threads WHERE id = ?").run(id);
+        this.db.prepare("DELETE FROM otto_thread_state WHERE thread_id = ?").run(id);
+        if (this.tableExists("checkpoints")) {
+          this.db.prepare("DELETE FROM checkpoints WHERE thread_id = ?").run(id);
+        }
+        if (this.tableExists("checkpoint_blobs")) {
+          this.db.prepare("DELETE FROM checkpoint_blobs WHERE thread_id = ?").run(id);
+        }
+        if (this.tableExists("checkpoint_writes")) {
+          this.db.prepare("DELETE FROM checkpoint_writes WHERE thread_id = ?").run(id);
+        }
+      }
+      deleteAllThreads() {
+        this.db.prepare("DELETE FROM otto_threads").run();
+        this.db.prepare("DELETE FROM otto_thread_state").run();
+        if (this.tableExists("checkpoints")) {
+          this.db.prepare("DELETE FROM checkpoints").run();
+        }
+        if (this.tableExists("checkpoint_blobs")) {
+          this.db.prepare("DELETE FROM checkpoint_blobs").run();
+        }
+        if (this.tableExists("checkpoint_writes")) {
+          this.db.prepare("DELETE FROM checkpoint_writes").run();
+        }
+      }
+    };
+    dbManager = new DBManager();
+  }
+});
+
+// src/cli/session.ts
+var import_os6, import_messages5, import_events2, sessionEvents, ChatSession, chatSession;
+var init_session = __esm({
+  "src/cli/session.ts"() {
+    "use strict";
+    import_os6 = __toESM(require("os"), 1);
+    import_messages5 = require("@langchain/core/messages");
+    init_checkpoint();
+    init_ui();
+    import_events2 = require("events");
+    sessionEvents = new import_events2.EventEmitter();
+    ChatSession = class _ChatSession {
+      threadId;
+      threadName;
+      username;
+      hostname;
+      threadMessages = /* @__PURE__ */ new Map();
+      activeStreams = /* @__PURE__ */ new Set();
+      cancelledThreads = /* @__PURE__ */ new Set();
+      isChatActive = false;
+      pendingApprovals = [];
+      pendingPlans = /* @__PURE__ */ new Set();
+      agentStates = /* @__PURE__ */ new Map();
+      delayMessages = /* @__PURE__ */ new Map();
+      planMenuIndices = /* @__PURE__ */ new Map();
+      approvalMenuIndices = /* @__PURE__ */ new Map();
+      static DEFAULT_THREAD_NAME = "New Chat";
+      constructor() {
+        this.username = import_os6.default.userInfo().username;
+        this.hostname = import_os6.default.hostname();
+        const lastId = dbManager.getLastActiveThread();
+        if (lastId) {
+          this.threadId = lastId;
+          const thread = dbManager.getThread(lastId);
+          this.threadName = thread?.displayName ?? _ChatSession.DEFAULT_THREAD_NAME;
+          this.threadMessages.set(this.threadId, this.deserializeMessages(dbManager.loadThreadMessages(this.threadId)));
+        } else {
+          this.threadId = `session-${Math.random().toString(36).substring(2, 8)}`;
+          this.threadName = _ChatSession.DEFAULT_THREAD_NAME;
+          dbManager.registerThread(this.threadId, this.threadName);
+          this.threadMessages.set(this.threadId, []);
+          dbManager.saveThreadMessages(this.threadId, []);
+          dbManager.setLastActiveThread(this.threadId);
+        }
+      }
+      switchThread(id) {
+        this.persistThread(this.threadId);
+        this.threadId = id;
+        const thread = dbManager.getThread(this.threadId);
+        this.threadName = thread?.displayName ?? _ChatSession.DEFAULT_THREAD_NAME;
+        dbManager.registerThread(this.threadId, this.threadName);
+        dbManager.setLastActiveThread(this.threadId);
+        this.threadMessages.set(this.threadId, this.deserializeMessages(dbManager.loadThreadMessages(this.threadId)));
+        ui.success(`Switched to thread: ${this.threadName}`);
+      }
+      createFreshThread(displayName = _ChatSession.DEFAULT_THREAD_NAME) {
+        this.persistThread(this.threadId);
+        this.threadId = `session-${Math.random().toString(36).substring(2, 8)}`;
+        this.threadName = displayName;
+        dbManager.registerThread(this.threadId, this.threadName);
+        dbManager.setLastActiveThread(this.threadId);
+        this.threadMessages.set(this.threadId, []);
+        dbManager.saveThreadMessages(this.threadId, []);
+      }
+      ensureNamedFromPrompt(prompt) {
+        if (this.threadName !== _ChatSession.DEFAULT_THREAD_NAME) return;
+        const nextName = this.summarizeThreadName(prompt);
+        this.threadName = nextName;
+        dbManager.updateThreadName(this.threadId, nextName);
+      }
+      listThreads() {
+        const threads = dbManager.listThreads();
+        ui.header("Available Threads");
+        threads.forEach((t) => ui.info(`${t.displayName} [${t.id}]${t.id === this.threadId ? " (active)" : ""}`));
+      }
+      getPromptInfo() {
+        const cwd = process.cwd();
+        const shortCwd = cwd.replace(import_os6.default.homedir(), "~");
+        return `[${this.threadName}] ${this.username}@${this.hostname}:${shortCwd}`;
+      }
+      getMessages() {
+        if (!this.threadMessages.has(this.threadId)) {
+          this.threadMessages.set(this.threadId, this.deserializeMessages(dbManager.loadThreadMessages(this.threadId)));
+        }
+        return this.threadMessages.get(this.threadId);
+      }
+      setMessages(messages) {
+        const next = Array.from(messages ?? []);
+        this.threadMessages.set(this.threadId, next);
+        dbManager.saveThreadMessages(this.threadId, next.map((message) => this.serializeMessage(message)).filter(Boolean));
+      }
+      clearThreadMessages(id) {
+        this.threadMessages.delete(id);
+        dbManager.saveThreadMessages(id, []);
+      }
+      clearAllThreadMessages() {
+        this.threadMessages.clear();
+        this.threadMessages.set(this.threadId, []);
+        dbManager.saveThreadMessages(this.threadId, []);
+      }
+      persistThread(id) {
+        const messages = this.threadMessages.get(id);
+        if (messages) {
+          dbManager.saveThreadMessages(id, messages.map((message) => this.serializeMessage(message)).filter(Boolean));
+        }
+      }
+      serializeMessage(message) {
+        if (!message?._getType) return null;
+        const role = message._getType();
+        const content = message.content?.toString?.() ?? "";
+        const base = {
+          content,
+          name: message.name,
+          id: message.id,
+          additional_kwargs: message.additional_kwargs ?? {},
+          response_metadata: message.response_metadata ?? {}
+        };
+        if (role === "human") {
+          return { role, ...base };
+        }
+        if (role === "ai") {
+          return {
+            role,
+            ...base,
+            tool_calls: message.tool_calls ?? [],
+            invalid_tool_calls: message.invalid_tool_calls ?? []
+          };
+        }
+        if (role === "tool") {
+          return {
+            role,
+            ...base,
+            tool_call_id: message.tool_call_id
+          };
+        }
+        return { role: "system", ...base };
+      }
+      deserializeMessages(messages) {
+        if (!Array.isArray(messages)) return [];
+        return messages.map((message) => {
+          if (!message || typeof message !== "object") return null;
+          const content = message.content ?? "";
+          if (message.role === "human") {
+            return new import_messages5.HumanMessage({
+              content,
+              name: message.name,
+              id: message.id,
+              additional_kwargs: message.additional_kwargs ?? {}
+            });
+          }
+          if (message.role === "ai") {
+            return new import_messages5.AIMessage({
+              content,
+              name: message.name,
+              id: message.id,
+              tool_calls: message.tool_calls ?? [],
+              invalid_tool_calls: message.invalid_tool_calls ?? [],
+              additional_kwargs: message.additional_kwargs ?? {},
+              response_metadata: message.response_metadata ?? {}
+            });
+          }
+          if (message.role === "tool") {
+            return new import_messages5.ToolMessage({
+              content,
+              tool_call_id: message.tool_call_id ?? "",
+              name: message.name,
+              id: message.id,
+              additional_kwargs: message.additional_kwargs ?? {}
+            });
+          }
+          return new import_messages5.SystemMessage({
+            content,
+            name: message.name,
+            id: message.id,
+            additional_kwargs: message.additional_kwargs ?? {}
+          });
+        }).filter(Boolean);
+      }
+      summarizeThreadName(prompt) {
+        const cleaned = prompt.replace(/[`"'()[\]{}<>]/g, " ").replace(/\b(can|could|would|please|help|with|that|this|need|want|make|build|create|write|generate|show|tell|about|for|the|a|an|to|of|in|on|and|or|my|me)\b/gi, " ").replace(/\s+/g, " ").trim();
+        const tokens = cleaned.split(" ").map((token) => token.trim()).filter(Boolean);
+        if (tokens.length === 0) return _ChatSession.DEFAULT_THREAD_NAME;
+        const normalized = tokens.slice(0, 4).map((token) => {
+          const lower = token.toLowerCase();
+          if (lower === "cpp" || lower === "c++") return "CPP";
+          if (lower === "js") return "JS";
+          if (lower === "ts") return "TS";
+          return lower.charAt(0).toUpperCase() + lower.slice(1);
+        }).join(" ");
+        return normalized.length > 40 ? normalized.slice(0, 40).trim() : normalized;
+      }
+    };
+    chatSession = new ChatSession();
+  }
+});
+
+// src/cli/threadContext.ts
+function getExecutingThreadId() {
+  return threadLocalStorage.getStore();
+}
+var import_async_hooks, threadLocalStorage;
+var init_threadContext = __esm({
+  "src/cli/threadContext.ts"() {
+    "use strict";
+    import_async_hooks = require("async_hooks");
+    threadLocalStorage = new import_async_hooks.AsyncLocalStorage();
+  }
+});
+
+// src/security/executor.ts
+var import_child_process, import_shell_quote, os7, fs7, path8, Executor, executor;
+var init_executor2 = __esm({
+  "src/security/executor.ts"() {
+    "use strict";
+    import_child_process = require("child_process");
+    import_shell_quote = require("shell-quote");
+    init_configurator();
+    init_ui();
+    init_background();
+    os7 = __toESM(require("os"), 1);
+    fs7 = __toESM(require("fs"), 1);
+    path8 = __toESM(require("path"), 1);
+    init_session();
+    init_threadContext();
+    Executor = class {
+      lastCommands = /* @__PURE__ */ new Map();
+      async executeCommand(commandStr, background = false) {
+        let cleanCmd = commandStr.trim();
+        const isBgPattern = /&$/i.test(cleanCmd) || /^(npm\s+(run\s+)?(dev|start|watch)|node\s+server|python\s+-m\s+http\.server)/i.test(cleanCmd) || /\b(--background|-background|--bg)\b/i.test(cleanCmd);
+        if (isBgPattern && !background) {
+          background = true;
+          ui.info(`Auto-backgrounding command: "${commandStr}"`);
+        }
+        cleanCmd = cleanCmd.replace(/(?:\s+#|\s+\/\/).*$/, "").trim();
+        cleanCmd = cleanCmd.replace(/\b(--background|-background|--bg)\b/gi, "").trim();
+        if (process.platform === "win32") {
+          cleanCmd = cleanCmd.replace(/&+\s*$/, "").trim();
+        }
+        commandStr = cleanCmd;
+        const executingThreadId = getExecutingThreadId() || chatSession.threadId || "default";
+        const cmdRecord = this.lastCommands.get(executingThreadId);
+        if (cmdRecord && cmdRecord.cmdStr === commandStr && cmdRecord.attempts >= 3) {
+          throw new Error(`Command "${commandStr}" has failed consecutively 3 times. O.T.T.O has blocked further retries to prevent an infinite loop. Please analyze the previous errors/logs and try a different command, arguments, or correct the code issues manually first.`);
+        }
+        const config2 = await Configurator.init();
+        const parsed = (0, import_shell_quote.parse)(commandStr);
+        const cmd = String(parsed[0]);
+        const args = parsed.slice(1).map(String);
+        const isWhitelisted = config2.security.allowedCommands.includes(cmd);
+        if (config2.security.mode === "ask" || config2.security.mode === "approve" && !isWhitelisted) {
+          const choice = await this.promptAction(cmd, commandStr, executingThreadId);
+          if (choice === "deny") throw new Error("Execution denied by user.");
+          if (choice === "always") {
+            if (!isWhitelisted) {
+              config2.security.allowedCommands.push(cmd);
+            }
+            if (config2.security.mode === "ask") {
+              config2.security.mode = "approve";
+              ui.info("Security mode updated to 'Approve' (whitelisted commands run silently).");
+            }
+            Configurator.saveConfig(config2);
+          }
+        } else if (config2.security.mode === "full") {
+          ui.warning(`[Full Access Mode] Executing ${cmd} autonomously.`);
+        }
+        const runCore = async () => {
+          if (background) {
+            const logDir = path8.join(os7.tmpdir(), "otto-cli-logs");
+            if (!fs7.existsSync(logDir)) fs7.mkdirSync(logDir, { recursive: true });
+            const logPath = path8.join(logDir, `bg-${Date.now()}.log`);
+            const out = fs7.openSync(logPath, "a");
+            const err = fs7.openSync(logPath, "a");
+            const child = (0, import_child_process.spawn)(commandStr, {
+              cwd: process.cwd(),
+              shell: true,
+              stdio: ["ignore", out, err],
+              detached: process.platform !== "win32"
+            });
+            fs7.closeSync(out);
+            fs7.closeSync(err);
+            backgroundManager.addProcess(commandStr, child, executingThreadId);
+            let spawnError = null;
+            const onError = (err2) => {
+              spawnError = err2;
+            };
+            child.on("error", onError);
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+            child.off("error", onError);
+            if (spawnError) {
+              throw spawnError;
+            }
+            if (child.exitCode !== null && child.exitCode !== void 0) {
+              let logs = "";
+              if (fs7.existsSync(logPath)) {
+                logs = fs7.readFileSync(logPath, "utf8").trim();
+              }
+              throw new Error(`Background process terminated immediately with exit code ${child.exitCode}.
+Logs:
+${logs.slice(-2e3)}`);
+            }
+            child.unref();
+            let initialLogs = "";
+            if (fs7.existsSync(logPath)) {
+              initialLogs = fs7.readFileSync(logPath, "utf8").trim();
+            }
+            const logMsg = initialLogs ? `
+Initial Output Logs:
+\`\`\`text
+${initialLogs.slice(0, 1e3)}
+\`\`\`` : "\nNo initial output logs yet.";
+            return `Background process started successfully with PID: ${child.pid}.
+Output is being logged to: ${logPath}${logMsg}
+Use the read_file tool to check this log file if you need more details.`;
+          }
+          return new Promise((resolve, reject) => {
+            (0, import_child_process.exec)(commandStr, { cwd: process.cwd(), timeout: 45e3 }, (error51, stdout, stderr) => {
+              if (error51) {
+                const out = stdout.toString().trim();
+                const err = stderr.toString().trim();
+                let msg = "";
+                if (error51.killed) {
+                  msg = `Command timed out and was killed after 45 seconds of inactivity. If this is a long-running process, run it with background: true.`;
+                } else {
+                  msg = `Command failed with exit code ${error51.code || "unknown"}:`;
+                }
+                if (err) msg += `
+STDERR:
+${err}`;
+                if (out) msg += `
+STDOUT:
+${out}`;
+                if (!err && !out && !error51.killed) msg += ` ${error51.message}`;
+                reject(new Error(msg));
+              } else {
+                resolve(stdout.toString() || stderr.toString() || "Command executed successfully.");
+              }
+            });
+          });
+        };
+        try {
+          const result = await runCore();
+          this.lastCommands.set(executingThreadId, { cmdStr: commandStr, attempts: 0 });
+          return result;
+        } catch (err) {
+          const currentAttempts = cmdRecord && cmdRecord.cmdStr === commandStr ? cmdRecord.attempts + 1 : 1;
+          this.lastCommands.set(executingThreadId, { cmdStr: commandStr, attempts: currentAttempts });
+          throw err;
+        }
+      }
+      async promptAction(cmd, fullCommand, executingThreadId) {
+        return new Promise((resolve) => {
+          chatSession.pendingApprovals.push({
+            threadId: executingThreadId,
+            type: "command",
+            cmd,
+            commandStr: fullCommand,
+            resolve
+          });
+          sessionEvents.emit("pending_approval");
+        });
+      }
+      clearAttempts() {
+        this.lastCommands.clear();
+      }
+    };
+    executor = new Executor();
   }
 });
 
@@ -17385,6 +17397,34 @@ ${content}
   }
 });
 
+// src/tools/skill_tool.ts
+var import_tools5, readSkillTool;
+var init_skill_tool = __esm({
+  "src/tools/skill_tool.ts"() {
+    "use strict";
+    import_tools5 = require("@langchain/core/tools");
+    init_zod();
+    init_loader();
+    readSkillTool = (0, import_tools5.tool)(
+      async ({ skillName }) => {
+        const registry2 = getSkillRegistry();
+        const instructions = getSkillInstructions(registry2, skillName);
+        if (!instructions) {
+          return `Error: Skill '${skillName}' not found in the Knowledge Graph. Please check the exact name in the SKILLS KNOWLEDGE GRAPH block.`;
+        }
+        return instructions;
+      },
+      {
+        name: "read_skill",
+        description: "Reads the detailed instructional knowledge graph for a specific skill. Use this to learn HOW to implement a pattern.",
+        schema: external_exports.object({
+          skillName: external_exports.string().describe('The exact name of the skill to read (e.g., "react-components")')
+        })
+      }
+    );
+  }
+});
+
 // src/tools/registry.ts
 var registry_exports = {};
 __export(registry_exports, {
@@ -17398,6 +17438,7 @@ var init_registry = __esm({
     init_os2();
     init_browser2();
     init_fs();
+    init_skill_tool();
     tools = [
       searchCode,
       readFileLines,
@@ -17408,7 +17449,8 @@ var init_registry = __esm({
       executeTerminalCommand,
       launchOsApp,
       readBrowserAccessibility,
-      listBackgroundProcesses
+      listBackgroundProcesses,
+      readSkillTool
     ];
   }
 });
@@ -17424,14 +17466,136 @@ init_configurator();
 init_ui();
 
 // src/agent/workflow.ts
+var import_messages7 = require("@langchain/core/messages");
+
+// src/cli/snapshots.ts
+var import_fs3 = __toESM(require("fs"), 1);
+var import_path3 = __toESM(require("path"), 1);
+var import_os2 = __toESM(require("os"), 1);
+init_workspaceDiff();
+var SNAPSHOTS_DIR = import_path3.default.join(import_os2.default.homedir(), ".otto", "snapshots");
+var snapshotManager = {
+  saveCheckpoint: (threadId, messageIndex) => {
+    try {
+      const snapshot = captureWorkspaceSnapshot();
+      const dir = import_path3.default.join(SNAPSHOTS_DIR, threadId, String(messageIndex));
+      if (!import_fs3.default.existsSync(dir)) {
+        import_fs3.default.mkdirSync(dir, { recursive: true });
+      }
+      const data = {};
+      for (const [relPath, content] of snapshot.entries()) {
+        data[relPath] = content;
+      }
+      import_fs3.default.writeFileSync(import_path3.default.join(dir, "snapshot.json"), JSON.stringify(data), "utf8");
+    } catch (e) {
+    }
+  },
+  restoreCheckpoint: (threadId, messageIndex) => {
+    try {
+      const dir = import_path3.default.join(SNAPSHOTS_DIR, threadId, String(messageIndex));
+      const snapFile = import_path3.default.join(dir, "snapshot.json");
+      if (!import_fs3.default.existsSync(snapFile)) return false;
+      const raw = import_fs3.default.readFileSync(snapFile, "utf8");
+      const data = JSON.parse(raw);
+      const snapshot = /* @__PURE__ */ new Map();
+      for (const [relPath, content] of Object.entries(data)) {
+        snapshot.set(relPath, content);
+      }
+      restoreWorkspaceSnapshot(snapshot);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  },
+  deleteThreadSnapshots: (threadId) => {
+    try {
+      const dir = import_path3.default.join(SNAPSHOTS_DIR, threadId);
+      if (import_fs3.default.existsSync(dir)) {
+        import_fs3.default.rmSync(dir, { recursive: true, force: true });
+      }
+    } catch (e) {
+    }
+  },
+  deleteCheckpoint: (threadId, messageIndex) => {
+    try {
+      const dir = import_path3.default.join(SNAPSHOTS_DIR, threadId, String(messageIndex));
+      if (import_fs3.default.existsSync(dir)) {
+        import_fs3.default.rmSync(dir, { recursive: true, force: true });
+      }
+    } catch (e) {
+    }
+  },
+  clearAllSnapshots: () => {
+    try {
+      if (import_fs3.default.existsSync(SNAPSHOTS_DIR)) {
+        import_fs3.default.rmSync(SNAPSHOTS_DIR, { recursive: true, force: true });
+      }
+    } catch (e) {
+    }
+  }
+};
+
+// src/agent/graph.ts
+var import_langgraph = require("@langchain/langgraph");
 var import_messages6 = require("@langchain/core/messages");
 
+// src/agent/router.ts
+var import_messages = require("@langchain/core/messages");
+var ROUTER_SYSTEM_PROMPT = `You are a high-speed routing agent for O.T.T.O, an AI coding assistant.
+Your job is to read the user's latest message (and the recent conversation context) and determine how it should be handled.
+
+CLASSIFICATION RULES:
+1. CHAT: The user is saying "hi", "thank you", or asking a trivial conversational question (e.g. "what is the capital of France?"). You can answer this immediately without ANY tools or deep reasoning.
+2. SIMPLE_CODE: The user is asking to make a minor edit to a single file, fix a typo, run a specific command, or debug a small issue. This does NOT require extensive architectural planning.
+3. COMPLEX_CODE: The user is asking to build a new feature, create multiple files, refactor architecture, or solve a complex problem that requires a detailed step-by-step plan.
+
+OUTPUT FORMAT:
+You MUST output ONLY a raw JSON object and nothing else. No markdown formatting, no backticks, no extra text.
+Format:
+{
+  "classification": "CHAT" | "SIMPLE_CODE" | "COMPLEX_CODE",
+  "response": "Hello! How can I help you?" // ONLY provide a response if classification is CHAT.
+}
+`;
+var RouterAgent = class {
+  static async classify(messages, config2, provider) {
+    const lastMsg = messages[messages.length - 1];
+    if (lastMsg && lastMsg.content.toString().trim().startsWith("/")) {
+      return { classification: "COMPLEX_CODE" };
+    }
+    try {
+      const contextMsgs = messages.slice(-5).map((msg) => {
+        if (msg._getType?.() === "tool" || msg.role === "tool") {
+          return new import_messages.SystemMessage("Tool execution output omitted for brevity.");
+        }
+        return msg;
+      });
+      const payload = [
+        new import_messages.SystemMessage(ROUTER_SYSTEM_PROMPT),
+        ...contextMsgs
+      ];
+      const activeProvider = config2.defaults.primaryProvider;
+      const activeModel = config2.providers[activeProvider]?.activeModel || "default";
+      const resultMsg = await provider.invoke(payload);
+      const rawText = resultMsg.content.toString().trim();
+      const cleanedText = rawText.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+      const result = JSON.parse(cleanedText);
+      if (result.classification === "CHAT" && result.response) {
+        return result;
+      }
+      return result;
+    } catch (e) {
+      return { classification: "COMPLEX_CODE" };
+    }
+  }
+};
+
 // src/agent/request_pipeline.ts
-var import_messages3 = require("@langchain/core/messages");
+var import_messages4 = require("@langchain/core/messages");
 
 // src/memory/budget.ts
-var import_messages = require("@langchain/core/messages");
 var import_messages2 = require("@langchain/core/messages");
+var import_messages3 = require("@langchain/core/messages");
 init_ui();
 init_configurator();
 var MemoryManager = class {
@@ -17547,25 +17711,25 @@ var MemoryManager = class {
       const content = message.content.toString();
       const truncatedContent = this.perMessageTruncate(content, workingBudget);
       if (truncatedContent === content) return message;
-      if (message instanceof import_messages.HumanMessage) {
-        return new import_messages.HumanMessage(truncatedContent);
+      if (message instanceof import_messages2.HumanMessage) {
+        return new import_messages2.HumanMessage(truncatedContent);
       }
-      if (message instanceof import_messages.AIMessage) {
+      if (message instanceof import_messages2.AIMessage) {
         const msgOpts = { content: truncatedContent };
         if (message.tool_calls) msgOpts.tool_calls = message.tool_calls;
         if (message.invalid_tool_calls) msgOpts.invalid_tool_calls = message.invalid_tool_calls;
-        return new import_messages.AIMessage(msgOpts);
+        return new import_messages2.AIMessage(msgOpts);
       }
-      if (message instanceof import_messages.ToolMessage) {
-        return new import_messages.ToolMessage({
+      if (message instanceof import_messages2.ToolMessage) {
+        return new import_messages2.ToolMessage({
           content: truncatedContent,
           tool_call_id: message.tool_call_id,
           name: message.name
         });
       }
-      return new import_messages.SystemMessage(truncatedContent);
+      return new import_messages2.SystemMessage(truncatedContent);
     });
-    const trimmed = await (0, import_messages2.trimMessages)(normalizedMessages, {
+    const trimmed = await (0, import_messages3.trimMessages)(normalizedMessages, {
       maxTokens: workingBudget,
       tokenCounter: (msgs) => msgs.reduce((acc, m) => acc + this.estimateTokens(m.content.toString()), 0),
       strategy: "last",
@@ -17600,7 +17764,7 @@ var MemoryManager = class {
           originalHistory.splice(0, firstTrimmedIndex);
         }
         if (summaryText) {
-          originalHistory.unshift(new import_messages.SystemMessage(summaryText));
+          originalHistory.unshift(new import_messages2.SystemMessage(summaryText));
         }
       } else {
         summaryText = this.buildSummary(dropped);
@@ -17615,7 +17779,7 @@ var MemoryManager = class {
         }
       }
     }
-    const finalMessages = summaryText ? [new import_messages.SystemMessage(systemPrompt), new import_messages.SystemMessage(summaryText), ...trimmed.filter((m) => m._getType() !== "system")] : [new import_messages.SystemMessage(systemPrompt), ...trimmed.filter((m) => m._getType() !== "system")];
+    const finalMessages = summaryText ? [new import_messages2.SystemMessage(systemPrompt), new import_messages2.SystemMessage(summaryText), ...trimmed.filter((m) => m._getType() !== "system")] : [new import_messages2.SystemMessage(systemPrompt), ...trimmed.filter((m) => m._getType() !== "system")];
     this.lastContextSize = finalMessages.reduce((acc, m) => acc + this.estimateTokens(m.content.toString()), 0);
     return finalMessages;
   }
@@ -17720,9 +17884,9 @@ var MemoryManager = class {
 var memoryManager = new MemoryManager();
 
 // src/security/rules.ts
-var import_fs2 = __toESM(require("fs"), 1);
-var import_path2 = __toESM(require("path"), 1);
-var import_os2 = __toESM(require("os"), 1);
+var import_fs4 = __toESM(require("fs"), 1);
+var import_path4 = __toESM(require("path"), 1);
+var import_os3 = __toESM(require("os"), 1);
 init_ui();
 var import_prompts2 = require("@inquirer/prompts");
 
@@ -17870,6 +18034,20 @@ var AgentRegistry = class {
           allowedTools: ["search_code", "read_file_lines", "read_file", "list_directory", "write_file"],
           prompt: this.loadPrompt("plan")
         };
+      case "tasker":
+        return {
+          id: "tasker",
+          description: "Implementation Tasker. Divides technical plans into atomic sequential steps.",
+          allowedTools: ["search_code", "read_file_lines", "read_file", "list_directory"],
+          prompt: "You are the Tasker Agent. Break down the provided technical plan into a sequence of atomic, actionable tasks."
+        };
+      case "coder":
+        return {
+          id: "coder",
+          description: "Execution specialist. Writes code and uses tools.",
+          allowedTools: ["*"],
+          prompt: "You are the Coding Agent. Execute the given tasks sequentially using the available tools."
+        };
       case "build":
       default:
         return {
@@ -17887,21 +18065,21 @@ var AgentRegistry = class {
 var RuleGuardrail = class {
   rulesPath;
   constructor() {
-    this.rulesPath = import_path2.default.join(import_os2.default.homedir(), ".otto", "rules.md");
+    this.rulesPath = import_path4.default.join(import_os3.default.homedir(), ".otto", "rules.md");
     this.ensureRulesExist();
   }
   ensureRulesExist() {
-    const dir = import_path2.default.dirname(this.rulesPath);
-    if (!import_fs2.default.existsSync(dir)) import_fs2.default.mkdirSync(dir, { recursive: true });
+    const dir = import_path4.default.dirname(this.rulesPath);
+    if (!import_fs4.default.existsSync(dir)) import_fs4.default.mkdirSync(dir, { recursive: true });
     const defaultRules = `# O.T.T.O System Directives
 
 These are the core rules the agent must follow.
 1. The user is running Windows (PowerShell). DO NOT use Linux/Bash-specific commands like \`cat\` or \`touch\`.
 2. Always verify commands are compatible with Windows.`;
-    import_fs2.default.writeFileSync(this.rulesPath, defaultRules, "utf-8");
+    import_fs4.default.writeFileSync(this.rulesPath, defaultRules, "utf-8");
   }
   getRules(mode, maxCtx) {
-    const persistedRules = import_fs2.default.readFileSync(this.rulesPath, "utf-8");
+    const persistedRules = import_fs4.default.readFileSync(this.rulesPath, "utf-8");
     const agent = AgentRegistry.getAgent(mode);
     if (maxCtx && maxCtx < 5e3) {
       if (mode === "build") {
@@ -17932,7 +18110,7 @@ ${agent.prompt}`;
       ]
     });
     if (approved) {
-      import_fs2.default.writeFileSync(this.rulesPath, newRulesContent, "utf-8");
+      import_fs4.default.writeFileSync(this.rulesPath, newRulesContent, "utf-8");
       ui.success("Rules updated successfully.");
       return true;
     } else {
@@ -17946,8 +18124,8 @@ var ruleGuardrail = new RuleGuardrail();
 // src/agent/request_pipeline.ts
 init_loader();
 init_executor();
-var import_fs4 = __toESM(require("fs"), 1);
-var import_path4 = __toESM(require("path"), 1);
+var import_fs6 = __toESM(require("fs"), 1);
+var import_path6 = __toESM(require("path"), 1);
 var RequestPipeline = class {
   static async buildPayload(messages, config2, activeModel, mode = "build") {
     let preferredName = "User";
@@ -17966,10 +18144,10 @@ CRITICAL CONSTRAINT: The current model (${activeModel}) has rate limits configur
 
 User's preferred name: ${preferredName}. Address them as "${preferredName}" naturally in conversation.${bgInfo}${limitsInfo}`;
     let memoryInfo = "";
-    const memoryPath = import_path4.default.join(process.cwd(), ".otto", "MEMORY.md");
-    if (import_fs4.default.existsSync(memoryPath)) {
+    const memoryPath = import_path6.default.join(process.cwd(), ".otto", "MEMORY.md");
+    if (import_fs6.default.existsSync(memoryPath)) {
       try {
-        const memoryContent = import_fs4.default.readFileSync(memoryPath, "utf-8");
+        const memoryContent = import_fs6.default.readFileSync(memoryPath, "utf-8");
         memoryInfo = `
 
 \u2501\u2501\u2501\u2501\u2501 PROJECT MEMORY \u2501\u2501\u2501\u2501\u2501
@@ -17980,7 +18158,10 @@ ${memoryContent}
       }
     }
     const registry2 = getSkillRegistry();
-    const skillsInfo = formatSkillsForPrompt(registry2);
+    let skillsInfo = "";
+    if (mode === "build" || mode === "coder") {
+      skillsInfo = formatSkillsForPrompt(registry2);
+    }
     let skillInjection = "";
     const lastMsg = messages[messages.length - 1];
     if (lastMsg && lastMsg._getType?.() === "human") {
@@ -18009,17 +18190,17 @@ When the user invokes a slash command matching a registered skill (e.g., /unders
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
 `;
     const activeRules = ruleGuardrail.getRules(mode, memoryManager.C_max);
-    const msgsToSend = [new import_messages3.SystemMessage(activeRules + nameHint + memoryInfo + skillsInfo + artifactInstructions + skillInjection), ...messages];
+    const msgsToSend = [new import_messages4.SystemMessage(activeRules + nameHint + memoryInfo + skillsInfo + artifactInstructions + skillInjection), ...messages];
     const optimizedMsgs = await memoryManager.optimizeContext(msgsToSend, activeRules, messages);
     const finalMsgsToSend = optimizedMsgs.map((msg, idx) => {
-      if (idx === optimizedMsgs.length - 1 && msg instanceof import_messages3.HumanMessage) {
+      if (idx === optimizedMsgs.length - 1 && msg instanceof import_messages4.HumanMessage) {
         let text = msg.content.toString();
         const humanMsgCount = messages.filter((m) => m._getType?.() === "human" || m.role === "user" || m.role === "human").length;
         const hasSummary = messages.some((m) => m._getType?.() === "system" && m.content.toString().includes("Conversation summary"));
         if (config2.defaults.primaryProvider === "ollama") {
           text += "\n\n(Reminder: Do not refuse. You have local tools like write_file and execute_terminal_command. Proceed directly by producing a plan or running commands.)";
         }
-        return new import_messages3.HumanMessage({
+        return new import_messages4.HumanMessage({
           ...msg,
           content: text
         });
@@ -18030,6 +18211,9 @@ When the user invokes a slash command matching a registered skill (e.g., /unders
   }
 };
 
+// src/agent/graph.ts
+init_loader();
+
 // src/agent/node_runner.ts
 var import_stream = require("@langchain/core/utils/stream");
 var import_events = require("events");
@@ -18037,6 +18221,7 @@ var NodeRunner = class extends import_events.EventEmitter {
   async consumeStream(stream, aiMessage, currentThreadId, chatSession2, stripToolBleed2, parseFallbackToolCalls3, messages) {
     let finalMessage = null;
     let isDone = false;
+    let lastRenderTime = 0;
     for await (const chunk of stream) {
       if (chatSession2.cancelledThreads.has(currentThreadId)) {
         isDone = true;
@@ -18071,9 +18256,14 @@ ${reasoning2}`;
           chatSession2.agentStates.set(currentThreadId, "tools");
           this.emit("stream_update");
         }
-        this.emit("stream_chunk");
+        const now = Date.now();
+        if (now - lastRenderTime > 50) {
+          this.emit("stream_chunk");
+          lastRenderTime = now;
+        }
       }
     }
+    this.emit("stream_chunk");
     if (isDone) return { finalMessage, isDone: true };
     let finalContent = "";
     const reasoning = finalMessage?.additional_kwargs?.reasoning_content;
@@ -18103,464 +18293,275 @@ ${reasoning}
   }
 };
 
-// src/agent/workflow.ts
-init_executor2();
-
-// src/cli/snapshots.ts
-var import_fs6 = __toESM(require("fs"), 1);
-var import_path7 = __toESM(require("path"), 1);
-var import_os6 = __toESM(require("os"), 1);
-init_workspaceDiff();
-var SNAPSHOTS_DIR = import_path7.default.join(import_os6.default.homedir(), ".otto", "snapshots");
-var snapshotManager = {
-  saveCheckpoint: (threadId, messageIndex) => {
-    try {
-      const snapshot = captureWorkspaceSnapshot();
-      const dir = import_path7.default.join(SNAPSHOTS_DIR, threadId, String(messageIndex));
-      if (!import_fs6.default.existsSync(dir)) {
-        import_fs6.default.mkdirSync(dir, { recursive: true });
-      }
-      const data = {};
-      for (const [relPath, content] of snapshot.entries()) {
-        data[relPath] = content;
-      }
-      import_fs6.default.writeFileSync(import_path7.default.join(dir, "snapshot.json"), JSON.stringify(data), "utf8");
-    } catch (e) {
+// src/agent/graph.ts
+var GraphState = import_langgraph.Annotation.Root({
+  messages: (0, import_langgraph.Annotation)({
+    reducer: (x, y) => x.concat(y),
+    default: () => []
+  }),
+  context: (0, import_langgraph.Annotation)({
+    reducer: (x, y) => y,
+    // Pass context references
+    default: () => ({})
+  }),
+  approvalStatus: (0, import_langgraph.Annotation)({
+    reducer: (x, y) => y,
+    default: () => "none"
+  }),
+  activeAgent: (0, import_langgraph.Annotation)({
+    reducer: (x, y) => y,
+    default: () => "build"
+  })
+});
+async function invokeAgent(state, mode, systemPromptAddendum) {
+  const { messages, context } = state;
+  const config2 = context.config;
+  const activeProvider = config2.defaults.primaryProvider;
+  const activeModel = config2.providers[activeProvider]?.activeModel || "default";
+  const finalMsgsToSend = await RequestPipeline.buildPayload(messages, config2, activeModel, mode);
+  if (systemPromptAddendum) {
+    finalMsgsToSend.push(new import_messages6.SystemMessage(systemPromptAddendum));
+  }
+  if (mode === "coder") {
+    const registry2 = getSkillRegistry();
+    const skillsInfo = formatSkillsForKnowledgeGraph(registry2);
+    if (skillsInfo) {
+      finalMsgsToSend.push(new import_messages6.SystemMessage(skillsInfo));
     }
-  },
-  restoreCheckpoint: (threadId, messageIndex) => {
-    try {
-      const dir = import_path7.default.join(SNAPSHOTS_DIR, threadId, String(messageIndex));
-      const snapFile = import_path7.default.join(dir, "snapshot.json");
-      if (!import_fs6.default.existsSync(snapFile)) return false;
-      const raw = import_fs6.default.readFileSync(snapFile, "utf8");
-      const data = JSON.parse(raw);
-      const snapshot = /* @__PURE__ */ new Map();
-      for (const [relPath, content] of Object.entries(data)) {
-        snapshot.set(relPath, content);
-      }
-      restoreWorkspaceSnapshot(snapshot);
-      return true;
-    } catch (e) {
-      return false;
-    }
-  },
-  deleteThreadSnapshots: (threadId) => {
-    try {
-      const dir = import_path7.default.join(SNAPSHOTS_DIR, threadId);
-      if (import_fs6.default.existsSync(dir)) {
-        import_fs6.default.rmSync(dir, { recursive: true, force: true });
-      }
-    } catch (e) {
-    }
-  },
-  deleteCheckpoint: (threadId, messageIndex) => {
-    try {
-      const dir = import_path7.default.join(SNAPSHOTS_DIR, threadId, String(messageIndex));
-      if (import_fs6.default.existsSync(dir)) {
-        import_fs6.default.rmSync(dir, { recursive: true, force: true });
-      }
-    } catch (e) {
-    }
-  },
-  clearAllSnapshots: () => {
-    try {
-      if (import_fs6.default.existsSync(SNAPSHOTS_DIR)) {
-        import_fs6.default.rmSync(SNAPSHOTS_DIR, { recursive: true, force: true });
-      }
-    } catch (e) {
-    }
+  }
+  const aiMessage = new import_messages6.AIMessage("");
+  context.messages.push(aiMessage);
+  context.chatSession.agentStates.set(context.chatSession.threadId, `[${mode.toUpperCase()}]`);
+  context.chatSession.delayMessage = `${mode.toUpperCase()} Agent is active`;
+  context.render(true);
+  const runner = new NodeRunner();
+  const stream = await context.provider.stream(finalMsgsToSend);
+  runner.on("stream_chunk", () => context.render());
+  runner.on("stream_update", () => context.render(true));
+  const { finalMessage } = await runner.consumeStream(
+    stream,
+    aiMessage,
+    context.chatSession.threadId,
+    context.chatSession,
+    context.stripToolBleed,
+    context.parseFallbackToolCalls,
+    context.messages
+  );
+  context.chatSession.delayMessage = null;
+  return finalMessage;
+}
+var routerNode = async (state) => {
+  const decision = await RouterAgent.classify(state.messages, state.context.config, state.context.provider);
+  if (decision.classification === "CHAT" && decision.response) {
+    return { messages: [new import_messages6.AIMessage(decision.response)] };
+  }
+  if (decision.classification === "SIMPLE_CODE") {
+    return { messages: [new import_messages6.SystemMessage("Bypassing architect for simple code task. Routing to Coder.")] };
+  }
+  return { messages: [] };
+};
+var architectNode = async (state) => {
+  const msg = await invokeAgent(state, "plan", "You are the Architect. Output your plan wrapped in <!-- PLAN_START --> and <!-- PLAN_END -->.");
+  return { messages: [msg], activeAgent: "plan" };
+};
+var plannerReviewNode = async (state) => {
+  const msg = await invokeAgent(state, "explore", "You are a Senior Staff Code Reviewer. Critique the Architect's plan. If perfect, say 'LGTM'.");
+  return { messages: [msg], activeAgent: "explore" };
+};
+var approvalNode = async (state) => {
+  const ctx = state.context;
+  if (ctx.config.security.mode === "full" || ctx.config.security.mode === "approve") {
+    ctx.setPendingPlan(false);
+    return { approvalStatus: "approved" };
+  } else {
+    ctx.setPendingPlan(true);
+    ctx.setPlanMenuIndex(0);
+    ctx.chatSession.agentStates.set(ctx.chatSession.threadId, "idle");
+    ctx.render(true);
+    return { approvalStatus: "pending" };
   }
 };
-
-// src/agent/classify.ts
-function classifyAssistantStep(finalMessage, isCancelled, stripToolBleed2) {
-  if (isCancelled) {
-    return { type: "cancelled" };
-  }
-  if (!finalMessage) {
-    return { type: "empty" };
-  }
-  const hasToolCalls = finalMessage.tool_calls && finalMessage.tool_calls.length > 0;
-  if (hasToolCalls) {
-    return { type: "tools", count: finalMessage.tool_calls.length };
-  }
-  const rawContent = finalMessage.content?.toString() || "";
-  const strippedContent = stripToolBleed2(rawContent);
-  if (strippedContent.includes("failed_generation") && strippedContent.includes("Failed to call a function")) {
-    return { type: "native-generation-error" };
-  }
-  const hasThinkBlock = rawContent.includes("<think>");
-  const hasTextOutput = strippedContent.trim().length > 0;
-  if (hasThinkBlock && !hasTextOutput) {
-    return { type: "think-only" };
-  }
-  if (!hasTextOutput) {
-    return { type: "empty" };
-  }
-  return { type: "final", hasContent: hasTextOutput };
-}
-
-// src/agent/router.ts
-var import_messages5 = require("@langchain/core/messages");
-var ROUTER_SYSTEM_PROMPT = `You are a high-speed routing agent for O.T.T.O, an AI coding assistant.
-Your job is to read the user's latest message (and the recent conversation context) and determine if it requires a complex execution (using tools, writing code, reading files) or if it's a simple query/greeting that you can answer instantly.
-
-CLASSIFICATION RULES:
-1. SIMPLE: The user is saying "hi", "thank you", or asking a trivial conversational question (e.g. "what is the capital of France?"). You can answer this immediately without ANY tools or deep reasoning.
-2. COMPLEX: The user is asking to build something, edit a file, run a command, search the codebase, explain architecture, or perform ANY task that requires checking the project state or writing code.
-
-OUTPUT FORMAT:
-You MUST output ONLY a raw JSON object and nothing else. No markdown formatting, no backticks, no extra text.
-Format:
-{
-  "classification": "SIMPLE" | "COMPLEX",
-  "response": "Hello! How can I help you?" // ONLY provide a response if classification is SIMPLE.
-}
-`;
-var RouterAgent = class {
-  static async classify(messages, config2, provider) {
-    const lastMsg = messages[messages.length - 1];
-    if (lastMsg && lastMsg.content.toString().trim().startsWith("/")) {
-      return { classification: "COMPLEX" };
-    }
-    try {
-      const contextMsgs = messages.slice(-5).map((msg) => {
-        if (msg._getType?.() === "tool" || msg.role === "tool") {
-          return new import_messages5.SystemMessage("Tool execution output omitted for brevity.");
+var taskerNode = async (state) => {
+  const msg = await invokeAgent(state, "tasker", "Divide the approved plan into actionable, sequential tasks.");
+  return { messages: [msg], activeAgent: "tasker" };
+};
+var taskerReviewNode = async (state) => {
+  const msg = await invokeAgent(state, "explore", "Review the Tasker's breakdown. If flawless, output 'LGTM'.");
+  return { messages: [msg], activeAgent: "explore" };
+};
+var coderNode = async (state) => {
+  const msg = await invokeAgent(state, "coder", "You are the Coding Agent. Execute the sequence of tasks.");
+  return { messages: [msg], activeAgent: "coder" };
+};
+var answerNode = async (state) => {
+  return { messages: [new import_messages6.AIMessage("All steps completed.")] };
+};
+function buildAgentGraph() {
+  const graph = new import_langgraph.StateGraph(GraphState).addNode("router", routerNode).addNode("architect", architectNode).addNode("plannerReview", plannerReviewNode).addNode("approval", approvalNode).addNode("tasker", taskerNode).addNode("taskerReview", taskerReviewNode).addNode("coder", coderNode).addNode("answer", answerNode).addNode("tools", async (state) => {
+    const msg = state.messages[state.messages.length - 1];
+    const toolCalls = msg.additional_kwargs?.tool_calls || msg.tool_calls || [];
+    const ctx = state.context;
+    ctx.chatSession.agentStates.set(ctx.chatSession.threadId, "tools");
+    ctx.render(true);
+    const toolMsgs = [];
+    for (const call of toolCalls) {
+      if (ctx.chatSession.cancelledThreads.has(ctx.chatSession.threadId)) {
+        break;
+      }
+      const toolName = call.name;
+      const args = call.args;
+      if (ctx.config.security.mode === "ask") {
+        if (toolName === "execute_terminal_command" || toolName === "launch_os_app") {
+          const cmdToCheck = toolName === "execute_terminal_command" ? args.command : args.appNameOrPath;
+          const list = toolName === "execute_terminal_command" ? ctx.config.security.allowedCommands : ctx.config.security.allowedApps;
+          const isWhitelisted = list.includes(String(cmdToCheck).split(" ")[0]);
+          if (!isWhitelisted) {
+            const approvalPromise = new Promise((resolve) => {
+              ctx.chatSession.pendingApprovals.push({
+                threadId: ctx.chatSession.threadId,
+                cmd: String(cmdToCheck).split(" ")[0],
+                type: toolName === "execute_terminal_command" ? "command" : "app",
+                resolve
+              });
+              ctx.render(true);
+            });
+            const choice = await approvalPromise;
+            if (choice === "deny") {
+              toolMsgs.push({
+                role: "tool",
+                tool_call_id: call.id,
+                name: toolName,
+                content: "USER DENIED EXECUTION."
+              });
+              continue;
+            }
+          }
         }
-        return msg;
+      }
+      const { tools: tools2 } = await Promise.resolve().then(() => (init_registry(), registry_exports));
+      const tool6 = tools2.find((t) => t.name === toolName);
+      let result = "";
+      try {
+        if (tool6) {
+          result = await tool6.invoke(args);
+        } else {
+          result = `Error: Tool ${toolName} not found.`;
+        }
+      } catch (e) {
+        result = `Error: ${e.message}`;
+      }
+      toolMsgs.push({
+        role: "tool",
+        tool_call_id: call.id,
+        name: toolName,
+        content: typeof result === "string" ? result : JSON.stringify(result)
       });
-      const payload = [
-        new import_messages5.SystemMessage(ROUTER_SYSTEM_PROMPT),
-        ...contextMsgs
-      ];
-      const activeProvider = config2.defaults.primaryProvider;
-      const activeModel = config2.providers[activeProvider]?.activeModel || "default";
-      const resultMsg = await provider.invoke(payload);
-      const rawText = resultMsg.content.toString().trim();
-      const cleanedText = rawText.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
-      const result = JSON.parse(cleanedText);
-      if (result.classification === "SIMPLE" && result.response) {
-        return result;
+    }
+    return { messages: toolMsgs };
+  }).addEdge(import_langgraph.START, "router").addConditionalEdges(
+    "router",
+    (state) => {
+      const lastMsg = state.messages[state.messages.length - 1];
+      if (lastMsg && lastMsg.content && lastMsg._getType() === "ai") return "answer";
+      if (lastMsg && lastMsg.content && String(lastMsg.content).includes("PLAN APPROVED")) return "tasker";
+      if (lastMsg && lastMsg.content && String(lastMsg.content).includes("Bypassing architect")) return "coder";
+      return "architect";
+    },
+    {
+      answer: "answer",
+      coder: "coder",
+      tasker: "tasker",
+      architect: "architect"
+    }
+  ).addEdge("architect", "plannerReview").addConditionalEdges(
+    "plannerReview",
+    (state) => {
+      const text = state.messages[state.messages.length - 1].content.toString();
+      if (text.includes("LGTM")) return "approval";
+      return "architect";
+    },
+    {
+      approval: "approval",
+      architect: "architect"
+    }
+  ).addConditionalEdges(
+    "approval",
+    (state) => state.approvalStatus,
+    {
+      approved: "tasker",
+      pending: "__end__",
+      rejected: "__end__",
+      none: "__end__"
+    }
+  ).addEdge("tasker", "taskerReview").addConditionalEdges(
+    "taskerReview",
+    (state) => {
+      const text = state.messages[state.messages.length - 1].content.toString();
+      if (text.includes("LGTM")) return "coder";
+      return "tasker";
+    },
+    {
+      coder: "coder",
+      tasker: "tasker"
+    }
+  ).addConditionalEdges(
+    "coder",
+    (state) => {
+      const msg = state.messages[state.messages.length - 1];
+      if (msg.additional_kwargs?.tool_calls?.length || msg.tool_calls?.length) {
+        return "tools";
       }
-      return { classification: "COMPLEX" };
-    } catch (e) {
-      return { classification: "COMPLEX" };
+      return "answer";
+    },
+    {
+      tools: "tools",
+      answer: "answer"
     }
-  }
-};
-
-// src/agent/token_limiter.ts
-var TokenLimiter = class _TokenLimiter {
-  static instance;
-  minuteLog = [];
-  dayLog = [];
-  constructor() {
-  }
-  static getInstance() {
-    if (!_TokenLimiter.instance) {
-      _TokenLimiter.instance = new _TokenLimiter();
+  ).addConditionalEdges(
+    "tools",
+    (state) => state.activeAgent,
+    {
+      coder: "coder",
+      plan: "architect",
+      explore: "plannerReview",
+      tasker: "tasker",
+      build: "coder"
     }
-    return _TokenLimiter.instance;
-  }
-  addUsage(tokens) {
-    const now = Date.now();
-    this.minuteLog.push({ timestamp: now, tokens, requests: 1 });
-    this.dayLog.push({ timestamp: now, tokens, requests: 1 });
-    this.cleanup();
-  }
-  cleanup() {
-    const now = Date.now();
-    const oneMinuteAgo = now - 6e4;
-    const oneDayAgo = now - 864e5;
-    this.minuteLog = this.minuteLog.filter((log) => log.timestamp > oneMinuteAgo);
-    this.dayLog = this.dayLog.filter((log) => log.timestamp > oneDayAgo);
-  }
-  getMinuteUsage() {
-    this.cleanup();
-    return this.minuteLog.reduce((acc, log) => {
-      acc.tokens += log.tokens;
-      acc.requests += log.requests;
-      return acc;
-    }, { tokens: 0, requests: 0 });
-  }
-  getDayUsage() {
-    this.cleanup();
-    return this.dayLog.reduce((acc, log) => {
-      acc.tokens += log.tokens;
-      acc.requests += log.requests;
-      return acc;
-    }, { tokens: 0, requests: 0 });
-  }
-  async checkAndWait(provider, config2, ui2) {
-    if (provider.toLowerCase() === "ollama") {
-      return;
-    }
-    const activeModel = config2.providers[provider]?.activeModel || "default";
-    const limits = config2.modelLimits?.[activeModel] || {};
-    const maxTpm = limits.tpm || Infinity;
-    const maxTpd = limits.tpd || Infinity;
-    const maxRpm = limits.rpm || Infinity;
-    const maxRpd = limits.rpd || Infinity;
-    let warningShown = false;
-    let limitExceeded = true;
-    while (limitExceeded) {
-      const minUsage = this.getMinuteUsage();
-      const dayUsage = this.getDayUsage();
-      const hitsTpm = minUsage.tokens >= maxTpm;
-      const hitsTpd = dayUsage.tokens >= maxTpd;
-      const hitsRpm = minUsage.requests >= maxRpm;
-      const hitsRpd = dayUsage.requests >= maxRpd;
-      if (hitsTpm || hitsTpd || hitsRpm || hitsRpd) {
-        if (!warningShown) {
-          const reasons = [];
-          if (hitsTpm) reasons.push(`TPM (${maxTpm})`);
-          if (hitsTpd) reasons.push(`TPD (${maxTpd})`);
-          if (hitsRpm) reasons.push(`RPM (${maxRpm})`);
-          if (hitsRpd) reasons.push(`RPD (${maxRpd})`);
-          ui2.error(`Model limit exceeded: ${reasons.join(", ")}. Pausing API requests...`);
-          warningShown = true;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 5e3));
-      } else {
-        limitExceeded = false;
-      }
-    }
-  }
-};
+  ).addEdge("answer", import_langgraph.END);
+  return graph.compile();
+}
 
 // src/agent/workflow.ts
-var PLAN_BLOCK_RE = /<!--\s*PLAN_START\s*-->[\s\S]*?<!--\s*PLAN_END\s*-->/;
 var AgentWorkflow = class {
-  runner;
+  graph;
   constructor() {
-    this.runner = new NodeRunner();
+    this.graph = buildAgentGraph();
   }
-  async runAgentLoop(ctx, injectPrompt, depth = 0) {
-    if (depth > 200) {
-      ctx.ui.error("Agent loop max depth reached (200). Aborting to prevent infinite loop.");
-      return;
-    }
+  async runAgentLoop(ctx, injectPrompt) {
     if (ctx.chatSession.cancelledThreads.has(ctx.chatSession.threadId)) {
       return;
     }
     if (injectPrompt) {
-      ctx.messages.push(new import_messages6.HumanMessage(injectPrompt));
+      ctx.messages.push(new import_messages7.HumanMessage(injectPrompt));
       ctx.syncMessages();
     }
-    const lastMsg = ctx.messages[ctx.messages.length - 1];
-    if (lastMsg instanceof import_messages6.HumanMessage && !injectPrompt && depth === 0) {
-      const routingDecision = await RouterAgent.classify(ctx.messages, ctx.config, ctx.provider);
-      if (routingDecision.classification === "SIMPLE" && routingDecision.response) {
-        ctx.messages.push(new import_messages6.AIMessage(routingDecision.response));
-        ctx.syncMessages();
-        ctx.chatSession.agentStates.set(ctx.chatSession.threadId, "idle");
-        if (ctx.chatSession.isChatActive) ctx.render(true);
-        return;
-      } else {
-        ctx.agentMode = "plan";
-        ctx.messages.push(new import_messages6.SystemMessage(`[MULTI-AGENT ORCHESTRATION]
-You are the Architect Agent. Break down the user's request into:
-1. Plan (high-level approach)
-2. Tasks (step-by-step division of labor)
-3. Artifacts (files to create/modify)
-
-Output your plan wrapped in <!-- PLAN_START --> and <!-- PLAN_END -->. The Reviewer Agent will critique it before execution.`));
-        ctx.syncMessages();
-      }
-    }
-    const mode = ctx.agentMode || "build";
-    const activeProvider = ctx.config.defaults.primaryProvider;
-    await TokenLimiter.getInstance().checkAndWait(activeProvider, ctx.config, ctx.ui);
-    const activeModel = ctx.config.providers[activeProvider]?.activeModel || "default";
-    const finalMsgsToSend = await RequestPipeline.buildPayload(ctx.messages, ctx.config, activeModel, mode);
-    const aiMessage = new import_messages6.AIMessage("");
-    ctx.messages.push(aiMessage);
+    const initialState = {
+      messages: ctx.messages,
+      context: ctx,
+      approvalStatus: "none",
+      activeAgent: "build"
+    };
+    const config2 = { configurable: { thread_id: ctx.chatSession.threadId } };
+    const finalState = await this.graph.invoke(initialState, config2);
+    ctx.messages = finalState.messages;
     ctx.syncMessages();
-    ctx.chatSession.agentStates.set(ctx.chatSession.threadId, "thinking");
-    if (ctx.chatSession.isChatActive) {
-      ctx.render(true);
-    }
-    const stream = await ctx.provider.stream(finalMsgsToSend);
-    this.runner.removeAllListeners();
-    this.runner.on("stream_chunk", () => {
-      if (ctx.chatSession.isChatActive) ctx.render();
-    });
-    this.runner.on("stream_update", () => {
-      ctx.render(true);
-    });
-    const { finalMessage, isDone, hasToolCalls } = await this.runner.consumeStream(
-      stream,
-      aiMessage,
-      ctx.chatSession.threadId,
-      ctx.chatSession,
-      ctx.stripToolBleed,
-      ctx.parseFallbackToolCalls,
-      ctx.messages
-    );
-    if (isDone) return;
-    ctx.messages[ctx.messages.length - 1] = finalMessage;
-    ctx.syncMessages();
-    if (ctx.chatSession.isChatActive) {
-      ctx.render(true);
-    }
-    const outTok = Math.ceil(String(finalMessage?.content || "").length / 4);
-    const inTok = Math.ceil(JSON.stringify(finalMsgsToSend).length / 4);
-    TokenLimiter.getInstance().addUsage(inTok + outTok);
-    const stepClass = classifyAssistantStep(
-      finalMessage,
-      ctx.chatSession.cancelledThreads.has(ctx.chatSession.threadId),
-      ctx.stripToolBleed
-    );
-    if (stepClass.type === "cancelled") {
+    if (finalState.approvalStatus === "pending") {
       return;
     }
-    if (stepClass.type === "native-generation-error") {
-      ctx.messages.push(new import_messages6.HumanMessage("SYSTEM: Your previous tool call failed due to a native API generation error. Please output your tool call as a raw markdown JSON block instead of using the native function calling format."));
-      ctx.syncMessages();
-      if (ctx.chatSession.isChatActive) ctx.render(true);
-      await this.runAgentLoop(ctx, void 0, depth + 1);
-      return;
-    }
-    if (stepClass.type === "think-only" || stepClass.type === "empty") {
-      ctx.messages.push(new import_messages6.HumanMessage("SYSTEM: You stopped generating without executing a tool or saying anything to the user. Proceed with your tool calls or respond to the user."));
-      ctx.syncMessages();
-      if (ctx.chatSession.isChatActive) ctx.render(true);
-      await this.runAgentLoop(ctx, void 0, depth + 1);
-      return;
-    }
-    const responseText = String(finalMessage?.content ?? "");
-    const hasPlanBlock = PLAN_BLOCK_RE.test(responseText);
-    if (hasPlanBlock && stepClass.type !== "tools") {
-      if (ctx.agentMode === "plan") {
-        ctx.chatSession.delayMessage = "Reviewer Agent is critiquing the plan";
-        ctx.render(true);
-        const planText = responseText.match(PLAN_BLOCK_RE)?.[0] || responseText;
-        const critiqueMsg = await ctx.provider.invoke([
-          new import_messages6.SystemMessage("You are a Senior Staff Code Reviewer. Critique the following technical implementation plan. Point out flaws, missing logic, or potential runtime bugs. Be extremely harsh but concise. If it's perfect, say 'LGTM'."),
-          new import_messages6.HumanMessage(planText)
-        ]);
-        ctx.chatSession.delayMessage = null;
-        ctx.messages.push(new import_messages6.AIMessage(`
-
-[REVIEWER CRITIQUE]:
-${critiqueMsg.content}`));
-        ctx.messages.push(new import_messages6.HumanMessage("SYSTEM: You are now the Builder Agent. Refine the plan based on the Reviewer's critique if necessary, divide the tasks, and immediately execute them using tools. Do not output PLAN tags again."));
-        ctx.agentMode = "build";
-        ctx.syncMessages();
-        await this.runAgentLoop(ctx, void 0, depth + 1);
-        return;
-      }
-      if (ctx.config.security.mode === "full" || ctx.config.security.mode === "approve") {
-        ctx.setPendingPlan(false);
-        setTimeout(() => {
-          this.runAgentLoop(ctx, "PLAN APPROVED. Do NOT output the plan tags again under any circumstances. Proceed immediately to execute ALL steps continuously.", depth + 1);
-        }, 50);
-        return;
-      } else {
-        ctx.setPendingPlan(true);
-        ctx.setPlanMenuIndex(0);
-        ctx.chatSession.agentStates.set(ctx.chatSession.threadId, "idle");
-        ctx.render(true);
-        return;
-      }
-    }
-    if (stepClass.type === "tools" && finalMessage.tool_calls) {
-      ctx.chatSession.agentStates.set(ctx.chatSession.threadId, "tools");
-      ctx.render(true);
-      const agentRole = AgentRegistry.getAgent(mode);
-      for (const call of finalMessage.tool_calls) {
-        if (ctx.chatSession.cancelledThreads.has(ctx.chatSession.threadId)) {
-          break;
-        }
-        const toolCallId = call.id;
-        const toolName = call.name;
-        const args = call.args;
-        if (!agentRole.allowedTools.includes("*") && !agentRole.allowedTools.includes(toolName)) {
-          const toolMsg2 = new import_messages6.ToolMessage({
-            tool_call_id: toolCallId,
-            content: `Error: Tool '${toolName}' is not allowed in ${mode} mode.`,
-            name: toolName
-          });
-          ctx.messages.push(toolMsg2);
-          ctx.syncMessages();
-          continue;
-        }
-        if (ctx.config.security.mode === "ask") {
-          if (toolName === "execute_terminal_command" || toolName === "launch_os_app") {
-            const cmdToCheck = toolName === "execute_terminal_command" ? args.command : args.appNameOrPath;
-            const list = toolName === "execute_terminal_command" ? ctx.config.security.allowedCommands : ctx.config.security.allowedApps;
-            const isWhitelisted = list.includes(String(cmdToCheck).split(" ")[0]);
-            if (!isWhitelisted) {
-              const approvalPromise = new Promise((resolve) => {
-                ctx.chatSession.pendingApprovals.push({
-                  threadId: ctx.chatSession.threadId,
-                  cmd: String(cmdToCheck).split(" ")[0],
-                  type: toolName === "execute_terminal_command" ? "command" : "app",
-                  resolve
-                });
-                ctx.render(true);
-              });
-              const choice = await approvalPromise;
-              if (choice === "deny") {
-                const toolMsg2 = new import_messages6.ToolMessage({
-                  tool_call_id: toolCallId,
-                  content: "USER DENIED EXECUTION.",
-                  name: toolName
-                });
-                ctx.messages.push(toolMsg2);
-                ctx.syncMessages();
-                continue;
-              }
-            }
-          }
-        }
-        let result = "";
-        try {
-          if (toolName === "execute_terminal_command") {
-            result = await executor.executeCommand(args.command, args.background);
-          } else {
-            const { tools: tools2 } = await Promise.resolve().then(() => (init_registry(), registry_exports));
-            const tool5 = tools2.find((t) => t.name === toolName);
-            if (tool5) {
-              result = await tool5.invoke(args);
-            } else {
-              result = `Error: Tool ${toolName} not found.`;
-            }
-          }
-          if (toolName === "execute_terminal_command" && !args.background) {
-            if (result.includes("Error:") || result.toLowerCase().includes("failed") || result.toLowerCase().includes("command not found")) {
-              result += `
-
-[SYSTEM VALIDATION: The command appears to have failed. Please re-evaluate your approach, check the tool syntax, and retry.]`;
-            } else {
-              result += `
-
-[SYSTEM VALIDATION: Tool executed successfully.]`;
-            }
-          }
-        } catch (e) {
-          result = `Error: ${e.message}
-[SYSTEM VALIDATION: A fatal error occurred during tool execution. Fix the arguments and retry.]`;
-        }
-        const toolMsg = new import_messages6.ToolMessage({
-          tool_call_id: toolCallId,
-          content: typeof result === "string" ? result : JSON.stringify(result),
-          name: toolName
-        });
-        ctx.messages.push(toolMsg);
-        ctx.syncMessages();
-      }
-      ctx.chatSession.agentStates.set(ctx.chatSession.threadId, "idle");
-      if (ctx.chatSession.isChatActive) ctx.render(true);
-      if (!ctx.chatSession.cancelledThreads.has(ctx.chatSession.threadId)) {
-        snapshotManager.saveCheckpoint(ctx.chatSession.threadId, ctx.messages.length - 1);
-        await this.runAgentLoop(ctx, void 0, depth + 1);
-      }
-    } else if (stepClass.type === "final") {
-      ctx.chatSession.agentStates.set(ctx.chatSession.threadId, "idle");
-      if (ctx.chatSession.isChatActive) ctx.render(true);
+    ctx.chatSession.agentStates.set(ctx.chatSession.threadId, "idle");
+    if (ctx.chatSession.isChatActive) ctx.render(true);
+    if (!ctx.chatSession.cancelledThreads.has(ctx.chatSession.threadId)) {
+      snapshotManager.saveCheckpoint(ctx.chatSession.threadId, ctx.messages.length - 1);
     }
   }
 };
@@ -19421,13 +19422,34 @@ init_threadContext();
 
 // src/cli/nav.tsx
 var import_react = require("react");
+
+// src/cli/ink-compat.tsx
 var import_ink = require("ink");
+var import_jsx_runtime = require("@opentui/react/jsx-runtime");
+function Box(props) {
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_ink.Box, { ...props });
+}
+function Text(props) {
+  const { dimColor, ...rest } = props;
+  if (dimColor) {
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_ink.Text, { color: "gray", ...rest });
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_ink.Text, { ...rest });
+}
+function useInput(handler) {
+  (0, import_ink.useInput)(handler);
+}
+function useApp() {
+  return (0, import_ink.useApp)();
+}
+
+// src/cli/nav.tsx
 init_ui();
 var import_chalk2 = __toESM(require("chalk"), 1);
 init_session();
 var import_fs10 = __toESM(require("fs"), 1);
 var import_path10 = __toESM(require("path"), 1);
-var import_jsx_runtime = require("react/jsx-runtime");
+var import_jsx_runtime2 = require("@opentui/react/jsx-runtime");
 var import_meta = {};
 var CLI_VERSION = "1.0.0";
 try {
@@ -19743,7 +19765,7 @@ var PhoneOS = class {
   }
 };
 function PhoneOSInput({ phone, exit }) {
-  (0, import_ink.useInput)((input2, key) => {
+  useInput((input2, key) => {
     if (!phone.active) return;
     if (key.ctrl && input2 === "c") {
       process.stdout.write("\x1B[?1049l");
@@ -19783,7 +19805,7 @@ function PhoneOSInput({ phone, exit }) {
 }
 function PhoneOSApp({ phone }) {
   const [, forceUpdate] = (0, import_react.useState)(0);
-  const { exit } = (0, import_ink.useApp)();
+  const { exit } = useApp();
   (0, import_react.useEffect)(() => {
     let lastViewId = "";
     return phone.subscribe(() => {
@@ -19810,22 +19832,21 @@ function PhoneOSApp({ phone }) {
     };
   }, [phone]);
   const isTTY = !!(process.stdin && process.stdin.isTTY);
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_ink.Box, { flexDirection: "column", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_ink.Text, { children: phone.drawToString() }),
-    isTTY && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(PhoneOSInput, { phone, exit })
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(Box, { flexDirection: "column", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Text, { children: phone.drawToString() }),
+    isTTY && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(PhoneOSInput, { phone, exit })
   ] });
 }
 
 // src/cli/chat.tsx
 var import_react6 = require("react");
-var import_ink6 = require("ink");
 var import_chalk4 = __toESM(require("chalk"), 1);
 var import_marked2 = require("marked");
 var import_marked_terminal2 = require("marked-terminal");
 
 // src/cli/ui/contexts/ThemeContext.tsx
 var import_react2 = require("react");
-var import_jsx_runtime2 = require("react/jsx-runtime");
+var import_jsx_runtime3 = require("@opentui/react/jsx-runtime");
 var defaultTheme = {
   primary: "#f5c542",
   // O.T.T.O Yellow
@@ -19842,7 +19863,7 @@ var defaultTheme = {
 };
 var ThemeContext = (0, import_react2.createContext)(defaultTheme);
 function ThemeProvider({ children, theme = defaultTheme }) {
-  return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(ThemeContext.Provider, { value: theme, children });
+  return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(ThemeContext.Provider, { value: theme, children });
 }
 function useTheme() {
   return (0, import_react2.useContext)(ThemeContext);
@@ -19850,7 +19871,7 @@ function useTheme() {
 
 // src/cli/ui/contexts/SessionContext.tsx
 var import_react3 = require("react");
-var import_jsx_runtime3 = require("react/jsx-runtime");
+var import_jsx_runtime4 = require("@opentui/react/jsx-runtime");
 var SessionContext = (0, import_react3.createContext)(void 0);
 function SessionProvider({ children, externalState }) {
   const [localState, setLocalState] = (0, import_react3.useState)(externalState);
@@ -19860,7 +19881,7 @@ function SessionProvider({ children, externalState }) {
   const updateState = (updates) => {
     setLocalState((prev) => ({ ...prev, ...updates }));
   };
-  return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(SessionContext.Provider, { value: { state: localState, updateState }, children });
+  return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(SessionContext.Provider, { value: { state: localState, updateState }, children });
 }
 function useSession() {
   const context = (0, import_react3.useContext)(SessionContext);
@@ -19872,14 +19893,13 @@ function useSession() {
 
 // src/cli/ui/contexts/DialogContext.tsx
 var import_react4 = require("react");
-var import_ink2 = require("ink");
-var import_jsx_runtime4 = require("react/jsx-runtime");
+var import_jsx_runtime5 = require("@opentui/react/jsx-runtime");
 var DialogContext = (0, import_react4.createContext)(void 0);
 function DialogProvider({ children }) {
   const [activeDialog, setActiveDialog] = (0, import_react4.useState)(null);
   const openDialog = (props) => setActiveDialog(props);
   const closeDialog = () => setActiveDialog(null);
-  return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(DialogContext.Provider, { value: { openDialog, closeDialog, activeDialog }, children });
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(DialogContext.Provider, { value: { openDialog, closeDialog, activeDialog }, children });
 }
 function useDialog() {
   const context = (0, import_react4.useContext)(DialogContext);
@@ -19892,66 +19912,62 @@ function DialogRenderer() {
   const { activeDialog } = useDialog();
   const theme = useTheme();
   if (!activeDialog) return null;
-  return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)(
-    import_ink2.Box,
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
+    Box,
     {
       flexDirection: "column",
       padding: 1,
       borderStyle: "round",
       borderColor: theme.primary,
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_ink2.Box, { marginBottom: 1, children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_ink2.Text, { bold: true, color: theme.primary, children: activeDialog.title }) }),
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_ink2.Box, { children: activeDialog.content })
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(Box, { marginBottom: 1, children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(Text, { bold: true, color: theme.primary, children: activeDialog.title }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(Box, { children: activeDialog.content })
       ]
     }
   );
 }
 
-// src/cli/ui/routes/SessionView.tsx
-var import_ink5 = require("ink");
-
 // src/cli/ui/components.tsx
 var import_react5 = __toESM(require("react"), 1);
-var import_ink3 = require("ink");
 var import_chalk3 = __toESM(require("chalk"), 1);
-var import_jsx_runtime5 = require("react/jsx-runtime");
-var ToolBlock = import_react5.default.memo(({ tool: tool5 }) => {
-  const isRunning = tool5.status === "running";
-  const isError = tool5.status === "error";
+var import_jsx_runtime6 = require("@opentui/react/jsx-runtime");
+var ToolBlock = import_react5.default.memo(({ tool: tool6 }) => {
+  const isRunning = tool6.status === "running";
+  const isError = tool6.status === "error";
   const icon = isError ? "\u2717" : isRunning ? "\u25CF" : "\u2713";
   const statusColor = isRunning ? "#d4b43f" : isError ? "#8a3a3a" : "#7a6a1a";
   const statusBg = isRunning ? "#1a1500" : isError ? "#1a0a0a" : "#161407";
   const statusText = isRunning ? " \u25CF running " : isError ? " \u2717 error " : " \u2713 done ";
-  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_ink3.Box, { flexDirection: "column", borderStyle: "single", borderLeft: true, borderRight: false, borderTop: false, borderBottom: false, borderColor: statusColor, paddingLeft: 1, marginBottom: 1, marginLeft: 2, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_ink3.Box, { justifyContent: "space-between", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Text, { children: /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_ink3.Text, { backgroundColor: statusBg, color: statusColor, bold: true, children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(Box, { flexDirection: "column", borderStyle: "single", borderLeft: true, borderRight: false, borderTop: false, borderBottom: false, borderColor: statusColor, paddingLeft: 1, marginBottom: 1, marginLeft: 2, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(Box, { justifyContent: "space-between", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(Text, { children: /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(Text, { backgroundColor: statusBg, color: statusColor, bold: true, children: [
         " ",
         icon,
         " ",
-        tool5.name,
+        tool6.name,
         " "
       ] }) }),
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Text, { backgroundColor: statusBg, color: statusColor, dimColor: true, children: statusText })
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(Text, { backgroundColor: statusBg, color: statusColor, dimColor: true, children: statusText })
     ] }),
-    tool5.args && Object.keys(tool5.args).length > 0 && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Box, { marginTop: 0, flexDirection: "column", children: Object.entries(tool5.args).map(([k, v]) => {
+    tool6.args && Object.keys(tool6.args).length > 0 && /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(Box, { marginTop: 0, flexDirection: "column", children: Object.entries(tool6.args).map(([k, v]) => {
       const valStr = typeof v === "object" ? JSON.stringify(v) : String(v);
-      return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_ink3.Box, { marginLeft: 2, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_ink3.Text, { color: "#6a6040", children: [
+      return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(Box, { marginLeft: 2, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(Text, { color: "#6a6040", children: [
           k,
           ": "
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_ink3.Text, { color: "#c9a800", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(Text, { color: "#c9a800", children: [
           '"',
           valStr.replace(/\r/g, ""),
           '"'
         ] })
       ] }, k);
     }) }),
-    tool5.status !== "running" && tool5.rawOutput && /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_ink3.Box, { marginTop: 1, flexDirection: "column", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Text, { color: "#2a2000", children: "\u2500".repeat(50) }),
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_ink3.Text, { color: "#7a6a3a", dimColor: true, children: [
-        tool5.rawOutput.replace(/\r/g, "").substring(0, 500),
-        tool5.rawOutput.length > 500 ? "..." : ""
+    tool6.status !== "running" && tool6.rawOutput && /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(Box, { marginTop: 1, flexDirection: "column", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(Text, { color: "#2a2000", children: "\u2500".repeat(50) }),
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(Text, { color: "#7a6a3a", dimColor: true, children: [
+        tool6.rawOutput.replace(/\r/g, "").substring(0, 500),
+        tool6.rawOutput.length > 500 ? "..." : ""
       ] })
     ] })
   ] });
@@ -19966,7 +19982,7 @@ var AgentMessage = import_react5.default.memo(({ msg, isThinking, isStreaming, d
   if (thinkMatch) {
     rawContent = rawContent.replace(/<(?:think|thought)>[\s\S]*?(?:<\/(?:think|thought)>|$)/, "").trim();
     const thinkLines = thinkMatch[1].trim().split("\n");
-    thinkBlock = diffsExpanded ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Box, { flexDirection: "column", marginBottom: 1, children: thinkLines.map((l, i) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Text, { color: "#f5c542", backgroundColor: "#161407", children: l }, i)) }) : /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Box, { marginBottom: 1, children: /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_ink3.Text, { color: "#f5c542", backgroundColor: "#161407", children: [
+    thinkBlock = diffsExpanded ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(Box, { flexDirection: "column", marginBottom: 1, children: thinkLines.map((l, i) => /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(Text, { color: "#f5c542", backgroundColor: "#161407", children: l }, i)) }) : /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(Box, { marginBottom: 1, children: /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(Text, { color: "#f5c542", backgroundColor: "#161407", children: [
       "[ Reasoning Process (",
       thinkLines.length,
       " lines) - Press Ctrl+E to Expand ]"
@@ -19982,44 +19998,43 @@ var AgentMessage = import_react5.default.memo(({ msg, isThinking, isStreaming, d
   rawContent = rawContent.replace(/^[\s}]+$/gm, "");
   rawContent = rawContent.replace(/\n{3,}/g, "\n\n");
   rawContent = rawContent.trim();
-  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_ink3.Box, { flexDirection: "column", marginBottom: 1, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Box, { marginBottom: 0, children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Text, { backgroundColor: "#161407", color: "#d4b43f", bold: true, children: " O.T.T.O " }) }),
+  return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(Box, { flexDirection: "column", marginBottom: 1, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(Box, { marginBottom: 0, children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(Text, { backgroundColor: "#161407", color: "#d4b43f", bold: true, children: " O.T.T.O " }) }),
     thinkBlock,
-    msg.includes("<think>") && !msg.includes("</think>") && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Box, { paddingLeft: 1, marginTop: 1, children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Text, { color: "#f5c542", backgroundColor: "#161407", children: " [ Thinking... ] " }) }),
-    rawContent && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Box, { marginTop: thinkBlock ? 1 : 0, paddingLeft: 0, children: isStreaming ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Text, { color: "#d4d4d4", children: rawContent }) : /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Text, { color: "#d4d4d4", children: renderMarkdownWithOttoStyles(rawContent.replace(/`([^`]+)`/g, (_m, p1) => import_chalk3.default.hex("#f5c542")(p1)), Math.max(10, width - 4), diffsExpanded).trim() }) })
+    msg.includes("<think>") && !msg.includes("</think>") && /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(Box, { paddingLeft: 1, marginTop: 1, children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(Text, { color: "#f5c542", backgroundColor: "#161407", children: " [ Thinking... ] " }) }),
+    rawContent && /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(Box, { marginTop: thinkBlock ? 1 : 0, paddingLeft: 0, children: isStreaming ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(Text, { color: "#d4d4d4", children: rawContent }) : /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(Text, { color: "#d4d4d4", children: renderMarkdownWithOttoStyles(rawContent.replace(/`([^`]+)`/g, (_m, p1) => import_chalk3.default.hex("#f5c542")(p1)), Math.max(10, width - 4), diffsExpanded).trim() }) })
   ] });
 }, (prev, next) => {
   return prev.msg === next.msg && prev.isThinking === next.isThinking && prev.isStreaming === next.isStreaming && prev.diffsExpanded === next.diffsExpanded && prev.width === next.width;
 });
 var UserMessage = import_react5.default.memo(({ msg }) => {
-  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_ink3.Box, { flexDirection: "column", marginBottom: 1, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Box, { marginBottom: 0, children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Text, { backgroundColor: "#1c1c1c", color: "#888888", children: " you " }) }),
-    /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Box, { paddingLeft: 1, borderStyle: "single", borderLeft: true, borderRight: false, borderTop: false, borderBottom: false, borderColor: "#333", children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_ink3.Text, { color: "#f0f0f0", children: msg.trim() }) })
+  return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(Box, { flexDirection: "column", marginBottom: 1, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(Box, { marginBottom: 0, children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(Text, { backgroundColor: "#1c1c1c", color: "#888888", children: " you " }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(Box, { paddingLeft: 1, borderStyle: "single", borderLeft: true, borderRight: false, borderTop: false, borderBottom: false, borderColor: "#333", children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(Text, { color: "#f0f0f0", children: msg.trim() }) })
   ] });
 });
 
 // src/cli/ui/PromptInput.tsx
-var import_ink4 = require("ink");
-var import_jsx_runtime6 = require("react/jsx-runtime");
+var import_jsx_runtime7 = require("@opentui/react/jsx-runtime");
 function PromptInput() {
   const { state } = useSession();
   const theme = useTheme();
-  return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(import_ink4.Box, { borderStyle: "single", borderTop: true, borderLeft: false, borderRight: false, borderBottom: false, borderColor: theme.primary, paddingTop: 1, flexDirection: "column", flexShrink: 0, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(import_ink4.Box, { children: [
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_ink4.Text, { color: theme.primary, bold: true, children: " \u203A " }),
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_ink4.Text, { color: theme.text, children: state.currentInput }),
-      !state.isThinking && !state.pendingApproval && !state.pendingPlan && !state.delayMessage && /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_ink4.Text, { backgroundColor: Math.floor(Date.now() / 1e3) % 2 === 0 ? theme.primary : "transparent", children: " " }),
-      state.currentInput.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_ink4.Text, { color: state.isThinking || state.telemetry.isStreaming ? theme.error : theme.dimText, dimColor: true, children: state.isThinking || state.telemetry.isStreaming ? "Press [Ctrl+X] to terminate" : "Type your message..." })
+  return /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(Box, { borderStyle: "single", borderTop: true, borderLeft: false, borderRight: false, borderBottom: false, borderColor: theme.primary, paddingTop: 1, flexDirection: "column", flexShrink: 0, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(Box, { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(Text, { color: theme.primary, bold: true, children: " \u203A " }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(Text, { color: theme.text, children: state.currentInput }),
+      !state.isThinking && !state.pendingApproval && !state.pendingPlan && !state.delayMessage && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(Text, { backgroundColor: Math.floor(Date.now() / 1e3) % 2 === 0 ? theme.primary : "transparent", children: " " }),
+      state.currentInput.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(Text, { color: state.isThinking || state.telemetry.isStreaming ? theme.error : theme.dimText, dimColor: true, children: state.isThinking || state.telemetry.isStreaming ? "Press [Ctrl+X] to terminate" : "Type your message..." })
     ] }),
-    state.autocompleteState?.show && state.autocompleteState?.options?.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_ink4.Box, { flexDirection: "column", marginTop: 1, paddingLeft: 2, borderStyle: "single", borderLeft: true, borderRight: false, borderTop: false, borderBottom: false, borderColor: theme.border, children: state.autocompleteState.options.map((opt, i) => {
+    state.autocompleteState?.show && state.autocompleteState?.options?.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(Box, { flexDirection: "column", marginTop: 1, paddingLeft: 2, borderStyle: "single", borderLeft: true, borderRight: false, borderTop: false, borderBottom: false, borderColor: theme.border, children: state.autocompleteState.options.map((opt, i) => {
       const isSelected = i === state.autocompleteState.selectedIndex;
-      return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(import_ink4.Box, { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_ink4.Text, { color: isSelected ? theme.primary : theme.dimText, children: isSelected ? "\u25B6 " : "  " }),
-        /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(import_ink4.Text, { color: isSelected ? theme.text : theme.dimText, children: [
+      return /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(Box, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(Text, { color: isSelected ? theme.primary : theme.dimText, children: isSelected ? "\u25B6 " : "  " }),
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(Text, { color: isSelected ? theme.text : theme.dimText, children: [
           opt.name,
           " "
         ] }),
-        opt.description && /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(import_ink4.Text, { color: theme.border, dimColor: true, children: [
+        opt.description && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(Text, { color: theme.border, dimColor: true, children: [
           " - ",
           opt.description
         ] })
@@ -20029,7 +20044,7 @@ function PromptInput() {
 }
 
 // src/cli/ui/routes/SessionView.tsx
-var import_jsx_runtime7 = require("react/jsx-runtime");
+var import_jsx_runtime8 = require("@opentui/react/jsx-runtime");
 function SessionView({ chatUI }) {
   const { state } = useSession();
   const theme = useTheme();
@@ -20062,84 +20077,84 @@ function SessionView({ chatUI }) {
   const fill = Math.round(ratio * 7);
   const ctxBarFill = "\u25A0".repeat(fill);
   const ctxBarEmpty = "\u25A0".repeat(7 - fill);
-  return /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Box, { flexDirection: "column", height: winHeight - 1, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Box, { marginBottom: 1, borderStyle: "single", borderTop: false, borderLeft: false, borderRight: false, borderColor: theme.border, paddingBottom: 1, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: theme.primary, children: "\u25CF " }),
-      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Text, { color: theme.text, children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Box, { flexDirection: "column", height: winHeight - 1, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Box, { marginBottom: 1, borderStyle: "single", borderTop: false, borderLeft: false, borderRight: false, borderColor: theme.border, paddingBottom: 1, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { color: theme.primary, children: "\u25CF " }),
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Text, { color: theme.text, children: [
         "active session   model: ",
         state.model,
         "   tokens: ",
         state.telemetry.ctxUsed
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Box, { flexDirection: "column", flexGrow: 1, flexShrink: 1, overflow: "hidden", children: /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Box, { flexDirection: "column", marginTop: 0, children: [
-      renderMessages.map((msg, i) => /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Box, { flexDirection: "column", children: [
-        msg.role === "system" && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: theme.dimText, children: msg.content }),
-        msg.role === "tool" && msg.toolInfo && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(ToolBlock, { tool: msg.toolInfo }),
-        msg.toolCalls && msg.toolCalls.length > 0 && msg.state === "tools" && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Box, { flexDirection: "column", children: msg.toolCalls.map((tc, j) => /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(ToolBlock, { tool: { name: tc.name, args: tc.args, status: "running" } }, j)) }),
-        msg.role === "user" && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(UserMessage, { msg: msg.content }),
-        msg.role === "ai" && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(AgentMessage, { msg: msg.content, isThinking: state.isThinking, isStreaming: state.telemetry.isStreaming || false, diffsExpanded: state.diffsExpanded, width: winWidth })
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Box, { flexDirection: "column", flexGrow: 1, flexShrink: 1, overflow: "hidden", children: /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Box, { flexDirection: "column", marginTop: 0, children: [
+      renderMessages.map((msg, i) => /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Box, { flexDirection: "column", children: [
+        msg.role === "system" && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { color: theme.dimText, children: msg.content }),
+        msg.role === "tool" && msg.toolInfo && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(ToolBlock, { tool: msg.toolInfo }),
+        msg.toolCalls && msg.toolCalls.length > 0 && msg.state === "tools" && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Box, { flexDirection: "column", children: msg.toolCalls.map((tc, j) => /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(ToolBlock, { tool: { name: tc.name, args: tc.args, status: "running" } }, j)) }),
+        msg.role === "user" && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(UserMessage, { msg: msg.content }),
+        msg.role === "ai" && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(AgentMessage, { msg: msg.content, isThinking: state.isThinking, isStreaming: state.telemetry.isStreaming || false, diffsExpanded: state.diffsExpanded, width: winWidth })
       ] }, msg.id || i)),
-      state.isThinking && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(AgentMessage, { msg: "<think>Thinking...</think>", isThinking: true, isStreaming: true, diffsExpanded: state.diffsExpanded, width: winWidth }),
-      state.delayMessage && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(AgentMessage, { msg: state.delayMessage + "...", isThinking: state.isThinking, isStreaming: true, diffsExpanded: state.diffsExpanded, width: winWidth })
+      state.isThinking && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(AgentMessage, { msg: "<think>Thinking...</think>", isThinking: true, isStreaming: true, diffsExpanded: state.diffsExpanded, width: winWidth }),
+      state.delayMessage && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(AgentMessage, { msg: state.delayMessage + "...", isThinking: state.isThinking, isStreaming: true, diffsExpanded: state.diffsExpanded, width: winWidth })
     ] }) }),
-    state.pendingApproval && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Box, { flexDirection: "column", marginBottom: 1, padding: 1, borderStyle: "round", borderColor: "#b83030", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { bold: true, color: theme.error, children: "\u26A0 COMMAND APPROVAL" }),
-      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Text, { color: theme.secondary, children: [
+    state.pendingApproval && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Box, { flexDirection: "column", marginBottom: 1, padding: 1, borderStyle: "round", borderColor: "#b83030", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { bold: true, color: theme.error, children: "\u26A0 COMMAND APPROVAL" }),
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Text, { color: theme.secondary, children: [
         " \u26A1 run bash command ",
-        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: "#776633", children: " requires approval" })
+        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { color: "#776633", children: " requires approval" })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Box, { marginTop: 1, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: "#554422", children: "COMMAND: " }),
-        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: theme.primary, children: state.pendingApproval.commandStr })
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Box, { marginTop: 1, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { color: "#554422", children: "COMMAND: " }),
+        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { color: theme.primary, children: state.pendingApproval.commandStr })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Box, { marginTop: 1, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Text, { color: state.approvalMenuIndex === 0 ? theme.text : theme.dimText, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Box, { marginTop: 1, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Text, { color: state.approvalMenuIndex === 0 ? theme.text : theme.dimText, children: [
           state.approvalMenuIndex === 0 ? "\u25B6 " : "  ",
           "Approve "
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Text, { color: state.approvalMenuIndex === 1 ? theme.text : theme.dimText, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Text, { color: state.approvalMenuIndex === 1 ? theme.text : theme.dimText, children: [
           state.approvalMenuIndex === 1 ? "\u25B6 " : "  ",
           "Reject "
         ] })
       ] })
     ] }),
-    state.pendingPlan && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Box, { flexDirection: "column", marginBottom: 1, padding: 1, borderStyle: "round", borderColor: "#30b8b8", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { bold: true, color: "#55ffff", children: "\u{1F4CB} PLAN APPROVAL" }),
-      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Text, { color: theme.secondary, children: [
+    state.pendingPlan && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Box, { flexDirection: "column", marginBottom: 1, padding: 1, borderStyle: "round", borderColor: "#30b8b8", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { bold: true, color: "#55ffff", children: "\u{1F4CB} PLAN APPROVAL" }),
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Text, { color: theme.secondary, children: [
         " \u25C8 proposed plan ",
-        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: "#776633", children: " review before executing" })
+        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { color: "#776633", children: " review before executing" })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Box, { marginTop: 1, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Text, { color: state.planMenuIndex === 0 ? theme.text : theme.dimText, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Box, { marginTop: 1, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Text, { color: state.planMenuIndex === 0 ? theme.text : theme.dimText, children: [
           state.planMenuIndex === 0 ? "\u25B6 " : "  ",
           "Proceed "
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Text, { color: state.planMenuIndex === 1 ? theme.text : theme.dimText, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Text, { color: state.planMenuIndex === 1 ? theme.text : theme.dimText, children: [
           state.planMenuIndex === 1 ? "\u25B6 " : "  ",
           "Reject "
         ] })
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(PromptInput, {}),
-    state.telemetry.showContextBar && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Box, { marginTop: 1, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: theme.dimText, children: "model: " }),
-      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_ink5.Text, { color: theme.primary, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(PromptInput, {}),
+    state.telemetry.showContextBar && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Box, { marginTop: 1, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { color: theme.dimText, children: "model: " }),
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Text, { color: theme.primary, children: [
         state.model.split("-")[0] || "provider",
         " "
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: theme.dimText, children: "  ctx: " }),
-      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: ratio > 0.75 ? theme.error : theme.primary, children: ctxBarFill }),
-      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: theme.border, children: ctxBarEmpty }),
-      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: theme.dimText, children: "  sec: " }),
-      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: theme.primary, children: state.securityMode }),
-      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Box, { flexGrow: 1, justifyContent: "flex-end", children: /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_ink5.Text, { color: theme.border, children: "ctrl+x: stop | esc: menu | @: context | /: cmd" }) })
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { color: theme.dimText, children: "  ctx: " }),
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { color: ratio > 0.75 ? theme.error : theme.primary, children: ctxBarFill }),
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { color: theme.border, children: ctxBarEmpty }),
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { color: theme.dimText, children: "  sec: " }),
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { color: theme.primary, children: state.securityMode }),
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Box, { flexGrow: 1, justifyContent: "flex-end", children: /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Text, { color: theme.border, children: "ctrl+x: stop | esc: menu | @: context | /: cmd" }) })
     ] })
   ] });
 }
 
 // src/cli/chat.tsx
-var import_jsx_runtime8 = require("react/jsx-runtime");
+var import_jsx_runtime9 = require("@opentui/react/jsx-runtime");
 function stripAnsi(str) {
   return str.replace(/\x1B\[[0-9;]*m/g, "");
 }
@@ -20446,7 +20461,7 @@ function translateInkKey(input2, key) {
   };
 }
 function ChatUIInput({ chatUI }) {
-  (0, import_ink6.useInput)((input2, key) => {
+  useInput((input2, key) => {
     const handler = chatUI.getKeyHandler();
     if (handler) {
       const translatedKey = translateInkKey(input2, key);
@@ -20469,11 +20484,11 @@ function ChatUIApp({ chatUI }) {
       process.stdout.off("resize", handleResize);
     };
   }, [chatUI]);
-  if (!chatUI.currentData) return /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(import_ink6.Box, { children: /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(import_ink6.Text, { children: "Loading..." }) });
-  return /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(ThemeProvider, { children: /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(SessionProvider, { externalState: chatUI.currentData, children: /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(DialogProvider, { children: [
-    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(SessionView, { chatUI }),
-    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(DialogRenderer, {}),
-    !!(process.stdin && process.stdin.isTTY) && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(ChatUIInput, { chatUI })
+  if (!chatUI.currentData) return /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(Box, { children: /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(Text, { children: "Loading..." }) });
+  return /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(ThemeProvider, { children: /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(SessionProvider, { externalState: chatUI.currentData, children: /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(DialogProvider, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(SessionView, { chatUI }),
+    /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(DialogRenderer, {}),
+    !!(process.stdin && process.stdin.isTTY) && /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(ChatUIInput, { chatUI })
   ] }) }) });
 }
 
@@ -20494,7 +20509,7 @@ async function promptWithEscape(message, initialValue = "") {
     if (process.stdin.isTTY) process.stdin.setRawMode(true);
     process.stdin.resume();
     let value = initialValue;
-    const render = () => {
+    const render2 = () => {
       process.stdout.write("\x1B[0;0H\x1B[J");
       process.stdout.write(import_chalk5.default.yellow(`${message} `) + import_chalk5.default.white(value) + import_chalk5.default.hex("#F5C400")("\u2588"));
       process.stdout.write(import_chalk5.default.dim("\n\nEsc to cancel, Enter to confirm"));
@@ -20520,18 +20535,18 @@ async function promptWithEscape(message, initialValue = "") {
       }
       if (key.name === "backspace" || str === "\x7F" || str === "\b") {
         value = value.slice(0, -1);
-        render();
+        render2();
         return;
       }
       if (str && !key.ctrl && !key.meta) {
         const code = str.charCodeAt(0);
         if (str.length === 1 && (code < 32 || code === 127) && str !== "	") return;
         value += str;
-        render();
+        render2();
       }
     };
     process.stdin.on("keypress", onKeypress);
-    render();
+    render2();
   });
 }
 
@@ -21563,10 +21578,10 @@ ${c.error("\u274C")} Unknown command: ${command}`);
 var import_fs14 = __toESM(require("fs"), 1);
 var import_path14 = __toESM(require("path"), 1);
 var import_react7 = require("react");
-var import_ink7 = require("ink");
-var import_messages7 = require("@langchain/core/messages");
+var import_ink2 = require("ink");
+var import_messages8 = require("@langchain/core/messages");
 var import_chalk11 = __toESM(require("chalk"), 1);
-var import_jsx_runtime9 = require("react/jsx-runtime");
+var import_jsx_runtime10 = require("@opentui/react/jsx-runtime");
 var import_meta2 = {};
 var CLI_VERSION2 = "1.0.0";
 try {
@@ -22015,9 +22030,9 @@ function AppShell({ phone, chatUI }) {
     });
   }, []);
   if (mode === "chat") {
-    return /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(ChatUIApp, { chatUI });
+    return /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(ChatUIApp, { chatUI });
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(PhoneOSApp, { phone });
+  return /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(PhoneOSApp, { phone });
 }
 async function main() {
   const args = process.argv.slice(2);
@@ -22063,7 +22078,7 @@ async function main() {
       { label: "\u270F\uFE0F  Edit - request changes first", inject: null },
       { label: "\u274C  Cancel - do not proceed", inject: "cancel - do not proceed with this plan." }
     ];
-    const PLAN_BLOCK_RE2 = /<!--\s*PLAN_START\s*-->[\s\S]*?<!--\s*PLAN_END\s*-->/;
+    const PLAN_BLOCK_RE = /<!--\s*PLAN_START\s*-->[\s\S]*?<!--\s*PLAN_END\s*-->/;
     const getRenderMessages = () => {
       const renderMsgs = [];
       const state = chatSession.agentStates.get(chatSession.threadId);
@@ -22118,7 +22133,7 @@ async function main() {
         if (!animationTimer) {
           animationTimer = setInterval(() => {
             if (chatSession.isChatActive && !isPrompting) {
-              render(true);
+              render2(true);
             }
           }, 350);
         }
@@ -22135,11 +22150,11 @@ async function main() {
       const now = Date.now();
       if (force || now - lastRenderTime >= 100) {
         lastRenderTime = now;
-        render(force);
+        render2(force);
       }
     }
     let diffsExpanded = false;
-    function render(force = false) {
+    function render2(force = false) {
       if (isPrompting) return;
       if (!chatSession.isChatActive) return;
       updateAnimationTimer();
@@ -22211,13 +22226,13 @@ async function main() {
       const onPendingApproval = () => {
         if (chatSession.isChatActive) {
           chatUI.scrollToBottom();
-          render(true);
+          render2(true);
         }
       };
       sessionEvents.on("pending_approval", onPendingApproval);
       const onStreamUpdate = (id) => {
         if (id === chatSession.threadId && chatSession.isChatActive) {
-          render(true);
+          render2(true);
         }
       };
       function onPromptStart() {
@@ -22232,7 +22247,7 @@ async function main() {
         isPrompting = false;
         chatUI.registerKeyHandler(onKeypress);
         updateAnimationTimer();
-        render(true);
+        render2(true);
       }
       sessionEvents.on("stream_update", onStreamUpdate);
       sessionEvents.on("prompt_start", onPromptStart);
@@ -22270,19 +22285,19 @@ async function main() {
               parseFallbackToolCalls: parseFallbackToolCalls2,
               setPendingPlan,
               setPlanMenuIndex,
-              render,
+              render: render2,
               syncMessages
             }, inputText);
           });
         } catch (error51) {
           chatSession.activeStreams.delete(chatSession.threadId);
           chatSession.agentStates.set(chatSession.threadId, "idle");
-          messages.push(new import_messages7.AIMessage(formatChatError(error51)));
+          messages.push(new import_messages8.AIMessage(formatChatError(error51)));
           syncMessages();
-          render(true);
+          render2(true);
         } finally {
           chatSession.activeStreams.delete(chatSession.threadId);
-          render(true);
+          render2(true);
         }
       };
       async function onKeypress(str, key) {
@@ -22292,7 +22307,7 @@ async function main() {
           process.exit(0);
         } else if (key.ctrl && key.name === "e") {
           diffsExpanded = !diffsExpanded;
-          render(true);
+          render2(true);
           return;
         } else if (key.ctrl && key.name === "k") {
           cleanup();
@@ -22324,7 +22339,7 @@ async function main() {
             actionTaken = true;
           }
           if (actionTaken) {
-            render(true);
+            render2(true);
           }
           return;
         } else if (key.name === "escape") {
@@ -22338,7 +22353,7 @@ async function main() {
             const before = state.isCommand ? "" : state.originalInput.slice(0, state.lastAtIdx !== void 0 ? state.lastAtIdx + 1 : 0);
             currentInput = before + completed;
             state.matchIdx = (state.matchIdx + 1) % state.matches.length;
-            render();
+            render2();
             return;
           }
           return;
@@ -22376,7 +22391,7 @@ async function main() {
               }
             }
             pendingApp.resolve(choice);
-            render(true);
+            render2(true);
             return;
           }
           if (getPendingPlan()) {
@@ -22388,7 +22403,7 @@ async function main() {
             } else {
               setPendingPlan(false);
               setPlanMenuIndex(0);
-              render(true);
+              render2(true);
             }
             return;
           }
@@ -22411,7 +22426,7 @@ async function main() {
               messages.splice(lastHumanIdx);
               syncMessages();
             }
-            render(true);
+            render2(true);
             return;
           }
           if (chatSession.activeStreams.has(chatSession.threadId)) {
@@ -22434,7 +22449,7 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
             const completed = autocompleteState.matches[autocompleteState.matchIdx];
             const before = autocompleteState.originalInput.slice(0, autocompleteState.lastAtIdx + 1);
             currentInput = before + completed;
-            render();
+            render2();
             return;
           }
           if (getPendingApproval()) {
@@ -22444,14 +22459,14 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
           } else {
             chatUI.scrollUp(3);
           }
-          render(getIsStreaming());
+          render2(getIsStreaming());
         } else if (key.name === "down") {
           if (autocompleteState && autocompleteState.lastAtIdx !== void 0) {
             autocompleteState.matchIdx = (autocompleteState.matchIdx + 1) % autocompleteState.matches.length;
             const completed = autocompleteState.matches[autocompleteState.matchIdx];
             const before = autocompleteState.originalInput.slice(0, autocompleteState.lastAtIdx + 1);
             currentInput = before + completed;
-            render();
+            render2();
             return;
           }
           if (getPendingApproval()) {
@@ -22461,25 +22476,25 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
           } else {
             chatUI.scrollDown(3);
           }
-          render(getIsStreaming());
+          render2(getIsStreaming());
         } else if (key.name === "pageup") {
           autocompleteState = null;
           chatUI.scrollUp(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
-          render(getIsStreaming());
+          render2(getIsStreaming());
         } else if (key.name === "pagedown") {
           autocompleteState = null;
           chatUI.scrollDown(Math.max(1, Math.floor(((process.stdout.rows || 24) - 1) / 2)));
-          render(getIsStreaming());
+          render2(getIsStreaming());
         } else if (key.name === "end") {
           autocompleteState = null;
           chatUI.scrollToBottom();
-          render(getIsStreaming());
+          render2(getIsStreaming());
         } else if (key.name === "backspace" || str === "\x7F" || str === "\b") {
           autocompleteState = null;
           if (getIsStreaming() || getPendingApproval() || getPendingPlan()) return;
           currentInput = currentInput.slice(0, -1);
           updateAutocompleteState();
-          render();
+          render2();
         } else if (str && !key.ctrl && !key.meta) {
           if (key.name === "tab") return;
           if (getPendingApproval()) {
@@ -22492,7 +22507,7 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
               }
               setApprovalMenuIndex(0);
               pendingApp.resolve("now");
-              render(true);
+              render2(true);
               return;
             } else if (char === "n") {
               const pendingApp = getPendingApproval();
@@ -22502,7 +22517,7 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
               }
               setApprovalMenuIndex(0);
               pendingApp.resolve("deny");
-              render(true);
+              render2(true);
               return;
             } else if (char === "a") {
               const pendingApp = getPendingApproval();
@@ -22525,7 +22540,7 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
               }
               Configurator.saveConfig(config2);
               pendingApp.resolve("always");
-              render(true);
+              render2(true);
               return;
             }
             return;
@@ -22545,7 +22560,7 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
             } else if (char === "e") {
               setPendingPlan(false);
               setPlanMenuIndex(0);
-              render(true);
+              render2(true);
               return;
             }
             return;
@@ -22556,7 +22571,7 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
           if (getIsStreaming()) return;
           currentInput += str;
           updateAutocompleteState();
-          render();
+          render2();
         }
       }
       ;
@@ -22627,8 +22642,8 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
           }
         }
       };
-      render(getIsStreaming());
-      render(getIsStreaming());
+      render2(getIsStreaming());
+      render2(getIsStreaming());
     });
   };
   const createProfileView = () => {
@@ -23972,7 +23987,7 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
     phone.pushView(createCommandPaletteView(phone, actions));
   });
   phone.pushView(createHomeView());
-  (0, import_ink7.render)(/* @__PURE__ */ (0, import_jsx_runtime9.jsx)(AppShell, { phone, chatUI }));
+  (0, import_ink2.render)(/* @__PURE__ */ (0, import_jsx_runtime10.jsx)(AppShell, { phone, chatUI }));
   phone.startListening();
 }
 process.on("uncaughtException", (error51) => {
@@ -23997,7 +24012,8 @@ var cleanupAndExit = () => {
 process.on("SIGINT", cleanupAndExit);
 process.on("SIGTERM", cleanupAndExit);
 main().catch((err) => {
-  ui.error(err.message);
+  console.error(err);
+  import_fs14.default.writeFileSync("crash.txt", err.stack || err.message);
   process.exit(1);
 });
 // Annotate the CommonJS export names for ESM import in node:

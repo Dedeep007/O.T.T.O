@@ -3,7 +3,7 @@ import planPrompt from './prompts/plan.js';
 import fullPrompt from './prompts/full.js';
 import condensedPrompt from './prompts/condensed.js';
 
-export type AgentMode = 'build' | 'explore' | 'plan';
+export type AgentMode = 'build' | 'explore' | 'plan' | 'tasker' | 'coder';
 
 export interface AgentRole {
   id: AgentMode;
@@ -38,6 +38,20 @@ export class AgentRegistry {
           description: 'Architect and technical designer. Can write plans but cannot edit source code.',
           allowedTools: ['search_code', 'read_file_lines', 'read_file', 'list_directory', 'write_file'],
           prompt: this.loadPrompt('plan')
+        };
+      case 'tasker':
+        return {
+          id: 'tasker',
+          description: 'Implementation Tasker. Divides technical plans into atomic sequential steps.',
+          allowedTools: ['search_code', 'read_file_lines', 'read_file', 'list_directory'],
+          prompt: "You are the Tasker Agent. Break down the provided technical plan into a sequence of atomic, actionable tasks."
+        };
+      case 'coder':
+        return {
+          id: 'coder',
+          description: 'Execution specialist. Writes code and uses tools.',
+          allowedTools: ['*'],
+          prompt: "You are the Coding Agent. Execute the given tasks sequentially using the available tools."
         };
       case 'build':
       default:

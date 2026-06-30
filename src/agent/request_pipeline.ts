@@ -46,10 +46,12 @@ export class RequestPipeline {
     }
   
     // ── AGENTIC SKILLS DISCOVERY ──
-    // Scan for YAML-frontmatter + Markdown skills from multiple roots
-    // (.otto/skills/, .agents/skills/, ~/.otto/skills/, ~/.agents/skills/)
     const registry = getSkillRegistry();
-    const skillsInfo = formatSkillsForPrompt(registry);
+    let skillsInfo = '';
+    // Only inject full skill list for the default build agent or coder.
+    if (mode === 'build' || mode === 'coder') {
+      skillsInfo = formatSkillsForPrompt(registry);
+    }
 
     // ── CHECK IF LAST MESSAGE IS A SKILL TRIGGER ──
     let skillInjection = '';

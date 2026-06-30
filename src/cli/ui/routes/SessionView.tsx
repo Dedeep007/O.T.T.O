@@ -1,5 +1,5 @@
 import React from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text } from '../../ink-compat.js';
 import { useSession } from '../contexts/SessionContext.js';
 import { useTheme } from '../contexts/ThemeContext.js';
 import { AgentMessage, ToolBlock, UserMessage } from '../components.js';

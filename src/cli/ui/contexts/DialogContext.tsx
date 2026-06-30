@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState } from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text } from '../../ink-compat.js';
 import { useTheme } from './ThemeContext.js';
 
 export interface DialogProps {

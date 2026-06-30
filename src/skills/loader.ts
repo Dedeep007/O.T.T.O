@@ -254,6 +254,22 @@ export function formatSkillsForPrompt(registry: SkillRegistry): string {
   return lines.join('\n');
 }
 
+/** Format discovered skills for the Coding Agent Knowledge Graph */
+export function formatSkillsForKnowledgeGraph(registry: SkillRegistry): string {
+  if (registry.skills.size === 0) return '';
+
+  const lines: string[] = [];
+  lines.push('\n\n━━━━━ SKILLS KNOWLEDGE GRAPH ━━━━━');
+  lines.push('You have access to a knowledge graph of coding skills. Use the `read_skill` tool to dynamically load the exact instructions for any of the following skills if you need to implement them:\n');
+  
+  for (const [name, skill] of registry.skills) {
+    lines.push(`- **${name}** — ${skill.description}`);
+  }
+  lines.push('\nIf your task involves any of these domains, you MUST call `read_skill(skillName)` first before writing code.');
+  lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+  return lines.join('\n');
+}
+
 /** Get the full instruction body for a specific skill (for injection when triggered) */
 export function getSkillInstructions(registry: SkillRegistry, skillName: string): string | null {
   const skill = registry.skills.get(skillName);
