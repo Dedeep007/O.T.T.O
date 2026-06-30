@@ -18394,7 +18394,7 @@ var coderNode = async (state) => {
   return { messages: [msg], activeAgent: "coder" };
 };
 var answerNode = async (state) => {
-  return { messages: [new import_messages6.AIMessage("All steps completed.")] };
+  return {};
 };
 function buildAgentGraph() {
   const graph = new import_langgraph.StateGraph(GraphState).addNode("router", routerNode).addNode("architect", architectNode).addNode("plannerReview", plannerReviewNode).addNode("approval", approvalNode).addNode("tasker", taskerNode).addNode("taskerReview", taskerReviewNode).addNode("coder", coderNode).addNode("answer", answerNode).addNode("tools", async (state) => {
@@ -18553,7 +18553,8 @@ var AgentWorkflow = class {
     };
     const config2 = { configurable: { thread_id: ctx.chatSession.threadId } };
     const finalState = await this.graph.invoke(initialState, config2);
-    ctx.messages = finalState.messages;
+    ctx.messages.length = 0;
+    ctx.messages.push(...finalState.messages);
     ctx.syncMessages();
     if (finalState.approvalStatus === "pending") {
       return;

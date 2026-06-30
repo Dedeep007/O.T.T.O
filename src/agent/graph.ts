@@ -131,7 +131,7 @@ const coderNode = async (state: typeof GraphState.State) => {
 };
 
 const answerNode = async (state: typeof GraphState.State) => {
-  return { messages: [new AIMessage("All steps completed.")] };
+  return {};
 };
 
 export function buildAgentGraph() {

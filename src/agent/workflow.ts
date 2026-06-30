@@ -63,7 +63,8 @@ export class AgentWorkflow {
     const finalState = await this.graph.invoke(initialState, config);
     
     // LangGraph appends messages to state
-    ctx.messages = finalState.messages;
+    ctx.messages.length = 0;
+    ctx.messages.push(...finalState.messages);
     ctx.syncMessages();
     
     if (finalState.approvalStatus === 'pending') {
