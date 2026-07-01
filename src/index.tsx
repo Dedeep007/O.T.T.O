@@ -96,7 +96,7 @@ function isToolCallFormat(obj: any): boolean {
   return obj && typeof obj === 'object' && 'name' in obj && ('args' in obj || 'arguments' in obj);
 }
 
-type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral' | 'bedrock';
+type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral' | 'bedrock' | 'nvidia';
 function stripToolBleed(text: string): string {
   if (!text) return text;
   let cleaned = text;
@@ -1568,7 +1568,7 @@ async function main() {
 
 
   const createProviderModelView = (
-    providerName: 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral' | 'bedrock',
+    providerName: 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral' | 'bedrock' | 'nvidia',
     providerLabel: string,
     defaultModel: string,
     examples: string
@@ -1723,6 +1723,11 @@ async function main() {
         description: 'e.g. us.amazon.nova-pro-v1:0, us.anthropic.claude-3-5-sonnet-20241022-v2:0',
         action: async () => phone.pushView(createProviderModelView('bedrock', 'AWS Bedrock', 'us.amazon.nova-pro-v1:0', 'e.g. us.amazon.nova-pro-v1:0, us.anthropic.claude-3-5-sonnet-20241022-v2:0'))
       },
+      {
+        label: `NVIDIA  ${Configurator.getActiveModel(config, 'nvidia') ? '-> ' + Configurator.getActiveModel(config, 'nvidia') : '(default: meta/llama-3.3-70b-instruct)'}`,
+        description: 'e.g. meta/llama-3.3-70b-instruct, meta/llama-3.1-405b-instruct',
+        action: async () => phone.pushView(createProviderModelView('nvidia', 'NVIDIA', 'meta/llama-3.3-70b-instruct', 'e.g. meta/llama-3.3-70b-instruct, meta/llama-3.1-405b-instruct'))
+      },
     ]
   });
 
@@ -1733,7 +1738,7 @@ async function main() {
   };
 
   const createProviderApiKeyView = (
-    providerName: 'groq' | 'openai' | 'anthropic' | 'gemini' | 'mistral',
+    providerName: 'groq' | 'openai' | 'anthropic' | 'gemini' | 'mistral' | 'nvidia',
     providerLabel: string
   ): PhoneView => {
     const apiKeys = Configurator.getApiKeys(config, providerName);
@@ -1975,6 +1980,11 @@ async function main() {
         label: 'AWS Bedrock Credentials',
         description: config.providers.bedrock?.region ? `region: ${config.providers.bedrock.region}` : 'Not configured (uses env/IAM by default)',
         action: async () => phone.pushView(createBedrockSettingsView())
+      },
+      {
+        label: `NVIDIA  ${Configurator.getApiKeys(config, 'nvidia').length} key(s)`,
+        description: Configurator.getActiveApiKey(config, 'nvidia') ? `active: ${maskApiKey(Configurator.getActiveApiKey(config, 'nvidia')!)}` : 'no key',
+        action: async () => phone.pushView(createProviderApiKeyView('nvidia', 'NVIDIA'))
       },
       { label: 'Go Back', action: () => phone.goBack() }
     ]
@@ -2598,6 +2608,7 @@ async function main() {
     { label: 'API Keys: Anthropic Keys', action: () => phone.pushView(createProviderApiKeyView('anthropic', 'Anthropic')) },
     { label: 'API Keys: Gemini Keys', action: () => phone.pushView(createProviderApiKeyView('gemini', 'Gemini')) },
     { label: 'API Keys: Mistral Keys', action: () => phone.pushView(createProviderApiKeyView('mistral', 'Mistral')) },
+    { label: 'API Keys: NVIDIA Keys', action: () => phone.pushView(createProviderApiKeyView('nvidia', 'NVIDIA')) },
     { label: 'API Keys: AWS Bedrock Credentials', action: () => phone.pushView(createBedrockSettingsView()) },
     { label: 'Models: Groq Model Variants', action: () => phone.pushView(createProviderModelView('groq', 'Groq', 'qwen-qwq-32b', 'e.g. qwen-qwq-32b')) },
     { label: 'Models: OpenAI Model Variants', action: () => phone.pushView(createProviderModelView('openai', 'OpenAI', 'gpt-4o', 'e.g. gpt-4o')) },

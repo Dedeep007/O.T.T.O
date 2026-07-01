@@ -23168,6 +23168,11 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
         label: `AWS Bedrock  ${Configurator.getActiveModel(config2, "bedrock") ? "-> " + Configurator.getActiveModel(config2, "bedrock") : "(default: us.amazon.nova-pro-v1:0)"}`,
         description: "e.g. us.amazon.nova-pro-v1:0, us.anthropic.claude-3-5-sonnet-20241022-v2:0",
         action: async () => phone.pushView(createProviderModelView("bedrock", "AWS Bedrock", "us.amazon.nova-pro-v1:0", "e.g. us.amazon.nova-pro-v1:0, us.anthropic.claude-3-5-sonnet-20241022-v2:0"))
+      },
+      {
+        label: `NVIDIA  ${Configurator.getActiveModel(config2, "nvidia") ? "-> " + Configurator.getActiveModel(config2, "nvidia") : "(default: meta/llama-3.3-70b-instruct)"}`,
+        description: "e.g. meta/llama-3.3-70b-instruct, meta/llama-3.1-405b-instruct",
+        action: async () => phone.pushView(createProviderModelView("nvidia", "NVIDIA", "meta/llama-3.3-70b-instruct", "e.g. meta/llama-3.3-70b-instruct, meta/llama-3.1-405b-instruct"))
       }
     ]
   });
@@ -23413,6 +23418,11 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
         label: "AWS Bedrock Credentials",
         description: config2.providers.bedrock?.region ? `region: ${config2.providers.bedrock.region}` : "Not configured (uses env/IAM by default)",
         action: async () => phone.pushView(createBedrockSettingsView())
+      },
+      {
+        label: `NVIDIA  ${Configurator.getApiKeys(config2, "nvidia").length} key(s)`,
+        description: Configurator.getActiveApiKey(config2, "nvidia") ? `active: ${maskApiKey(Configurator.getActiveApiKey(config2, "nvidia"))}` : "no key",
+        action: async () => phone.pushView(createProviderApiKeyView("nvidia", "NVIDIA"))
       },
       { label: "Go Back", action: () => phone.goBack() }
     ]
@@ -24034,6 +24044,7 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
     { label: "API Keys: Anthropic Keys", action: () => phone.pushView(createProviderApiKeyView("anthropic", "Anthropic")) },
     { label: "API Keys: Gemini Keys", action: () => phone.pushView(createProviderApiKeyView("gemini", "Gemini")) },
     { label: "API Keys: Mistral Keys", action: () => phone.pushView(createProviderApiKeyView("mistral", "Mistral")) },
+    { label: "API Keys: NVIDIA Keys", action: () => phone.pushView(createProviderApiKeyView("nvidia", "NVIDIA")) },
     { label: "API Keys: AWS Bedrock Credentials", action: () => phone.pushView(createBedrockSettingsView()) },
     { label: "Models: Groq Model Variants", action: () => phone.pushView(createProviderModelView("groq", "Groq", "qwen-qwq-32b", "e.g. qwen-qwq-32b")) },
     { label: "Models: OpenAI Model Variants", action: () => phone.pushView(createProviderModelView("openai", "OpenAI", "gpt-4o", "e.g. gpt-4o")) },
