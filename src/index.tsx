@@ -2231,6 +2231,31 @@ async function main() {
           phone.goBack(); phone.pushView(createProviderView());
         }
       },
+      {
+        label: `NVIDIA  ${config.defaults.primaryProvider === 'nvidia' ? '[active]' : ''}  ${Configurator.getActiveApiKey(config, 'nvidia') ? '' : '-- no key'}`,
+        description: Configurator.getActiveModel(config, 'nvidia') ? `model: ${Configurator.getActiveModel(config, 'nvidia')}` : 'model: meta/llama-3.3-70b-instruct (default)',
+        action: async () => {
+          if (!Configurator.getActiveApiKey(config, 'nvidia')) {
+            phone.active = false;
+            ui.clearScreen();
+            const key = await promptWithEscape('Enter API Key for NVIDIA:');
+            if (key === null) {
+              phone.active = true;
+              phone.goBack();
+              phone.pushView(createProviderView());
+              return;
+            }
+            config = Configurator.updateApiKey('nvidia', key) || config;
+            phone.active = true;
+          }
+          config = Configurator.updatePrimaryProvider('nvidia') || config;
+          provider.setConfig(config);
+          phone.updateConfig(config);
+          ui.success('Switched to NVIDIA.');
+          await new Promise(r => setTimeout(r, 1000));
+          phone.goBack(); phone.pushView(createProviderView());
+        }
+      },
       { label: 'Go Back', action: () => phone.goBack() }
     ]
   });

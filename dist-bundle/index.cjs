@@ -23679,6 +23679,32 @@ After writing it, output the <!-- PLAN_START --> and <!-- PLAN_END --> tags with
           phone.pushView(createProviderView());
         }
       },
+      {
+        label: `NVIDIA  ${config2.defaults.primaryProvider === "nvidia" ? "[active]" : ""}  ${Configurator.getActiveApiKey(config2, "nvidia") ? "" : "-- no key"}`,
+        description: Configurator.getActiveModel(config2, "nvidia") ? `model: ${Configurator.getActiveModel(config2, "nvidia")}` : "model: meta/llama-3.3-70b-instruct (default)",
+        action: async () => {
+          if (!Configurator.getActiveApiKey(config2, "nvidia")) {
+            phone.active = false;
+            ui.clearScreen();
+            const key = await promptWithEscape("Enter API Key for NVIDIA:");
+            if (key === null) {
+              phone.active = true;
+              phone.goBack();
+              phone.pushView(createProviderView());
+              return;
+            }
+            config2 = Configurator.updateApiKey("nvidia", key) || config2;
+            phone.active = true;
+          }
+          config2 = Configurator.updatePrimaryProvider("nvidia") || config2;
+          provider.setConfig(config2);
+          phone.updateConfig(config2);
+          ui.success("Switched to NVIDIA.");
+          await new Promise((r) => setTimeout(r, 1e3));
+          phone.goBack();
+          phone.pushView(createProviderView());
+        }
+      },
       { label: "Go Back", action: () => phone.goBack() }
     ]
   });
