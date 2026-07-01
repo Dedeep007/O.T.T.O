@@ -1,6 +1,6 @@
 {
   "name": "@dpv007/o.t.t.o",
-  "version": "1.2.8",
+  "version": "1.2.10",
   "description": "Orchestrated Task & Tool Operator",
   "main": "dist/index.js",
   "type": "module",
