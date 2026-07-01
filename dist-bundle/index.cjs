@@ -19226,8 +19226,8 @@ var ProviderRegistry = class {
         const model = Configurator.getActiveModel(this.config, "nvidia") ?? "meta/llama-3.3-70b-instruct";
         const apiKey = Configurator.getActiveApiKey(this.config, "nvidia");
         this.primaryModel = new import_openai.ChatOpenAI({
-          openAIApiKey: apiKey,
-          modelName: model,
+          apiKey,
+          model,
           temperature: 0,
           maxRetries: 0,
           streaming: true,
