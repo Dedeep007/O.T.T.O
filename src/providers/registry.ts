@@ -15,7 +15,7 @@ import { concat } from '@langchain/core/utils/stream';
 import { executor } from '../security/executor.js';
 import { memoryManager } from '../memory/budget.js';
 
-type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral' | 'bedrock';
+type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral' | 'bedrock' | 'nvidia';
 
 function sanitizeJsonString(jsonStr: string): string {
   let result = '';
@@ -477,6 +477,18 @@ export class ProviderRegistry {
           streaming: true
         }).bindTools(tools) as any;
         ui.info(`Switched to Gemini - ${model}`);
+      } else if (providerName === 'nvidia' && Configurator.getActiveApiKey(this.config, 'nvidia')) {
+        const model = Configurator.getActiveModel(this.config, 'nvidia') ?? 'meta/llama-3.3-70b-instruct';
+        const apiKey = Configurator.getActiveApiKey(this.config, 'nvidia')!;
+        this.primaryModel = new ChatOpenAI({
+          openAIApiKey: apiKey,
+          modelName: model,
+          temperature: 0,
+          maxRetries: 0,
+          streaming: true,
+          configuration: { baseURL: 'https://integrate.api.nvidia.com/v1' }
+        }).bindTools(tools) as any;
+        ui.info(`Switched to NVIDIA - ${model}`);
       } else if (providerName === 'mistral' && Configurator.getActiveApiKey(this.config, 'mistral')) {
         const model = Configurator.getActiveModel(this.config, 'mistral') ?? 'mistral-large-latest';
         const apiKey = Configurator.getActiveApiKey(this.config, 'mistral')!;
@@ -596,7 +608,7 @@ export class ProviderRegistry {
     const providerName = this.config.defaults.primaryProvider as ProviderName;
     if (providerName === 'ollama' || providerName === 'bedrock') return false;
 
-    const rotatableProvider = providerName as 'groq' | 'openai' | 'anthropic' | 'gemini' | 'mistral';
+    const rotatableProvider = providerName as 'groq' | 'openai' | 'anthropic' | 'gemini' | 'mistral' | 'nvidia';
 
     const rotateKeyFirst = attempt % 2 === 1;
     const actions = rotateKeyFirst

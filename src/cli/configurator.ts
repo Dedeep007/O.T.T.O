@@ -13,11 +13,12 @@ export interface OttoConfig {
     gemini?:   { apiKey: string; apiKeys?: string[]; activeApiKey?: string; model?: string; models?: string[]; activeModel?: string };
     mistral?:  { apiKey: string; apiKeys?: string[]; activeApiKey?: string; model?: string; models?: string[]; activeModel?: string };
     bedrock?:  { accessKeyId?: string; secretAccessKey?: string; sessionToken?: string; region?: string; model?: string; models?: string[]; activeModel?: string; apiKey?: string; apiKeys?: string[]; activeApiKey?: string; useChatBedrock?: boolean };
+    nvidia?:   { apiKey: string; apiKeys?: string[]; activeApiKey?: string; model?: string; models?: string[]; activeModel?: string };
   };
   defaults: {
-    primaryProvider: 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral' | 'bedrock';
-    secondaryProvider?: 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral' | 'bedrock';
-    tertiaryProvider?: 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral' | 'bedrock';
+    primaryProvider: 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral' | 'bedrock' | 'nvidia';
+    secondaryProvider?: 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral' | 'bedrock' | 'nvidia';
+    tertiaryProvider?: 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral' | 'bedrock' | 'nvidia';
     showContextBar: boolean;
     maxThreads?: number;  // cap on stored sessions; undefined = use cpuHealthyDefault
     maxCtx?: number;      // user adjustable context cap
@@ -47,7 +48,7 @@ export interface OttoConfig {
 }
 
 const rcPath = path.join(os.homedir(), '.ottorc');
-type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral' | 'bedrock';
+type ProviderName = 'groq' | 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'mistral' | 'bedrock' | 'nvidia';
 
 function normalizeModels(models?: string[]): string[] {
   return Array.from(new Set((models ?? []).map(m => m.trim()).filter(Boolean)));
@@ -72,7 +73,7 @@ function getPrimaryApiKey(entry: any): string | undefined {
 export const Configurator = {
   normalizeConfig: (config: OttoConfig): OttoConfig => {
     const next: OttoConfig = JSON.parse(JSON.stringify(config));
-    (['groq', 'openai', 'anthropic', 'ollama', 'gemini', 'mistral', 'bedrock'] as ProviderName[]).forEach((provider) => {
+    (['groq', 'openai', 'anthropic', 'ollama', 'gemini', 'mistral', 'bedrock', 'nvidia'] as ProviderName[]).forEach((provider) => {
       const entry = getProviderEntry(next, provider);
       if (!entry) return;
       entry.models = normalizeModels(entry.models);
@@ -131,7 +132,8 @@ export const Configurator = {
         { name: 'Gemini', value: 'gemini' },
         { name: 'Ollama (Local)', value: 'ollama' },
         { name: 'Mistral AI', value: 'mistral' },
-        { name: 'AWS Bedrock', value: 'bedrock' }
+        { name: 'AWS Bedrock', value: 'bedrock' },
+        { name: 'NVIDIA', value: 'nvidia' }
       ]
     }) as ProviderName;
 
@@ -163,7 +165,7 @@ export const Configurator = {
       const model = await input({ message: 'Enter Mistral Model (e.g. mistral-large-latest):', default: 'mistral-large-latest' });
       providers.mistral = { apiKey, model };
     } else if (primaryProvider === 'bedrock') {
-      const region = await input({ message: 'Enter AWS Region:', default: 'us-east-1' });
+      const region = await input({ message: 'Enter AWS Region (e.g. us-east-1):', default: 'us-east-1' });
       const model = await input({ message: 'Enter Bedrock Model ID (e.g. us.amazon.nova-pro-v1:0):', default: 'us.amazon.nova-pro-v1:0' });
       const accessKeyId = await input({ message: 'Enter AWS Access Key ID (leave empty to use env/IAM):' });
       const secretAccessKey = accessKeyId ? await input({ message: 'Enter AWS Secret Access Key:' }) : '';
@@ -175,6 +177,10 @@ export const Configurator = {
         secretAccessKey: secretAccessKey || undefined,
         sessionToken: sessionToken || undefined
       };
+    } else if (primaryProvider === 'nvidia') {
+      const apiKey = await input({ message: 'Enter your NVIDIA API Key:' });
+      const model = await input({ message: 'Enter NVIDIA Model (e.g. meta/llama-3.3-70b-instruct):', default: 'meta/llama-3.3-70b-instruct' });
+      providers.nvidia = { apiKey, model };
     }
 
     const securityMode = await select({
