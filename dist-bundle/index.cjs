@@ -178,7 +178,7 @@ var init_configurator = __esm({
     Configurator = {
       normalizeConfig: (config2) => {
         const next = JSON.parse(JSON.stringify(config2));
-        ["groq", "openai", "anthropic", "ollama", "gemini", "mistral", "bedrock"].forEach((provider) => {
+        ["groq", "openai", "anthropic", "ollama", "gemini", "mistral", "bedrock", "nvidia"].forEach((provider) => {
           const entry = getProviderEntry(next, provider);
           if (!entry) return;
           entry.models = normalizeModels(entry.models);
@@ -231,7 +231,8 @@ var init_configurator = __esm({
             { name: "Gemini", value: "gemini" },
             { name: "Ollama (Local)", value: "ollama" },
             { name: "Mistral AI", value: "mistral" },
-            { name: "AWS Bedrock", value: "bedrock" }
+            { name: "AWS Bedrock", value: "bedrock" },
+            { name: "NVIDIA", value: "nvidia" }
           ]
         });
         const providers = {};
@@ -260,7 +261,7 @@ var init_configurator = __esm({
           const model = await (0, import_prompts.input)({ message: "Enter Mistral Model (e.g. mistral-large-latest):", default: "mistral-large-latest" });
           providers.mistral = { apiKey, model };
         } else if (primaryProvider === "bedrock") {
-          const region = await (0, import_prompts.input)({ message: "Enter AWS Region:", default: "us-east-1" });
+          const region = await (0, import_prompts.input)({ message: "Enter AWS Region (e.g. us-east-1):", default: "us-east-1" });
           const model = await (0, import_prompts.input)({ message: "Enter Bedrock Model ID (e.g. us.amazon.nova-pro-v1:0):", default: "us.amazon.nova-pro-v1:0" });
           const accessKeyId = await (0, import_prompts.input)({ message: "Enter AWS Access Key ID (leave empty to use env/IAM):" });
           const secretAccessKey = accessKeyId ? await (0, import_prompts.input)({ message: "Enter AWS Secret Access Key:" }) : "";
@@ -272,6 +273,10 @@ var init_configurator = __esm({
             secretAccessKey: secretAccessKey || void 0,
             sessionToken: sessionToken || void 0
           };
+        } else if (primaryProvider === "nvidia") {
+          const apiKey = await (0, import_prompts.input)({ message: "Enter your NVIDIA API Key:" });
+          const model = await (0, import_prompts.input)({ message: "Enter NVIDIA Model (e.g. meta/llama-3.3-70b-instruct):", default: "meta/llama-3.3-70b-instruct" });
+          providers.nvidia = { apiKey, model };
         }
         const securityMode = await (0, import_prompts.select)({
           message: "Select Security Mode:",
@@ -18443,11 +18448,16 @@ function buildAgentGraph() {
       let result = "";
       try {
         if (tool6) {
+          ctx.chatSession.delayMessage = `Running tool ${toolName}...`;
+          ctx.render(true);
           result = await tool6.invoke(args);
+          ctx.chatSession.delayMessage = null;
+          ctx.render(true);
         } else {
           result = `Error: Tool ${toolName} not found.`;
         }
       } catch (e) {
+        ctx.chatSession.delayMessage = null;
         result = `Error: ${e.message}`;
       }
       toolMsgs.push({
@@ -18552,7 +18562,20 @@ var AgentWorkflow = class {
       activeAgent: "build"
     };
     const config2 = { configurable: { thread_id: ctx.chatSession.threadId } };
-    const finalState = await this.graph.invoke(initialState, config2);
+    const stream = await this.graph.stream(initialState, { ...config2, streamMode: "values" });
+    let finalState = { ...initialState };
+    let previousNode = "router";
+    for await (const chunk of stream) {
+      if (ctx.chatSession.cancelledThreads.has(ctx.chatSession.threadId)) {
+        break;
+      }
+      finalState = chunk;
+      const activeNode = chunk.activeAgent || "build";
+      if (activeNode && activeNode !== "router" && activeNode !== "answer") {
+        ctx.chatSession.agentStates.set(ctx.chatSession.threadId, `[${activeNode.toUpperCase()}]`);
+      }
+      ctx.render(true);
+    }
     ctx.messages.length = 0;
     ctx.messages.push(...finalState.messages);
     ctx.syncMessages();
@@ -19199,6 +19222,18 @@ var ProviderRegistry = class {
           streaming: true
         }).bindTools(tools);
         ui.info(`Switched to Gemini - ${model}`);
+      } else if (providerName === "nvidia" && Configurator.getActiveApiKey(this.config, "nvidia")) {
+        const model = Configurator.getActiveModel(this.config, "nvidia") ?? "meta/llama-3.3-70b-instruct";
+        const apiKey = Configurator.getActiveApiKey(this.config, "nvidia");
+        this.primaryModel = new import_openai.ChatOpenAI({
+          openAIApiKey: apiKey,
+          modelName: model,
+          temperature: 0,
+          maxRetries: 0,
+          streaming: true,
+          configuration: { baseURL: "https://integrate.api.nvidia.com/v1" }
+        }).bindTools(tools);
+        ui.info(`Switched to NVIDIA - ${model}`);
       } else if (providerName === "mistral" && Configurator.getActiveApiKey(this.config, "mistral")) {
         const model = Configurator.getActiveModel(this.config, "mistral") ?? "mistral-large-latest";
         const apiKey = Configurator.getActiveApiKey(this.config, "mistral");

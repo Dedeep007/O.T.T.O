@@ -197,11 +197,16 @@ export function buildAgentGraph() {
            let result = '';
            try {
              if (tool) {
+                ctx.chatSession.delayMessage = `Running tool ${toolName}...`;
+                ctx.render(true);
                 result = await (tool as any).invoke(args);
+                ctx.chatSession.delayMessage = null;
+                ctx.render(true);
              } else {
                 result = `Error: Tool ${toolName} not found.`;
              }
            } catch (e: any) {
+             ctx.chatSession.delayMessage = null;
              result = `Error: ${e.message}`;
            }
            toolMsgs.push({

@@ -252,7 +252,7 @@ export const Configurator = {
     return null;
   },
 
-  updateApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini' | 'mistral', apiKey: string) => {
+  updateApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini' | 'mistral' | 'nvidia', apiKey: string) => {
     const config = Configurator.loadConfig();
     if (config) {
       if (!config.providers[provider]) {
@@ -269,7 +269,7 @@ export const Configurator = {
     return null;
   },
 
-  addApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini' | 'mistral', apiKey: string) => {
+  addApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini' | 'mistral' | 'nvidia', apiKey: string) => {
     const config = Configurator.loadConfig();
     if (config) {
       if (!config.providers[provider]) {
@@ -288,7 +288,7 @@ export const Configurator = {
     return null;
   },
 
-  removeApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini' | 'mistral', apiKey: string) => {
+  removeApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini' | 'mistral' | 'nvidia', apiKey: string) => {
     const config = Configurator.loadConfig();
     if (config && config.providers[provider]) {
       const entry = config.providers[provider] as any;
@@ -304,7 +304,7 @@ export const Configurator = {
     return null;
   },
 
-  setActiveApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini' | 'mistral', apiKey: string) => {
+  setActiveApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini' | 'mistral' | 'nvidia', apiKey: string) => {
     const config = Configurator.loadConfig();
     if (config) {
       if (!config.providers[provider]) {
@@ -321,7 +321,7 @@ export const Configurator = {
     return null;
   },
 
-  rotateApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini' | 'mistral'): OttoConfig | null => {
+  rotateApiKey: (provider: 'groq' | 'openai' | 'anthropic' | 'gemini' | 'mistral' | 'nvidia'): OttoConfig | null => {
     const config = Configurator.loadConfig();
     if (config && config.providers[provider]) {
       const entry = config.providers[provider] as any;

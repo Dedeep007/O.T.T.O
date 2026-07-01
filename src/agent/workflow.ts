@@ -50,7 +50,7 @@ export class AgentWorkflow {
       ctx.syncMessages();
     }
     
-    // Invoke LangGraph
+    // Invoke LangGraph via Streaming
     const initialState = {
       messages: ctx.messages,
       context: ctx,
@@ -60,9 +60,26 @@ export class AgentWorkflow {
 
     const config = { configurable: { thread_id: ctx.chatSession.threadId } };
 
-    const finalState = await this.graph.invoke(initialState, config);
+    const stream = await this.graph.stream(initialState, { ...config, streamMode: "values" });
     
-    // LangGraph appends messages to state
+    let finalState: any = { ...initialState };
+    let previousNode = 'router';
+    
+    for await (const chunk of stream) {
+      if (ctx.chatSession.cancelledThreads.has(ctx.chatSession.threadId)) {
+        break;
+      }
+      
+      finalState = chunk;
+      
+      const activeNode = chunk.activeAgent || 'build';
+      if (activeNode && activeNode !== 'router' && activeNode !== 'answer') {
+        ctx.chatSession.agentStates.set(ctx.chatSession.threadId, `[${activeNode.toUpperCase()}]`);
+      }
+      ctx.render(true);
+    }
+    
+    // Sync the final messages collected during streaming
     ctx.messages.length = 0;
     ctx.messages.push(...finalState.messages);
     ctx.syncMessages();
